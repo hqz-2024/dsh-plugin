@@ -497,7 +497,7 @@ function isCountedEvent(state, event) {
   }
 }
 async function scanFallback(deps, now) {
-  const { sq, providerNames, logFailure } = deps;
+  const { sq, persistence, providerNames, logFailure } = deps;
   let a = emptyAggregate();
   const titles = /* @__PURE__ */ new Map();
   let sessionsTotal = 0;
@@ -536,15 +536,24 @@ async function scanFallback(deps, now) {
       sessionsPending += 1;
       continue;
     }
-    let snapshot = null;
+    let events = null;
     try {
-      snapshot = await sq.readSession(header.id);
+      // LOCAL FORK (2026-09-04): read the raw log straight from persistence
+      // instead of sessionQuery.readSession — readSession instantiates a full
+      // Session (replay-validating every event) which made a scan of large
+      // session logs hang the "刷新" for minutes. The raw read below returns
+      // the same event data the counter needs, without the replay.
+      const handle = await persistence.open(header.id, "read");
+      try {
+        events = await handle.read(0, undefined);
+      } finally {
+        await handle.close();
+      }
     } catch (err) {
       sessionsFailed += 1;
       logFailure("readSession " + sessionId + " failed: " + String(err?.message ?? err));
       continue;
     }
-    const events = snapshot && snapshot.events;
     if (!events || !events.length) {
       sessionsOk += 1;
       continue;
@@ -591,6 +600,7 @@ var RESCAN_MS = 10 * 60 * 1e3;
 function apply(ctx) {
   const tag = "[dsh-usage-panel]";
   const sq = ctx.get("sessionQuery");
+  const persistence = ctx.get("sessionPersistence");
   const registry = ctx.get("sessionProjections");
   const projCache = ctx.get("sessionProjectionCache");
   const connection = ctx.get("connection");
@@ -706,7 +716,7 @@ function apply(ctx) {
       return emptyOverview(now);
     }
     if (mode === "projection") return scanProjection(now);
-    return scanFallback({ sq, providerNames, logFailure }, now);
+    return scanFallback({ sq, persistence, providerNames, logFailure }, now);
   }
   function startScan() {
     if (disposed) return Promise.resolve(cache ? cache.payload : emptyOverview(Date.now()));
