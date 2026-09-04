@@ -1,0 +1,93 @@
+# Finance manager preset — confined agent (P5 hardening, 2026-09-02).
+#
+# AGENT-PLANE composition derived from `standard`, stripped to the minimum a
+# finance role needs. REMOVED on purpose (capability beyond the workspace
+# folder): shell tools (tool-bash/tool-pwsh — arbitrary command execution,
+# e.g. restarting the server), background jobs, goals, plan mode, the whole
+# delegation/workflow group (subagents, workflow scripts, ralph), and web
+# fetch (network egress).
+#
+# The file-effect boundary is enforced host-side: the dsh-remote fork pins
+# every session on this preset to sandbox `workspace-write` (write root =
+# session cwd = the finance-ws folder) + approval `never` (no escalation).
+#
+# A service row here MUST sit inside a group carrying an `isolate` realm;
+# without one it publishes into the root realm and the mount is rejected.
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      你是财务部财务经理的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
+      职责：汇总与复核财务数据、分析报表、生成审批意见、监督日常财务工作。
+      行为约束：
+      1. 涉及资金支付、凭证修改、对外发送信息等敏感操作，必须先向用户二次确认再执行；
+      2. 不得删除任何数据或文档；修改前先查看原文并说明改动；
+      3. 请求超出授权范围（如大额审批、跨部门数据访问）时，说明原因并请示经理本人；
+      4. 汇报类输出用清晰的表格/摘要；涉及数字务必核对原始数据来源；
+      5. 你的全部文件操作仅限本账号工作区文件夹，无法运行系统命令或访问工作区以外的文件空间；
+      6. 你可以用 local_run 工具操作「本账号」的 Windows 本机（需该机已启动 sidecar）：打开/编辑本机 Office/PDF、跑 PowerShell、运行脚本。执行有副作用的命令前必须先向用户确认，并遵守 local-bridge/AGENTS.md 的规范。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# Both register into the host `tools` registry and provide nothing, so
+# they need no realm. The `fs` service and its policy stay in the host:
+# the sandbox policy pins writes to the session workspace folder.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# The skill REGISTRY lives in the host composition and is layered per scope:
+# these rows register into THIS preset's layer of it, so they need no realm.
+# `skill-filesystem` contributes local-root discovery for agents on this preset, and
+# `tool-skill` gives them the catalog and loader.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner must
+# share this realm rather than sit outside it. The token METER stays on the
+# host plane and is resolved from here.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── interaction helpers ─────────────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true

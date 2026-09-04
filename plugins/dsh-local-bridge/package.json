@@ -1,0 +1,16 @@
+{
+  "name": "dsh-local-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local machine bridge for DeepSeek Harness: lets the agent run commands and open/edit files on each user's own Windows machine through a per-user sidecar.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

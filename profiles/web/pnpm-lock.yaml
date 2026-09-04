@@ -1,0 +1,186 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@deepseek-ai/dsh-terminal':
+        specifier: 0.0.1-rc.3
+        version: 0.0.1-rc.3
+      '@deepseek-ai/dsh-terminal-bash':
+        specifier: 0.0.1-rc.3
+        version: 0.0.1-rc.3(@deepseek-ai/dsh-terminal@0.0.1-rc.3)
+      '@deepseek-ai/dsh-tool-terminal':
+        specifier: 0.0.1-rc.5
+        version: 0.0.1-rc.5(@deepseek-ai/dsh-terminal@0.0.1-rc.3)
+      '@xgone/dsh-remote':
+        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-remote-local
+        version: link:../../plugins/dsh-remote-local
+      dsh-doc:
+        specifier: 0.1.1
+        version: 0.1.1(@deepseek-ai/schemastery@3.18.2)
+      dsh-local-bridge:
+        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-local-bridge
+        version: link:../../plugins/dsh-local-bridge
+      dsh-usage-panel:
+        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-usage-panel-local
+        version: link:../../plugins/dsh-usage-panel-local
+      folder-tree-sh:
+        specifier: link:C://Users//bestarc//.dsh//plugins//folder-tree-sh-local
+        version: link:../../plugins/folder-tree-sh-local
+
+packages:
+
+  '@deepseek-ai/cosmokit@1.8.3':
+    resolution: {integrity: sha512-qBo+ronVM6Eu2WNVJXi8JcMiqZ19T9BRIpV+5qJUFPXjGH/Z0QKcQMC/IZJ7L394YTOtJgcovbk9qP0w2GsBXQ==}
+
+  '@deepseek-ai/dsh-terminal-bash@0.0.1-rc.3':
+    resolution: {integrity: sha512-O6SczKhyDzyJlnwjwLmBX3/rwoHjE+SNIm4AJ4qsLjDwlCZfrr+EMFT20LXobvGBUFanlDmKoOyZBOsyTrinUg==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1-rc.1
+      '@deepseek-ai/dsh-agent': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-invariants': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-sandbox': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-sandbox-policy': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-session': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-subprocess': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-terminal': ^0.0.1-rc.3
+
+  '@deepseek-ai/dsh-terminal@0.0.1-rc.3':
+    resolution: {integrity: sha512-EpTuSB3EhR4jJre3ADwSUon1cODf+WC1JSj/Kr+uzh9dozCr7iTPu7lf/HLnlmljgw7v0ntQ/19AFIS0CMUjyQ==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1-rc.1
+      '@deepseek-ai/dsh-agent': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-brand': ^0.0.1-rc.3
+      '@deepseek-ai/dsh-invariants': ^0.0.1-rc.3
+
+  '@deepseek-ai/dsh-tool-terminal@0.0.1-rc.5':
+    resolution: {integrity: sha512-c/BARJ3tWoaviyy/b/8JVk97KcRyue55wE1hsw1a59k3SNDDkFp1PhQhZqIBFjfmSHUqghZLpFSa7okaQuJPIA==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1-rc.4
+      '@deepseek-ai/dsh-agent': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-invariants': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-jobs': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-llm': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-output-retention': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-system-prompt': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-terminal': ^0.0.1-rc.5
+      '@deepseek-ai/dsh-tools': ^0.0.1-rc.5
+
+  '@deepseek-ai/schemastery@3.18.2':
+    resolution: {integrity: sha512-njDtZsznjYxok7KLLlHOPyuv2efdWVbSflAHgztSfbMsg+CVraEoRe2DjOCgClYv3ZCSm7WXoaUkbB/+RY7tWQ==}
+
+  '@standard-schema/spec@1.1.0':
+    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@xberg-io/xberg-darwin-arm64@1.0.14':
+    resolution: {integrity: sha512-QgsQq/Q0pwdtYJeh4QhEty+93hlohsPdMF9yN9UY5YI5tXsUK0njqkG8v8wKoS3FHVtpYhI1KvJZNV+R86Pu2g==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@xberg-io/xberg-linux-arm64-gnu@1.0.14':
+    resolution: {integrity: sha512-l+RpJqIa35OsCVnzw5XRoewJ/eoqcW3ZOm4wFTaMopIpNQyk+CeqvcjOW+5asfpp8KTVXkNtOPMTVCxljPvBNw==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@xberg-io/xberg-linux-arm64-musl@1.0.14':
+    resolution: {integrity: sha512-kh2zA+9CZqE1uzqr9eetppJxqlcuOzyg6XgG5JHecB6ItAa30k+l3uKntxAewxkBwxJqSiiYesc0zb+O05M/KQ==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@xberg-io/xberg-linux-x64-gnu@1.0.14':
+    resolution: {integrity: sha512-EsRBMiW0F0rAq5SzhdFzjWdskK61CNzV7YnAg/iHz+KDVL/56f5/wfSkLLmN/WXn4lMblmaC+qrb2iVoHV3BPg==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@xberg-io/xberg-linux-x64-musl@1.0.14':
+    resolution: {integrity: sha512-dYeRNfKBYGv0SeXPy/CwGivYbDLr5+KbUJcB4P4+Ldhuyz9py/EbixW0qnMugVgyZTexLB00khTGWDOgU3Zz9Q==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@xberg-io/xberg-win32-x64-msvc@1.0.14':
+    resolution: {integrity: sha512-Jy3WZyZuD3NKxWks5NhytKDXgfDtRQRYGIApwzRxREFjWMOJf1s9+YP5JyKPvzE/XQdpfw4KJ2J0KJAriazIEQ==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [win32]
+
+  '@xberg-io/xberg@1.0.14':
+    resolution: {integrity: sha512-Rb5tnUqTtUnwEn/Pb7x1G99Hn8zMqJdR8rtEAh7M+MokSxxe3E/y+KzpQED0Ygp9T4OOX9FoyJtaYizt6gnQHA==}
+    engines: {node: '>= 22'}
+
+  dsh-doc@0.1.1:
+    resolution: {integrity: sha512-OpxRC4NduMvXEbKbBM7BY60JUy0TmsvoAbktkw3CtXCaiUdRuWrQwNbh7oPW/7JqpNw/lLiwnISVv3vUE6n9jQ==}
+    engines: {node: ^22.19.0 || >=24.0.0, pnpm: '>=10.0.0'}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1
+      '@deepseek-ai/dsh-llm': ^0.1.0-rc.6
+      '@deepseek-ai/dsh-tools': ^0.1.0-rc.6
+      '@deepseek-ai/schemastery': ^3.18.1
+
+snapshots:
+
+  '@deepseek-ai/cosmokit@1.8.3': {}
+
+  '@deepseek-ai/dsh-terminal-bash@0.0.1-rc.3(@deepseek-ai/dsh-terminal@0.0.1-rc.3)':
+    dependencies:
+      '@deepseek-ai/dsh-terminal': 0.0.1-rc.3
+      '@deepseek-ai/schemastery': 3.18.2
+
+  '@deepseek-ai/dsh-terminal@0.0.1-rc.3': {}
+
+  '@deepseek-ai/dsh-tool-terminal@0.0.1-rc.5(@deepseek-ai/dsh-terminal@0.0.1-rc.3)':
+    dependencies:
+      '@deepseek-ai/dsh-terminal': 0.0.1-rc.3
+      '@deepseek-ai/schemastery': 3.18.2
+
+  '@deepseek-ai/schemastery@3.18.2':
+    dependencies:
+      '@deepseek-ai/cosmokit': 1.8.3
+      '@standard-schema/spec': 1.1.0
+
+  '@standard-schema/spec@1.1.0': {}
+
+  '@xberg-io/xberg-darwin-arm64@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg-linux-arm64-gnu@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg-linux-arm64-musl@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg-linux-x64-gnu@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg-linux-x64-musl@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg-win32-x64-msvc@1.0.14':
+    optional: true
+
+  '@xberg-io/xberg@1.0.14':
+    optionalDependencies:
+      '@xberg-io/xberg-darwin-arm64': 1.0.14
+      '@xberg-io/xberg-linux-arm64-gnu': 1.0.14
+      '@xberg-io/xberg-linux-arm64-musl': 1.0.14
+      '@xberg-io/xberg-linux-x64-gnu': 1.0.14
+      '@xberg-io/xberg-linux-x64-musl': 1.0.14
+      '@xberg-io/xberg-win32-x64-msvc': 1.0.14
+
+  dsh-doc@0.1.1(@deepseek-ai/schemastery@3.18.2):
+    dependencies:
+      '@deepseek-ai/schemastery': 3.18.2
+      '@xberg-io/xberg': 1.0.14

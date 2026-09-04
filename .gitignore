@@ -1,0 +1,44 @@
+# ============================================================
+# dsh 局域网部署（~/.dsh） .gitignore
+# 用途：开源「插件 + 配置 + 脚本」，排除三类内容：
+#   (1) 可再生依赖 / 二进制   (2) 机密   (3) 运行时数据
+# 迁移请走 MIGRATION.md 的 robocopy 流程，不受本文件影响。
+# ============================================================
+
+# ---- 依赖（pnpm install / winget 可重建）----
+node_modules/
+
+# ---- 机密（绝不能进 git）----
+.credentials.yaml
+auth/
+.env
+.env.*
+
+# profile 真实配置含 sidecar token，只留本地；提交脱敏版 cordis.patch.example.yml
+profiles/web/cordis.patch.yml
+
+# ---- 运行时数据 / 会话 / 附件 ----
+sessions/
+sessions-archived/
+attachments/
+storages/
+llm-deepseek/
+
+# ---- 机器相关状态 ----
+.anonymous-user-id
+dsh-remote-files.json
+upgrade-state.json
+
+# ---- 二进制 / 离线运行时（可重建）----
+bin/
+runtimes/
+
+# ---- profile 内可再生 / 数据目录 ----
+profiles/web/data/
+profiles/web/.dsh-module-fallback/
+
+# ---- 日志 ----
+*.log
+
+# ---- 插件内嵌套的独立 git 仓库 ----
+plugins/*/.git/

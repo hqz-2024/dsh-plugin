@@ -1,0 +1,28 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-terminal": "0.0.1-rc.3",
+    "@deepseek-ai/dsh-terminal-bash": "0.0.1-rc.3",
+    "@deepseek-ai/dsh-tool-terminal": "0.0.1-rc.5",
+    "@xgone/dsh-remote": "link:C://Users//bestarc//.dsh//plugins//dsh-remote-local",
+    "dsh-doc": "0.1.1",
+    "dsh-local-bridge": "link:C://Users//bestarc//.dsh//plugins//dsh-local-bridge",
+    "dsh-usage-panel": "link:C://Users//bestarc//.dsh//plugins//dsh-usage-panel-local",
+    "folder-tree-sh": "link:C://Users//bestarc//.dsh//plugins//folder-tree-sh-local"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@xgone/dsh-remote",
+        "dsh-doc",
+        "folder-tree-sh",
+        "dsh-usage-panel",
+        "dsh-local-bridge"
+      ],
+      "patchReload": "live"
+    }
+  }
+}

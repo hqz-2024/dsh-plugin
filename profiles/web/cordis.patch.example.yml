@@ -1,0 +1,95 @@
+# ============================================================
+# cordis.patch.yml 模板（占位版，可安全提交 / 开源）
+#
+# 这是真实 cordis.patch.yml 的脱敏副本，替换了：
+#   1) local-bridge 的 sidecar token（真实 token 是机密，绝不提交）
+#   2) dsh-doc 的 runtimeDir 绝对路径（机器相关）
+#
+# 使用方式：
+#   复制本文件为 cordis.patch.yml，填入你自己的 token / 路径后使用。
+#   真实 token 可用 `openssl rand -hex 20` 生成。
+# ============================================================
+
+# Default agent preset: standard + persistent terminal (installed by agent).
+- id: agent-presets
+  config:
+    default: standard-terminal
+
+# ── dsh-remote 认证门禁（P1，2026-09-01 安装；P3 起为本地 fork）────────────────
+# 多账号模式：adminOnly:false 允许创建非管理员账号；enforceRoles:true 开启
+# admin/user/guest 方法级门禁。会话/MFA/限速等其余键回落到插件默认值。
+# roleMap（fork 新增）：按登录账号精确匹配（区分大小写），在 session.create
+# 时服务端注入 agentPreset 与 workspaceId（workspace 按标题匹配）。
+- id: remote
+  config:
+    enabled: true
+    adminOnly: false
+    enforceRoles: true
+    # LAN/caddy 反代场景：trustProxy 默认 true 会让 normalizeForFence 把 /api 与
+    # WebSocket 请求的 Host 强改为 127.0.0.1:3080，导致 browser-auth 按
+    # 127.0.0.1:3080 找 cookie，永远匹配不上按 192.168.28.239:8443 绑定的 cookie
+    # → 401 / 前端一直"连接中"。设 false 保留原始 Host，配合启动时的
+    # --trusted-host <LAN-IP> 即可通过浏览器信任栅栏。
+    trustProxy: false
+    roleMap:
+      Finance-mgr:
+        preset: finance-manager
+        workspace: finance-ws
+      Finance-staff:
+        preset: finance-staff
+        workspace: finance-ws
+
+# ── 权限预设表（P5 硬化，2026-09-02）────────────────────────────────────────
+# 覆写 base 的 permission 行：新增 `finance-confined` 预设。dsh-remote fork
+# 在会话创建时把它钉进每个映射账号（Finance-mgr/Finance-staff）的会话：
+# 沙箱 workspace-write（写边界 = 会话 cwd = finance-ws 文件夹）+ 审批 never
+# （任何升级到 danger-full-access 的请求都被确定性拒绝）。
+# admin 的会话不受影响，仍走 settings.yaml 的默认 danger-full-access。
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+        name: read-only
+        description: "Read-only: no file modifications."
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+        name: workspace-write
+        description: Write inside the workspace and permitted temporary directories; wider retries require approval.
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+        name: danger-full-access
+        description: Full file access without approval prompts.
+      finance-confined:
+        sandbox: workspace-write
+        approval: never
+        name: 工作区限定
+        description: 仅可在本账号工作区文件夹内写入文件；禁止任何权限升级。
+
+# ── 办公文档解析（P8，2026-09-02）：dsh-doc 行 ─────────────────────────────
+# 全本地解析 PDF/DOCX/XLSX/PPTX/MD/CSV + 离线中文 OCR（财务发票扫描件）。
+# 安全模型：路径 realpath 校验 + 仅会话工作区可读；URL 输入直接拒绝；
+# 引擎只收字节流、无监听端口。OCR 运行时为 hash 校验的离线产物。
+- id: dsh-doc
+  config:
+    engine: python
+    runtimeDir: C:\Users\<USERNAME>\.dsh\runtimes\dshdoc-runtime-win32-x64
+    defaultOcr: true
+    maxOutputChars: 32000
+    allowedLocalRoots: []
+
+# ── 本机桥接（P9，2026-09-02）：dsh-local-bridge 行 ─────────────────────────
+# 每个用户本机运行 sidecar（出站 WebSocket 连 /sidecar），token 绑定账号。
+# local_run 工具按"会话归属账号"路由到对应 sidecar，让 agent 驱动用户本机
+# 的 pwsh / Office / 脚本 / PS / Blender 等。token 保密，泄露即等于该账号本机权限。
+- id: local-bridge
+  config:
+    tokens:
+      # 每账号一个随机 token（40 位 hex），token 绑定账号，务必保密。
+      # 部署时用 `openssl rand -hex 20` 生成并替换下面三行占位符。
+      REPLACE_WITH_RANDOM_TOKEN_40HEX_admin: admin
+      REPLACE_WITH_RANDOM_TOKEN_40HEX_finance_mgr: Finance-mgr
+      REPLACE_WITH_RANDOM_TOKEN_40HEX_finance_staff: Finance-staff

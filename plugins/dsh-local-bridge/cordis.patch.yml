@@ -1,0 +1,10 @@
+# dsh-local-bridge bundle patch: mounts the local-machine bridge host plugin.
+# Install: dsh plugin --profile web add <path to this directory>
+- insert:
+    - id: local-bridge
+      name: 'dsh-local-bridge'
+      config:
+        # sidecar token -> DSH account username (exact case-sensitive match).
+        # Generate one random token per user; the sidecar is started with the
+        # matching token on that user's machine.
+        tokens: {}
