@@ -1528,7 +1528,24 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		json(res, 200, { ok: true });
 	};
 
-	const handleMe = (req, res) => {
+	const listSessionSummaries = async () => {
+		try {
+			const controller = ctx.get("sessionController");
+			if (controller && typeof controller.list === "function") {
+				const result = await controller.list({}, undefined);
+				return (result && Array.isArray(result.items)) ? result.items : [];
+			}
+		} catch { /* ignore */ }
+		return [];
+	};
+	const sessionTitleOf = (item) => {
+		if (!item) return null;
+		if (typeof item.title === "string") return item.title;
+		const v = item.projections?.values;
+		if (v && typeof v.title === "string") return v.title;
+		return null;
+	};
+	const handleMe = async (req, res) => {
 		if (req.method !== "GET") {
 			denyJson(res, 405, "method not allowed");
 			return;
@@ -1546,7 +1563,16 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				workspaces = wsList.map((w) => ({ title: w.title, allowed: verdict.user.role === "admin" ? true : w.title === allowedTitle }));
 				hiddenWorkspaceTitles = wsList.filter((w) => hiddenState().workspaces.indexOf(w.id) !== -1).map((w) => w.title);
 				const hiddenIds = hiddenState().sessions;
-				hiddenSessionTitles = (ctx.get("sessions")?.list?.() ?? []).filter((s) => hiddenIds.indexOf(s.id) !== -1).map((s) => s?.header?.title ?? s?.title).filter((t) => typeof t === "string");
+				if (hiddenIds.length > 0) {
+					// Resolve hidden session ids → titles across live AND cold
+					// sessions (titles ride the `title` projection).
+					const byId = new Map();
+					for (const item of await listSessionSummaries()) {
+						const t = sessionTitleOf(item);
+						if (item?.sessionId && t) byId.set(item.sessionId, t);
+					}
+					hiddenSessionTitles = hiddenIds.map((id) => byId.get(id)).filter((t) => typeof t === "string");
+				}
 			} catch { workspaces = null; }
 		}
 		json(res, 200, {
@@ -1583,21 +1609,32 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			const w = (ctx.get("workspaceRegistry")?.list?.() ?? []).find((x) => x.title === title);
 			id = w?.id ?? null;
 		} else {
-			const sessionsList = ctx.get("sessions")?.list?.() ?? [];
-			const proj = ctx.get("sessionProjections");
-			// Session titles are a projection (the `title` key), not a header
-			// field — resolve through the same cached snapshot the session list
-			// uses, falling back to header/title fields on older shapes.
-			const sessionTitleOf = (s) => {
-				try {
-					const snap = proj?.cachedSnapshot?.(s);
-					if (snap?.values && typeof snap.values.title === "string") return snap.values.title;
-				} catch { /* projection unavailable */ }
-				return (s?.header?.title ?? s?.title) ?? null;
+			// Enumerate summaries exactly like the client list (includes cold
+			// sessions, not just live ones), then match the title. The title
+			// rides the `title` projection (`projections.values.title`), with a
+			// top-level `title` fallback for shape drift.
+			let items = [];
+			try {
+				const controller = ctx.get("sessionController");
+				if (controller && typeof controller.list === "function") {
+					const result = await controller.list({}, undefined);
+					if (result && Array.isArray(result.items)) items = result.items;
+				}
+			} catch { /* fall back to live sessions below */ }
+			const titleOf = (item) => {
+				if (!item) return null;
+				if (typeof item.title === "string") return item.title;
+				const v = item.projections?.values;
+				if (v && typeof v.title === "string") return v.title;
+				return null;
 			};
-			diag("hide session sample=" + sessionsList.slice(0, 10).map((x) => sessionTitleOf(x)).filter((t) => t !== null).join(" | "));
-			const s = sessionsList.find((x) => sessionTitleOf(x) === title);
-			id = s?.id ?? null;
+			const found = items.find((x) => titleOf(x) === title);
+			id = found?.sessionId ?? null;
+			if (id === null) {
+				const live = (ctx.get("sessions")?.list?.() ?? []).find((x) => (x?.header?.title ?? x?.title) === title);
+				id = live?.id ?? null;
+			}
+			diag("hide session items=" + items.length + " sample=" + items.slice(0, 6).map(titleOf).filter((t) => t !== null).join(" | "));
 		}
 		if (id === null) { diag("hide not-found kind=" + kind + " title=" + title); denyJson(res, 404, kind + " not found"); return; }
 		const list = kind === "workspace" ? hiddenState().workspaces : hiddenState().sessions;
