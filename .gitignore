@@ -23,6 +23,7 @@ sessions-archived/
 attachments/
 storages/
 llm-deepseek/
+seeed-cli/
 
 # ---- 机器相关状态 ----
 .anonymous-user-id
