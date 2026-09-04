@@ -68,6 +68,12 @@ window.__ModuleLoader__.load({
 				"accounts.roleUser": "user（禁止配置/凭据类操作）",
 				"accounts.roleGuest": "guest（只读）",
 				"accounts.addBtn": "添加",
+				"accounts.workspaces": "工作空间（可多选）",
+				"accounts.preset": "预设模式",
+				"accounts.workspacesPlaceholder": "选择工作空间",
+				"accounts.confirm": "确认",
+				"accounts.edit": "编辑",
+				"accounts.cancel": "取消",
 				"accounts.reset": "重置密码",
 				"accounts.remove": "删除",
 				"accounts.newPassword": "新密码",
@@ -165,6 +171,12 @@ window.__ModuleLoader__.load({
 				"accounts.roleUser": "user (no settings/credentials plane)",
 				"accounts.roleGuest": "guest (read-only)",
 				"accounts.addBtn": "Add",
+				"accounts.workspaces": "Workspaces (multi-select)",
+				"accounts.preset": "Preset",
+				"accounts.workspacesPlaceholder": "Select workspaces",
+				"accounts.confirm": "Confirm",
+				"accounts.edit": "Edit",
+				"accounts.cancel": "Cancel",
 				"accounts.reset": "Reset password",
 				"accounts.remove": "Remove",
 				"accounts.newPassword": "New password",
@@ -1297,6 +1309,14 @@ window.__ModuleLoader__.load({
 			const [newUser, setNewUser] = react.useState("");
 			const [newPassword, setNewPassword] = react.useState("");
 			const [newRole, setNewRole] = react.useState("user");
+			const [newWorkspaces, setNewWorkspaces] = react.useState([]);
+			const [newPreset, setNewPreset] = react.useState("");
+			const [configOptions, setConfigOptions] = react.useState({ workspaces: [], presets: [] });
+			const [workspacesOpen, setWorkspacesOpen] = react.useState(false);
+			const [editFor, setEditFor] = react.useState(null);
+			const [editWorkspaces, setEditWorkspaces] = react.useState([]);
+			const [editPreset, setEditPreset] = react.useState("");
+			const [editOpen, setEditOpen] = react.useState(false);
 			const [resetFor, setResetFor] = react.useState(null);
 			const [resetPassword, setResetPassword] = react.useState("");
 			const [mfaResetFor, setMfaResetFor] = react.useState(null);
@@ -1310,14 +1330,17 @@ window.__ModuleLoader__.load({
 			const load = react.useCallback(async () => {
 				const me = await fetchJson("/auth/me");
 				let accounts = [];
+				let roleMap = {};
 				if (me && me.authenticated && me.role === "admin") {
 					const result = await fetchJson("/auth/accounts", { action: "list" });
-					if (result && result.ok) accounts = result.accounts;
+					if (result && result.ok) { accounts = result.accounts; roleMap = result.roleMap || {}; }
 				}
-				setView({ status: "ready", me, accounts, message: "" });
+				setView({ status: "ready", me, accounts, roleMap, message: "" });
 				if (me && me.authenticated && me.role === "admin") {
 					const f = await fetchJson("/auth/files");
 					if (f && f.ok) setFiles(f);
+					const opts = await fetchJson("/auth/config-options");
+					if (opts && opts.ok) setConfigOptions({ workspaces: opts.workspaces || [], presets: opts.presets || [] });
 				} else {
 					setFiles(null);
 				}
@@ -1340,10 +1363,25 @@ window.__ModuleLoader__.load({
 			const addAccount = (event) => {
 				event.preventDefault();
 				if (!newUser.trim() || !newPassword) return;
-				doAction({ action: "upsert", username: newUser.trim(), password: newPassword, role: newRole });
+				doAction({ action: "upsert", username: newUser.trim(), password: newPassword, role: newRole, workspaces: newWorkspaces, preset: newPreset });
 				setNewUser("");
 				setNewPassword("");
 				setNewRole("user");
+				setNewWorkspaces([]);
+				setNewPreset("");
+			};
+
+			const startEdit = (account) => {
+				const rm = (view.roleMap || {})[account.username] || {};
+				setEditFor(account.username);
+				setEditWorkspaces(Array.isArray(rm.workspaces) ? rm.workspaces : []);
+				setEditPreset(rm.preset || "");
+				setEditOpen(false);
+			};
+			const saveEdit = () => {
+				if (!editFor) return;
+				doAction({ action: "upsert", username: editFor, workspaces: editWorkspaces, preset: editPreset });
+				setEditFor(null);
 			};
 
 			const resetSubmit = (event, username) => {
@@ -1452,6 +1490,53 @@ window.__ModuleLoader__.load({
 										h("option", { value: "guest" }, t("accounts.roleGuest"))
 									])
 								]),
+								h("div", { style: { flex: "1 1 200px", position: "relative" } }, [
+									h("label", { style: labelStyle }, t("accounts.workspaces")),
+									h("button", {
+										type: "button",
+										style: { ...fieldStyle, textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" },
+										onClick: () => setWorkspacesOpen((v) => !v)
+									}, [
+										h("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1" } },
+											newWorkspaces.length > 0 ? newWorkspaces.join("、") : t("accounts.workspacesPlaceholder")),
+										h("span", { style: { fontSize: "10px", color: "var(--dsw-alias-label-tertiary, #8b949e)" } }, workspacesOpen ? "▲" : "▼")
+									]),
+									workspacesOpen
+										? h("div", { style: {
+											position: "absolute", top: "calc(100% + 4px)", left: "0", right: "0", zIndex: "20",
+											background: "var(--dsw-specific-menu, #161b22)",
+											border: "1px solid var(--dsw-alias-border-l2, #30363d)",
+											borderRadius: "8px", boxShadow: "0 8px 24px rgba(0,0,0,.35)",
+											padding: "4px", maxHeight: "240px", overflow: "auto"
+										} }, [
+											(configOptions.workspaces || []).map((w) => {
+												const checked = newWorkspaces.indexOf(w.title) !== -1;
+												return h("div", {
+													key: w.title,
+													style: { display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px", borderRadius: "6px", cursor: "pointer" },
+													onClick: () => setNewWorkspaces((arr) => checked ? arr.filter((t) => t !== w.title) : [...arr, w.title])
+												}, [
+													h("span", { style: {
+														width: "16px", height: "16px", flex: "none", display: "inline-flex", alignItems: "center", justifyContent: "center",
+														borderRadius: "4px", fontSize: "12px",
+														border: "1px solid " + (checked ? "var(--dsw-alias-state-business-primary, #4c8bf5)" : "var(--dsw-alias-border-l2, #30363d)"),
+														background: checked ? "rgba(76,139,245,.16)" : "transparent",
+														color: "var(--dsw-alias-state-business-primary, #4c8bf5)"
+													} }, checked ? "✓" : ""),
+													h("span", { style: { fontSize: "13px", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, w.title)
+												]);
+											}),
+											h("button", { type: "button", style: { ...buttonStyle, width: "100%", marginTop: "4px" }, onClick: () => setWorkspacesOpen(false) }, t("accounts.confirm"))
+										])
+										: null
+								]),
+								h("div", { style: { flex: "1 1 160px" } }, [
+									h("label", { style: labelStyle }, t("accounts.preset")),
+									h("select", { style: fieldStyle, value: newPreset, onChange: (e) => setNewPreset(e.target.value) }, [
+										h("option", { value: "" }, "—"),
+										(configOptions.presets || []).map((p) => h("option", { key: p.id, value: p.id }, p.name || p.id))
+									])
+								]),
 								h("button", { type: "submit", disabled: !newUser.trim() || !newPassword, style: buttonStyle }, t("accounts.addBtn"))
 							])
 							: null,
@@ -1486,6 +1571,16 @@ window.__ModuleLoader__.load({
 											h("span", { style: { fontWeight: 600, fontSize: "14px", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, account.username),
 											h("span", { style: { ...chipStyle, background: "rgba(76,139,245,.14)", color: "var(--dsw-alias-state-business-primary, #4c8bf5)" } },
 												t("role." + account.role) || account.role),
+											(function () {
+												const rm = (view.roleMap || {})[account.username];
+												if (!rm) return null;
+												const presetName = (configOptions.presets || []).find((p) => p.id === rm.preset)?.name || rm.preset || "";
+												const ws = (Array.isArray(rm.workspaces) ? rm.workspaces : []).join("、");
+												const chips = [];
+												if (presetName) chips.push(h("span", { key: "preset", style: { ...chipStyle, background: "rgba(63,185,80,.12)", color: "#3fb950" } }, "预设 " + presetName));
+												if (ws) chips.push(h("span", { key: "ws", style: { ...chipStyle, background: "rgba(63,185,80,.12)", color: "#3fb950" } }, "工作区 " + ws));
+												return chips;
+											})(),
 											account.protected
 												? h("span", { style: { ...chipStyle, background: "rgba(207,152,47,.14)", color: "#cf9832" } }, t("accounts.first"))
 												: null,
@@ -1496,6 +1591,34 @@ window.__ModuleLoader__.load({
 										]),
 										h("div", { style: { fontSize: "12px", color: "var(--dsw-alias-label-tertiary, #8b949e)" } },
 											t("accounts.lastLogin") + ": " + (account.lastLoginAt ? new Date(account.lastLoginAt).toLocaleString() : "—")),
+										editFor === account.username
+											? h("div", { style: { display: "flex", alignItems: "flex-end", gap: "8px", flexWrap: "wrap", padding: "6px 0" } }, [
+												h("div", { style: { flex: "1 1 200px", position: "relative" } }, [
+													h("button", { type: "button", style: { ...fieldStyle, textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" }, onClick: () => setEditOpen((v) => !v) }, [
+														h("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1" } }, editWorkspaces.length > 0 ? editWorkspaces.join("、") : t("accounts.workspacesPlaceholder")),
+														h("span", { style: { fontSize: "10px", color: "var(--dsw-alias-label-tertiary, #8b949e)" } }, editOpen ? "▲" : "▼")
+													]),
+													editOpen ? h("div", { style: { position: "absolute", top: "calc(100% + 4px)", left: "0", right: "0", zIndex: "20", background: "var(--dsw-specific-menu, #161b22)", border: "1px solid var(--dsw-alias-border-l2, #30363d)", borderRadius: "8px", boxShadow: "0 8px 24px rgba(0,0,0,.35)", padding: "4px", maxHeight: "220px", overflow: "auto" } }, [
+														(configOptions.workspaces || []).map((w) => {
+															const checked = editWorkspaces.indexOf(w.title) !== -1;
+															return h("div", { key: w.title, style: { display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px", borderRadius: "6px", cursor: "pointer" }, onClick: () => setEditWorkspaces((arr) => checked ? arr.filter((t) => t !== w.title) : [...arr, w.title]) }, [
+																h("span", { style: { width: "16px", height: "16px", flex: "none", display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: "4px", fontSize: "12px", border: "1px solid " + (checked ? "var(--dsw-alias-state-business-primary, #4c8bf5)" : "var(--dsw-alias-border-l2, #30363d)"), background: checked ? "rgba(76,139,245,.16)" : "transparent", color: "var(--dsw-alias-state-business-primary, #4c8bf5)" } }, checked ? "✓" : ""),
+																h("span", { style: { fontSize: "13px", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, w.title)
+															]);
+														}),
+														h("button", { type: "button", style: { ...buttonStyle, width: "100%", marginTop: "4px" }, onClick: () => setEditOpen(false) }, t("accounts.confirm"))
+													]) : null
+												]),
+												h("div", { style: { flex: "1 1 160px" } }, [
+													h("select", { style: fieldStyle, value: editPreset, onChange: (e) => setEditPreset(e.target.value) }, [
+														h("option", { value: "" }, "—"),
+														(configOptions.presets || []).map((p) => h("option", { key: p.id, value: p.id }, p.name || p.id))
+													])
+												]),
+												h("button", { type: "button", style: buttonStyle, onClick: saveEdit }, t("accounts.save")),
+												h("button", { type: "button", style: ghostButtonStyle, onClick: () => setEditFor(null) }, t("accounts.cancel"))
+											])
+											: null,
 										h("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } }, [
 											account.mfa && mfaResetFor === account.username
 												? h("form", { key: "mfa-reset", onSubmit: (e) => mfaResetSubmit(e, account.username), style: { display: "flex", gap: "6px", alignItems: "center" } }, [
@@ -1511,6 +1634,9 @@ window.__ModuleLoader__.load({
 													h("button", { type: "submit", style: buttonStyle }, t("accounts.save"))
 												])
 												: h("button", { style: ghostButtonStyle, onClick: () => setResetFor(account.username) }, t("accounts.reset")),
+											account.role !== "admin"
+												? h("button", { style: ghostButtonStyle, onClick: () => startEdit(account) }, t("accounts.edit"))
+												: null,
 											h("span", { style: { flex: 1 } }),
 											account.protected
 												? h("span", { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary, #8b949e)" } }, t("accounts.protectedHint"))

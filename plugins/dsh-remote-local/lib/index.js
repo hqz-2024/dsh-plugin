@@ -702,6 +702,36 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	const DIAG = join(dshHomePath(), "plugins", "dsh-remote-local", "run-diag.log");
 	const diag = (msg) => { try { appendFileSync(DIAG, new Date().toISOString() + " " + msg + "\n"); } catch { /* ignore */ } };
 	diag("apply: roleMap=" + JSON.stringify(cfg.roleMap) + " enforceRoles=" + cfg.enforceRoles + " adminOnly=" + cfg.adminOnly);
+	// ── dynamic role-map (runtime-editable per-account workspace/preset) ──
+	// Settings > 登录与账号 assigns each account a preset + one or more
+	// workspaces; that lands in auth/role-map.json and merges over the static
+	// `roleMap` in cordis.patch.yml, so UI-configured accounts drive the same
+	// confinement + session isolation as the seeded ones.
+	const ROLEMAP_PATH = join(dshHomePath(), "auth", "role-map.json");
+	let roleMapCache = null;
+	const dynamicRoleMap = () => {
+		if (roleMapCache === null) {
+			try { roleMapCache = JSON.parse(readFileSync(ROLEMAP_PATH, "utf8")); } catch { roleMapCache = null; }
+		}
+		if (roleMapCache === null || typeof roleMapCache !== "object") roleMapCache = {};
+		return roleMapCache;
+	};
+	const saveRoleMap = () => {
+		try { writeFileSync(ROLEMAP_PATH, JSON.stringify(roleMapCache ?? {}, null, 2)); } catch { /* keep in memory */ }
+	};
+	const normalizeMapping = (m) => {
+		if (!m || typeof m !== "object") return { preset: null, workspaces: [] };
+		const workspaces = (Array.isArray(m.workspaces) && m.workspaces.length > 0)
+			? m.workspaces.map((s) => String(s || "").trim()).filter(Boolean)
+			: (typeof m.workspace === "string" && m.workspace.trim() ? [m.workspace.trim()] : []);
+		return { preset: typeof m.preset === "string" && m.preset ? m.preset : null, workspaces };
+	};
+	const effectiveRoleMap = () => {
+		const out = {};
+		for (const [k, v] of Object.entries(cfg.roleMap ?? {})) out[k] = normalizeMapping(v);
+		for (const [k, v] of Object.entries(dynamicRoleMap())) out[k] = normalizeMapping(v);
+		return out;
+	};
 	// ── per-role workspace confinement (P5 hardening, 2026-09-02) ──────────
 	// Mapped (non-admin) accounts are confined to their workspace folder:
 	// every session on a mapped preset is pinned to sandbox `workspace-write`
@@ -711,26 +741,33 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	// permission-presets pins the settings default (danger-full-access) first
 	// on `session/created`; this plugin registers later, so its appended
 	// events fold LAST and win. Existing sessions are pinned at startup.
-	const confinedPresets = new Set(Object.values(cfg.roleMap ?? {}).map((m) => m?.preset).filter((p) => typeof p === "string" && p.length > 0));
 	const normPath = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-	let confinedWorkspacePaths = [];
-	try {
-		const registry = ctx.get("workspaceRegistry");
-		if (registry?.list) {
-			confinedWorkspacePaths = Object.values(cfg.roleMap ?? {})
-				.map((m) => registry.list().find((w) => w.title === m?.workspace)?.path)
-				.filter((p) => typeof p === "string" && p.length > 0)
-				.map(normPath);
-		}
-	} catch { /* registry not ready yet; the preset match still applies */ }
+	const confinedWorkspacePaths = () => {
+		try {
+			const list = ctx.get("workspaceRegistry")?.list?.() ?? [];
+			const byTitle = new Map(list.map((w) => [w.title, w.path]));
+			const out = [];
+			for (const m of Object.values(effectiveRoleMap())) {
+				for (const ws of m.workspaces) {
+					const p = byTitle.get(ws);
+					if (typeof p === "string" && p.length > 0) out.push(normPath(p));
+				}
+			}
+			return out;
+		} catch { return []; }
+	};
 	const isConfinedSession = (session) => {
+		const map = effectiveRoleMap();
+		const confinedPresets = new Set(Object.values(map).map((m) => m.preset).filter((p) => typeof p === "string" && p.length > 0));
 		const preset = session?.header?.agentPreset;
 		if (typeof preset === "string" && confinedPresets.has(preset)) return true;
 		const cwd = session?.header?.cwd;
-		return typeof cwd === "string" && confinedWorkspacePaths.includes(normPath(cwd));
+		if (typeof cwd !== "string") return false;
+		const n = normPath(cwd);
+		return confinedWorkspacePaths().some((p) => n === p || n.indexOf(p + "/") === 0);
 	};
 	const confineSession = (session) => {
-		if (confinedPresets.size === 0 || !isConfinedSession(session)) return;
+		if (!isConfinedSession(session)) return;
 		let state = null;
 		try { state = ctx.get("sessionProjections")?.stateOf?.(session, "permissions") ?? null; } catch { /* not folded yet */ }
 		if (state !== null && state.sandbox === "workspace-write" && state.approval === "never") return;
@@ -769,14 +806,15 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	// would let a mapped account browse/rename/delete inside other workspaces
 	// (e.g. the admin's repo). Resolve the mapped workspace path and a
 	// containment check used by the /dsh-ftree-* gate below.
-	const mappedWorkspacePathOf = (username) => {
-		const mapping = cfg.roleMap?.[username];
-		if (!mapping?.workspace) return null;
+	const mappedWorkspacePathsOf = (username) => {
+		const mapping = effectiveRoleMap()[username];
+		if (!mapping || mapping.workspaces.length === 0) return [];
 		try {
-			const registry = ctx.get("workspaceRegistry");
-			const found = registry?.list?.().find((w) => w.title === mapping.workspace);
-			return typeof found?.path === "string" ? found.path : null;
-		} catch { return null; }
+			const list = ctx.get("workspaceRegistry")?.list?.() ?? [];
+			return mapping.workspaces
+				.map((title) => list.find((w) => w.title === title)?.path)
+				.filter((p) => typeof p === "string" && p.length > 0);
+		} catch { return []; }
 	};
 	const normFtreePath = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 	const pathUnderRoot = (rawPath, root) => {
@@ -975,7 +1013,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	// title via the workspace registry) sets the created session's workspace.
 	// Server-side authority: mapped accounts are rewritten even when the
 	// client asked for a different preset/workspace.
-		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select" && method !== "session.list") return null; 			const mapping = cfg.roleMap?.[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "session.list") { 				const request = { ...(args.request ?? {}), scopeUser: username }; 				args.request = request; 				changed = true; 			} else if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspace) { 				const registry = ctx.get("workspaceRegistry"); 				const target = registry?.list?.().find((w) => w.title === mapping.workspace); 				if (target !== undefined) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					if (request.workspaceId !== target.id) { request.workspaceId = target.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
+		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select" && method !== "session.list") return null; 			const mapping = effectiveRoleMap()[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "session.list") { 				const request = { ...(args.request ?? {}), scopeUser: username }; 				args.request = request; 				changed = true; 			} else if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspaces.length > 0) { 				const registry = ctx.get("workspaceRegistry"); 				const allowed = registry?.list?.().filter((w) => mapping.workspaces.indexOf(w.title) !== -1) ?? []; 				if (allowed.length > 0) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					const chosen = allowed.find((w) => w.id === request.workspaceId) ?? allowed[0]; if (request.workspaceId !== chosen.id) { request.workspaceId = chosen.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
 	const roleGate = async (req, role, username) => {
 		const pathname = pathnameOf(req);
 		const body = req.method === "POST"
@@ -1046,11 +1084,11 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 					return;
 				}
 				if (verdict.user.role !== "admin") {
-					const mappedRoot = mappedWorkspacePathOf(verdict.user.username);
+					const mappedRoots = mappedWorkspacePathsOf(verdict.user.username);
 					const isMeta = gatePath === "/dsh-ftree-meta" || gatePath === "/dsh-ftree-token";
 					const isQueryPathPost = gatePath === "/dsh-ftree-upload" || gatePath === "/dsh-ftree-write" || gatePath === "/dsh-ftree-xlsx-save";
 					let allowed = isMeta;
-					if (!isMeta && mappedRoot !== null) {
+					if (!isMeta && mappedRoots.length > 0) {
 						const candidates = [];
 						try {
 							const qs = (req.url ?? "").split("?")[1] ?? "";
@@ -1069,7 +1107,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 									if (typeof parsed?.[k] === "string" && parsed[k].length > 0) candidates.push(parsed[k]);
 								}
 							} catch { /* unparsable body fails closed below */ }
-							if (candidates.length > 0 && candidates.every((p) => pathUnderRoot(p, mappedRoot))) {
+							if (candidates.length > 0 && candidates.every((p) => mappedRoots.some((root) => pathUnderRoot(p, root)))) {
 								allowed = true;
 								diag("ftree POST ok " + gatePath + " user=" + verdict.user.username + " paths=" + candidates.join("|"));
 								// Body already consumed — replay it straight to the pane.
@@ -1078,7 +1116,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 						} else {
 							// GETs and query-path POSTs (upload/write/xlsx-save): validate the query path
 							// only; the request body (if any) stays unconsumed.
-							allowed = candidates.length > 0 && candidates.every((p) => pathUnderRoot(p, mappedRoot));
+							allowed = candidates.length > 0 && candidates.every((p) => mappedRoots.some((root) => pathUnderRoot(p, root)));
 						}
 					}
 					if (!allowed) {
@@ -1104,7 +1142,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 							
 							const methodDot = env.method.replace(/\//g, ".");
 							diag("req method=" + methodDot + " user=" + verdict.user.username + " role=" + verdict.user.role);
-							const mapping = cfg.roleMap?.[verdict.user.username];
+							const mapping = effectiveRoleMap()[verdict.user.username];
 							// Fail closed for non-admin accounts without a roleMap
 							// entry: no configured role means no session surface at
 							// all until an admin maps the account (an unmapped
@@ -1115,7 +1153,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 								denyRpcEnvelope(outRes, body, "account not assigned a workspace role");
 								return;
 							}
-							const mappedWs = mapping?.workspace ?? null;
+							const mappedWs = mapping?.workspaces?.length > 0 ? mapping.workspaces : null;
 							if (NON_ADMIN_DENY.has(methodDot) || (verdict.user.role === "guest" && GUEST_DENY.has(methodDot))) {
 								denyRpcEnvelope(outRes, body, "forbidden for role " + verdict.user.role);
 								return;
@@ -1146,8 +1184,8 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 										denyRpcEnvelope(outRes, body, "session is hidden");
 										return;
 									}
-									const mappedRootPath = mappedWorkspacePathOf(verdict.user.username);
-									if (mappedRootPath !== null && (sessionCwd === null || !pathUnderRoot(sessionCwd, mappedRootPath))) {
+									const mappedRootPaths = mappedWorkspacePathsOf(verdict.user.username);
+									if (mappedRootPaths.length > 0 && (sessionCwd === null || !mappedRootPaths.some((root) => pathUnderRoot(sessionCwd, root)))) {
 										diag("deny session op " + methodDot + " session=" + sessionId + " cwd outside mapped workspace (" + String(sessionCwd) + ")");
 										denyRpcEnvelope(outRes, body, "session outside your workspace");
 										return;
@@ -1557,10 +1595,10 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		if (verdict.ok) {
 			try {
 				const registry = ctx.get("workspaceRegistry");
-				const mapping = cfg.roleMap?.[verdict.user.username];
-				const allowedTitle = mapping?.workspace ?? null;
+				const mapping = effectiveRoleMap()[verdict.user.username];
+				const allowedTitles = (mapping && Array.isArray(mapping.workspaces)) ? mapping.workspaces : [];
 				const wsList = registry?.list?.() ?? [];
-				workspaces = wsList.map((w) => ({ title: w.title, allowed: verdict.user.role === "admin" ? true : w.title === allowedTitle }));
+				workspaces = wsList.map((w) => ({ title: w.title, allowed: verdict.user.role === "admin" ? true : allowedTitles.indexOf(w.title) !== -1 }));
 				hiddenWorkspaceTitles = wsList.filter((w) => hiddenState().workspaces.indexOf(w.id) !== -1).map((w) => w.title);
 				const hiddenIds = hiddenState().sessions;
 				if (hiddenIds.length > 0) {
@@ -1644,6 +1682,22 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		saveHidden();
 		diag("hide saved kind=" + kind + " id=" + id + " hidden=" + hidden);
 		json(res, 200, { ok: true, hidden, id });
+	};
+	const handleConfigOptions = async (req, res) => {
+		if (req.method !== "GET") { denyJson(res, 405, "method not allowed"); return; }
+		const verdict = requireAuth(req);
+		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
+		if (verdict.user.role !== "admin") { denyJson(res, 403, "admin required"); return; }
+		let workspaces = [];
+		let presets = [];
+		try {
+			workspaces = (ctx.get("workspaceRegistry")?.list?.() ?? []).map((w) => ({ title: w.title, path: w.path }));
+		} catch { /* ignore */ }
+		try {
+			const list = await ctx.get("agentPresets")?.list?.();
+			presets = (list ?? []).map((p) => ({ id: p.id, name: p.name ?? p.id, description: p.description ?? "" }));
+		} catch { /* ignore */ }
+		json(res, 200, { ok: true, workspaces, presets });
 	};
 	const handleBootstrap = async (req, res) => {
 		if (req.method !== "POST") {
@@ -1738,7 +1792,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		}
 		const action = typeof input?.action === "string" ? input.action : "";
 		if (action === "list") {
-			json(res, 200, { ok: true, accounts: store.list() });
+			json(res, 200, { ok: true, accounts: store.list(), roleMap: effectiveRoleMap() });
 			return;
 		}
 		if (action === "upsert") {
@@ -1772,6 +1826,19 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			const passwordHash = password ? hashPasswordSync(password) : undefined;
 			store.upsert({ username, role, passwordHash });
 			store.save();
+			// Role-map: UI-assigned workspace(s) + preset (non-admin accounts only).
+			if (role !== "admin" && (input?.workspaces !== undefined || input?.preset !== undefined)) {
+				const rm = dynamicRoleMap();
+				const workspaces = Array.isArray(input.workspaces) ? input.workspaces.map((s) => String(s || "").trim()).filter(Boolean) : [];
+				const preset = typeof input.preset === "string" ? input.preset.trim() : "";
+				if (workspaces.length > 0 || preset) {
+					rm[username] = { ...(rm[username] ?? {}), ...(workspaces.length > 0 ? { workspaces } : {}), ...(preset ? { preset } : {}) };
+				} else {
+					delete rm[username];
+				}
+				saveRoleMap();
+				diag("roleMap upsert " + username + " -> " + JSON.stringify(rm[username] ?? null));
+			}
 			json(res, 200, { ok: true, account: store.list().find((a) => a.username === username) });
 			return;
 		}
@@ -1792,6 +1859,11 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			}
 			const removed = store.remove(username);
 			store.save();
+			if (removed) {
+				delete dynamicRoleMap()[username];
+				saveRoleMap();
+				diag("roleMap remove " + username);
+			}
 			json(res, 200, { ok: true, removed });
 			return;
 		}
@@ -2065,6 +2137,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/settings-refresh", handler: handleSettingsRefresh }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/accounts", handler: handleAccounts }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/hide", handler: handleHide }));
+		disposers.push(originalRegister({ kind: "exact", path: "/auth/config-options", handler: handleConfigOptions }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/login", handler: handleMfaLogin }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/setup", handler: handleMfaSetup }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/verify", handler: handleMfaVerify }));

@@ -1,0 +1,78 @@
+# 研发开发 preset — confined agent (local fork, 2026-09-04).
+#
+# AGENT-PLANE composition derived from `finance-manager`. Confined tool set:
+# filesystem + skills + compaction + ask-user/todo. Shell / web / subagent /
+# workflow / goal / plan tools are removed on purpose (no arbitrary command
+# execution, no network egress, no delegation).
+#
+# The file-effect boundary is enforced host-side: the dsh-remote fork pins a
+# non-admin session on this preset to sandbox `workspace-write` + approval
+# `never` (no escalation).
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      你是「研发开发」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
+      职责：需求分析与拆解、技术方案与设计文档、代码编写与修改（工作区内文件）、测试用例与缺陷记录、技术文档与项目进度管理。
+      行为约束：
+      1. 涉及生产环境、对外发布、删除代码/文档等操作，先向用户确认再执行；
+      2. 修改代码前先阅读相关文件并说明改动；不删除历史版本，保留必要备份；
+      3. 写代码时先明确需求和边界，输出关键说明（用途、输入输出、风险点）；
+      4. 输出以文档/代码/表格为主，技术方案与文档结构清晰、可执行；
+      5. 文件操作仅限本账号工作区文件夹，可读写代码与文档，但无法运行系统命令或访问工作区以外的文件空间；
+      6. 可以用 local_run 工具操作「本账号」的 Windows 本机（需该机已启动 sidecar）：跑 PowerShell/脚本、编辑本机 Office/PDF。执行有副作用的命令前必须先向用户确认，并遵守 local-bridge/AGENTS.md 的规范。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── interaction helpers ─────────────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true

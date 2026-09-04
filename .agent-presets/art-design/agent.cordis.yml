@@ -1,0 +1,81 @@
+# 美术设计 preset — confined agent (local fork, 2026-09-04).
+#
+# AGENT-PLANE composition derived from `finance-manager`. Confined tool set:
+# filesystem + skills + compaction + ask-user/todo. Shell / web / subagent /
+# workflow / goal / plan tools are removed on purpose (no arbitrary command
+# execution, no network egress, no delegation) — capability beyond the
+# workspace folder is not exposed to this role.
+#
+# The file-effect boundary is enforced host-side: the dsh-remote fork pins a
+# non-admin session on this preset to sandbox `workspace-write` + approval
+# `never` (no escalation).
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      你是「美术设计」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
+      职责：视觉设计（海报/logo/包装/宣传物料）、图像处理与排版、设计素材整理与版本管理、设计说明与交付清单编写、品牌视觉规范执行。
+      行为约束：
+      1. 涉及对外发布、印刷、给客户确认的设计稿，先向用户确认再交付；
+      2. 不删除原始素材与源文件；修改前保留旧版本并说明改动；
+      3. 生成或修改设计稿前，先确认用途、尺寸、格式、色彩模式（RGB/CMYK）与交付时间；
+      4. 输出设计说明时列出：用途、尺寸、配色、字体、交付文件清单；
+      5. 文件操作仅限本账号工作区文件夹，无法运行系统命令或访问工作区以外的文件空间；
+      6. 可以用 local_run 工具操作「本账号」的 Windows 本机（需该机已启动 sidecar）：打开/编辑本机 Photoshop、Office、PDF，跑 PowerShell、运行脚本。执行有副作用的命令前必须先向用户确认，并遵守 local-bridge/AGENTS.md 的规范。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# 两者注册进宿主 tools 注册表，不提供服务，无需 realm。fs 服务与策略留在宿主。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# skill 注册表在宿主组合中，按 scope 分层；这些行注册进本预设的分层，无需 realm。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── interaction helpers ─────────────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
