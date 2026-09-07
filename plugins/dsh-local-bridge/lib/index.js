@@ -20,7 +20,7 @@
 import { WebSocketServer } from 'ws';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 
 const { createRequire } = await import('module');
@@ -44,6 +44,21 @@ export function apply(ctx, config) {
 	const byToken = new Map(Object.entries(tokens).map(([t, u]) => [t, String(u)]));
 	const clients = new Map(); // username -> Set<WebSocket>
 	const log = (msg) => { if (ctx.logger) ctx.logger.info('[local-bridge] ' + msg); };
+	// LOCAL FORK (2026-09-07): expose token/connection state to the settings UI
+	// via a cordis service, so dsh-remote-local can render a "本地插件" section
+	// without reaching into this plugin's internals.
+	const tokenFor = (username) => {
+		for (const [t, u] of Object.entries(tokens)) {
+			if (String(u) === String(username)) return t;
+		}
+		return null;
+	};
+	const isConnected = (username) => {
+		const set = clients.get(username);
+		return !!(set && set.size > 0);
+	};
+	const disposeBridge = ctx.provide('localBridge', { tokenFor, isConnected });
+	ctx.effect(() => () => { disposeBridge(); }, 'local-bridge: service');
 
 	/** Resolve the session owner from the shared ownership map (fail-open to admin). */
 	const ownerOfSession = (sessionId) => {
@@ -101,6 +116,28 @@ export function apply(ctx, config) {
 		path: '/sidecar',
 		handler: (req, socket, head) => {
 			wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+		}
+	}));
+
+	// LOCAL FORK (2026-09-07): serve sidecar.mjs for download from the settings UI.
+	const sidecarDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'sidecar');
+	disposers.push(webServer.register({
+		kind: 'exact',
+		path: '/dsh-local-bridge/sidecar.mjs',
+		handler: (req, res) => {
+			try {
+				const content = readFileSync(join(sidecarDir, 'sidecar.mjs'), 'utf8');
+				res.writeHead(200, {
+					'Content-Type': 'text/javascript; charset=utf-8',
+					'Content-Disposition': 'attachment; filename="sidecar.mjs"',
+					'Content-Length': Buffer.byteLength(content),
+					'Cache-Control': 'no-store'
+				});
+				res.end(content);
+			} catch (e) {
+				res.writeHead(404);
+				res.end('sidecar.mjs not found');
+			}
 		}
 	}));
 

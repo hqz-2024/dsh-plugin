@@ -1728,6 +1728,31 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		} catch { /* ignore */ }
 		json(res, 200, { ok: true, workspaces, presets });
 	};
+	const handleLocalPlugins = async (req, res) => {
+		if (req.method !== "GET") { denyJson(res, 405, "method not allowed"); return; }
+		const verdict = requireAuth(req);
+		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
+		const username = verdict.user.username;
+		const bridge = ctx.get("localBridge");
+		let token = null;
+		let connected = false;
+		if (bridge) {
+			token = typeof bridge.tokenFor === "function" ? bridge.tokenFor(username) : null;
+			connected = typeof bridge.isConnected === "function" ? bridge.isConnected(username) : false;
+		}
+		json(res, 200, {
+			ok: true,
+			plugins: [{
+				id: "sidecar",
+				name: "sidecar 本机助手",
+				description: "让 agent 操作本账号的 Windows 本机：PowerShell / Office / PDF / Photoshop / Blender 脚本。",
+				downloadUrl: "/dsh-local-bridge/sidecar.mjs",
+				filename: "sidecar.mjs"
+			}],
+			token,
+			connected
+		});
+	};
 	const handleBootstrap = async (req, res) => {
 		if (req.method !== "POST") {
 			denyJson(res, 405, "method not allowed");
@@ -2167,6 +2192,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/accounts", handler: handleAccounts }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/hide", handler: handleHide }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/config-options", handler: handleConfigOptions }));
+		disposers.push(originalRegister({ kind: "exact", path: "/auth/local-plugins", handler: handleLocalPlugins }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/login", handler: handleMfaLogin }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/setup", handler: handleMfaSetup }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/verify", handler: handleMfaVerify }));

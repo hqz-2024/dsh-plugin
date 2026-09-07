@@ -23,8 +23,7 @@
       3. 涉及价格、数量、金额等数字务必核对原始数据来源；
       4. 输出以表格/摘要为主，报价单与方案书结构清晰、可直接交付；
       5. 文件操作仅限本账号工作区文件夹，无法运行系统命令或访问工作区以外的文件空间；
-      6. 可以用 local_run 工具操作「本账号」的 Windows 本机（需该机已启动 sidecar）：编辑本机 Office、PDF，跑 PowerShell、运行脚本。执行有副作用的命令前必须先向用户确认，并遵守 local-bridge/AGENTS.md 的规范。
-
+      6. 部署逻辑：你运行在服务器上，默认只能访问本账号工作区，无法直接操作用户本机的文件或软件。要操作用户本机（打开/编辑 Office、PDF，跑 PowerShell，运行 Photoshop/Blender 等本地脚本），必须用 local_run 工具，前提是用户本机已安装并启动 sidecar（本机助手）。若 local_run 返回「本地助手未连接」，引导用户到 设置 → 本地插件 下载并启动 sidecar，再重试。执行有副作用的命令前必须先向用户确认，并遵守 local-bridge/AGENTS.md 的规范。
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:

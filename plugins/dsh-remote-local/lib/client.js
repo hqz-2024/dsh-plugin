@@ -54,6 +54,17 @@ window.__ModuleLoader__.load({
 		const copy = {
 			zh: {
 				"settings.title": "登录与账号",
+				"localPlugins.title": "本地插件",
+				"localPlugins.intro": "以下插件需安装到用户本机才能生效。下载后按说明在本机启动。",
+				"localPlugins.download": "下载",
+				"localPlugins.token": "本账号 token",
+				"localPlugins.copy": "复制",
+				"localPlugins.copied": "已复制",
+				"localPlugins.connected": "已连接",
+				"localPlugins.disconnected": "未连接",
+				"localPlugins.usage": "启动命令",
+				"localPlugins.usageHint": "把 sidecar.mjs 保存到本机后，运行下面命令（token 已填入）：",
+				"localPlugins.none": "暂无需要本地安装的插件",
 				"status.enabled": "认证已启用",
 				"status.disabled": "认证未启用",
 				"status.current": "当前登录",
@@ -157,6 +168,17 @@ window.__ModuleLoader__.load({
 			},
 			en: {
 				"settings.title": "Auth & Accounts",
+				"localPlugins.title": "Local Plugins",
+				"localPlugins.intro": "These plugins must be installed on your own machine to work. Download and start them as described.",
+				"localPlugins.download": "Download",
+				"localPlugins.token": "Your token",
+				"localPlugins.copy": "Copy",
+				"localPlugins.copied": "Copied",
+				"localPlugins.connected": "Connected",
+				"localPlugins.disconnected": "Not connected",
+				"localPlugins.usage": "Start command",
+				"localPlugins.usageHint": "After saving sidecar.mjs locally, run (token pre-filled):",
+				"localPlugins.none": "No local plugins to install",
 				"status.enabled": "Authentication enabled",
 				"status.disabled": "Authentication disabled",
 				"status.current": "Signed in as",
@@ -1302,6 +1324,71 @@ window.__ModuleLoader__.load({
 			]);
 		}
 
+		// ── Settings > 本地插件 ─────────────────────────────────────────────────
+		function LocalPluginsSection() {
+			useLocale();
+			const [lp, setLp] = react.useState({ status: "loading", plugins: [], token: "", connected: false });
+			const [copied, setCopied] = react.useState("");
+
+			const loadLp = react.useCallback(async () => {
+				const r = await fetchJson("/auth/local-plugins");
+				if (r && r.ok) setLp({ status: "ready", plugins: r.plugins || [], token: r.token || "", connected: !!r.connected });
+				else setLp({ status: "ready", plugins: [], token: "", connected: false });
+			}, []);
+			react.useEffect(() => { loadLp(); }, [loadLp]);
+
+			const copyText = (text, key) => {
+				const done = () => { setCopied(key); setTimeout(() => setCopied(""), 1500); };
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(text).then(done).catch(() => {});
+				} else {
+					const ta = document.createElement("textarea");
+					ta.value = text; document.body.appendChild(ta); ta.select();
+					try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+					document.body.removeChild(ta);
+				}
+			};
+
+			const host = (typeof window !== "undefined" && window.location && window.location.hostname) ? window.location.hostname : "";
+			const startCmd = lp.token
+				? 'set NODE_TLS_REJECT_UNAUTHORIZED=0 && node sidecar.mjs --server wss://' + host + ':8443/sidecar --token ' + lp.token
+				: "";
+
+			return h("div", { style: { padding: "4px 0" } }, [
+				h("h3", { style: { margin: "0 0 4px", fontSize: "14px", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, t("localPlugins.title")),
+				h("div", { style: { ...mutedStyle, marginBottom: "10px" } }, t("localPlugins.intro")),
+				lp.plugins.length === 0
+					? h("div", { style: mutedStyle }, t("localPlugins.none"))
+					: lp.plugins.map((p) =>
+						h("div", { key: p.id, style: { border: "1px solid var(--dsw-alias-border-l2, #30363d)", borderRadius: "10px", padding: "12px", marginBottom: "10px" } }, [
+							h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" } }, [
+								h("div", { style: { flex: "1" } }, [
+									h("div", { style: { fontSize: "13px", fontWeight: "600", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, p.name),
+									h("div", { style: { ...mutedStyle, marginTop: "2px" } }, p.description),
+									h("div", { style: { marginTop: "6px" } },
+										h("span", { style: chipStyle }, lp.connected ? t("localPlugins.connected") : t("localPlugins.disconnected")))
+								]),
+								h("a", { href: p.downloadUrl, download: p.filename, style: { ...buttonStyle, textDecoration: "none", display: "inline-block" } }, t("localPlugins.download"))
+							]),
+							lp.token
+								? h("div", { style: { marginTop: "10px" } }, [
+									h("label", { style: labelStyle }, t("localPlugins.token")),
+									h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } }, [
+										h("input", { readOnly: true, value: lp.token, style: { ...fieldStyle, flex: "1", fontFamily: "monospace" } }),
+										h("button", { type: "button", style: ghostButtonStyle, onClick: () => copyText(lp.token, "token") }, copied === "token" ? t("localPlugins.copied") : t("localPlugins.copy"))
+									]),
+									h("label", { style: labelStyle }, t("localPlugins.usage")),
+									h("div", { style: { ...mutedStyle, marginBottom: "4px" } }, t("localPlugins.usageHint")),
+									h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } }, [
+										h("input", { readOnly: true, value: startCmd, style: { ...fieldStyle, flex: "1", fontFamily: "monospace", fontSize: "12px" } }),
+										h("button", { type: "button", style: ghostButtonStyle, onClick: () => copyText(startCmd, "cmd") }, copied === "cmd" ? t("localPlugins.copied") : t("localPlugins.copy"))
+									])
+								])
+								: null
+						]))
+			]);
+		}
+
 		// ── Settings > 登录与账号 ─────────────────────────────────────────────────
 		function AuthSection() {
 			useLocale();
@@ -1926,6 +2013,14 @@ window.__ModuleLoader__.load({
 					: t("settings.title"),
 				inject: () => ({})
 			}, AuthSection));
+
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "local-plugins",
+				order: 1000,
+				label: () => t("localPlugins.title"),
+				inject: () => ({})
+			}, LocalPluginsSection));
 		}
 
 		exports.apply = apply;
