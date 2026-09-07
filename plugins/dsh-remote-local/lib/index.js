@@ -1280,6 +1280,76 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		return gated;
 	};
 
+	// ── stream-RPC ownership gate (local fork, 2026-09-07) ───────────────────
+	// The non-stream RPC gate (wrapHttp) does not cover `mode: 'stream'` Remote
+	// methods (session.follow / session.control), which ride the `/api/remote.mux`
+	// WebSocket. Parse the first client text frame (the `open` message) and deny
+	// `session.follow` for a session owned by another account. Fail-open: any
+	// parse failure lets the frame through (a missed gate is safer than breaking
+	// the live chat stream).
+	const firstOpenMessage = (buf) => {
+		if (!buf || buf.length < 2) return null;
+		const b0 = buf[0];
+		const b1 = buf[1];
+		if ((b0 & 0x0f) !== 0x1) return null; // first frame must be an unfragmented text frame
+		let len = b1 & 0x7f;
+		let off = 2;
+		if (len === 126) {
+			if (buf.length < 4) return null;
+			len = buf.readUInt16BE(2);
+			off = 4;
+		} else if (len === 127) {
+			if (buf.length < 10) return null;
+			len = Number(buf.readBigUInt64BE(2));
+			off = 10;
+		}
+		const masked = (b1 & 0x80) !== 0;
+		let mask = null;
+		if (masked) {
+			if (buf.length < off + 4) return null;
+			mask = buf.slice(off, off + 4);
+			off += 4;
+		}
+		if (buf.length < off + len) return null; // incomplete frame
+		let payload = buf.slice(off, off + len);
+		if (masked && mask) {
+			const out = Buffer.alloc(len);
+			for (let i = 0; i < len; i += 1) out[i] = payload[i] ^ mask[i & 3];
+			payload = out;
+		}
+		try {
+			const msg = JSON.parse(payload.toString("utf8"));
+			if (msg && msg.type === "open" && typeof msg.endpoint === "string") return msg;
+		} catch { /* not JSON */ }
+		return null;
+	};
+	const gateStreamOpen = (socket, head, username) => {
+		let buf = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
+		let checked = false;
+		const check = () => {
+			if (checked) return;
+			try {
+				const open = firstOpenMessage(buf);
+				if (open === null) return;
+				checked = true;
+				if (open.endpoint === "session/follow") {
+					const sessionId = open.payload?.args?.request?.address?.sessionId;
+					if (typeof sessionId === "string" && sessionId.length > 0) {
+						const owner = ownerOf(sessionId);
+						if (owner !== null && owner !== username) {
+							diag("deny stream follow session=" + sessionId + " owned by " + owner + " user=" + username);
+							socket.destroy();
+						}
+					}
+				}
+			} catch { /* parse failed: fail-open */ }
+		};
+		const onData = (chunk) => { buf = Buffer.concat([buf, chunk]); check(); };
+		socket.prependListener("data", onData);
+		socket.once("close", () => { socket.removeListener("data", onData); });
+		check();
+	};
+
 	const wrapUpgrade = (handler) => {
 		if (typeof handler !== "function" || handler[GATED]) return handler;
 		const gated = (req, socket, head) => {
@@ -1289,6 +1359,12 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			if (pathname !== "/sidecar" && !requireAuth(req).ok) {
 				socket.destroy();
 				return;
+			}
+			if (pathname === "/api/remote.mux") {
+				const verdict = requireAuth(req);
+				if (verdict.ok && verdict.user.role !== "admin") {
+					gateStreamOpen(socket, head, verdict.user.username);
+				}
 			}
 			normalizeForFence(req);
 			return handler(req, socket, head);
