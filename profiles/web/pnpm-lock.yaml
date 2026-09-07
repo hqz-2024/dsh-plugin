@@ -18,19 +18,19 @@ importers:
         specifier: 0.0.1-rc.5
         version: 0.0.1-rc.5(@deepseek-ai/dsh-terminal@0.0.1-rc.3)
       '@xgone/dsh-remote':
-        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-remote-local
+        specifier: link:../../plugins/dsh-remote-local
         version: link:../../plugins/dsh-remote-local
       dsh-doc:
         specifier: 0.1.1
         version: 0.1.1(@deepseek-ai/schemastery@3.18.2)
       dsh-local-bridge:
-        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-local-bridge
+        specifier: link:../../plugins/dsh-local-bridge
         version: link:../../plugins/dsh-local-bridge
       dsh-usage-panel:
-        specifier: link:C://Users//bestarc//.dsh//plugins//dsh-usage-panel-local
+        specifier: link:../../plugins/dsh-usage-panel-local
         version: link:../../plugins/dsh-usage-panel-local
       folder-tree-sh:
-        specifier: link:C://Users//bestarc//.dsh//plugins//folder-tree-sh-local
+        specifier: link:../../plugins/folder-tree-sh-local
         version: link:../../plugins/folder-tree-sh-local
 
 packages:

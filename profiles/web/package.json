@@ -5,11 +5,11 @@
     "@deepseek-ai/dsh-terminal": "0.0.1-rc.3",
     "@deepseek-ai/dsh-terminal-bash": "0.0.1-rc.3",
     "@deepseek-ai/dsh-tool-terminal": "0.0.1-rc.5",
-    "@xgone/dsh-remote": "link:C://Users//bestarc//.dsh//plugins//dsh-remote-local",
+    "@xgone/dsh-remote": "link:../../plugins/dsh-remote-local",
     "dsh-doc": "0.1.1",
-    "dsh-local-bridge": "link:C://Users//bestarc//.dsh//plugins//dsh-local-bridge",
-    "dsh-usage-panel": "link:C://Users//bestarc//.dsh//plugins//dsh-usage-panel-local",
-    "folder-tree-sh": "link:C://Users//bestarc//.dsh//plugins//folder-tree-sh-local"
+    "dsh-local-bridge": "link:../../plugins/dsh-local-bridge",
+    "dsh-usage-panel": "link:../../plugins/dsh-usage-panel-local",
+    "folder-tree-sh": "link:../../plugins/folder-tree-sh-local"
   },
   "dsh": {
     "profile": {
