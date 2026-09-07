@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# ============================================================
+# DSH 局域网部署一键安装（Linux / macOS）
+#
+# 与 install.ps1（Windows）对应。按顺序完成：
+#   0 前置检查  1 引擎拉取/安装  2 profile 依赖  3 四个插件依赖
+#   4 角色预设校验  5 渲染 cordis.patch.yml  6 .credentials.yaml
+#   7 dsh-doc（Linux/macOS 用 node 引擎，无 win32 OCR 运行时）
+#   8 Caddyfile + 启动脚本  9 自检
+#
+# 用法：
+#   bash install.sh --lan-ip <局域网IP> [--engine-dir <路径>]
+#                  [--engine-repo <url>] [--engine-branch <分支>] [--skip-engine]
+# ============================================================
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE_DIR="${ENGINE_DIR:-$HOME/deepseek-harness}"
+ENGINE_REPO="${ENGINE_REPO:-https://github.com/hqz-2024/hqz-dsh.git}"
+ENGINE_BRANCH="${ENGINE_BRANCH:-hqz-dsh}"
+LAN_IP=""
+SKIP_ENGINE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --engine-dir) ENGINE_DIR="$2"; shift 2 ;;
+    --engine-repo) ENGINE_REPO="$2"; shift 2 ;;
+    --engine-branch) ENGINE_BRANCH="$2"; shift 2 ;;
+    --lan-ip) LAN_IP="$2"; shift 2 ;;
+    --skip-engine) SKIP_ENGINE=1; shift ;;
+    *) echo "未知参数: $1" >&2; exit 2 ;;
+  esac
+done
+
+PROFILE_DIR="$ROOT/profiles/web"
+PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge)
+PRESETS=(finance-manager finance-staff art-design business-sales procurement production hr-management rd-development)
+
+step() { echo; echo "==> $1"; }
+ok()   { echo "    [ok] $1"; }
+warn() { echo "    [!!] $1"; }
+fail() { echo "    [x] $1" >&2; exit 1; }
+
+# ── 0. 前置检查 ────────────────────────────────────────────────
+step "0. 前置检查"
+command -v node >/dev/null 2>&1 || fail "未找到 node（需 Node.js 22.19+ 或 24+）"
+ok "node: $(node --version)"
+command -v pnpm >/dev/null 2>&1 || fail "未找到 pnpm（先 corepack enable）"
+ok "pnpm: $(pnpm --version)"
+command -v git >/dev/null 2>&1 || fail "未找到 git"
+
+# ── 1. 引擎 ────────────────────────────────────────────────────
+if [[ "$SKIP_ENGINE" -eq 0 ]]; then
+  step "1. deepseek-harness 引擎"
+  if [[ ! -f "$ENGINE_DIR/package.json" ]]; then
+    warn "引擎目录不存在，正在 clone $ENGINE_REPO（分支 $ENGINE_BRANCH）"
+    git clone -b "$ENGINE_BRANCH" "$ENGINE_REPO" "$ENGINE_DIR"
+  else
+    ok "引擎已存在: $ENGINE_DIR"
+  fi
+  (cd "$ENGINE_DIR" && pnpm install)
+  ok "engine pnpm install 完成"
+fi
+
+# ── 2. profile 依赖 ────────────────────────────────────────────
+step "2. profile 依赖"
+(cd "$PROFILE_DIR" && pnpm install)
+ok "profile pnpm install 完成"
+
+# ── 3. 四个插件依赖 ────────────────────────────────────────────
+step "3. 插件依赖"
+for p in "${PLUGINS[@]}"; do
+  d="$ROOT/plugins/$p"
+  if [[ ! -f "$d/package.json" ]]; then warn "插件缺失: $p"; continue; fi
+  if (cd "$d" && pnpm install); then ok "$p 依赖 ok"; else warn "$p pnpm install 失败"; fi
+done
+
+# ── 4. 角色预设 ────────────────────────────────────────────────
+step "4. 角色预设"
+for p in "${PRESETS[@]}"; do
+  [[ -f "$ROOT/.agent-presets/$p/agent.cordis.yml" ]] || warn "preset 缺失: $p"
+done
+ok "角色预设校验完成"
+
+# ── 5. 渲染 cordis.patch.yml ───────────────────────────────────
+step "5. 渲染 cordis.patch.yml"
+EXAMPLE="$PROFILE_DIR/cordis.patch.example.yml"
+TARGET="$PROFILE_DIR/cordis.patch.yml"
+[[ -f "$EXAMPLE" ]] || fail "缺模板: $EXAMPLE"
+if [[ -f "$TARGET" ]]; then
+  ok "cordis.patch.yml 已存在，跳过（避免覆盖你的 token）"
+else
+  cp "$EXAMPLE" "$TARGET"
+  sed -i.bak \
+    -e "s/<USERNAME>/$USER/g" \
+    -e "s/REPLACE_WITH_RANDOM_TOKEN_40HEX_admin/$(openssl rand -hex 20)/" \
+    -e "s/REPLACE_WITH_RANDOM_TOKEN_40HEX_finance_mgr/$(openssl rand -hex 20)/" \
+    -e "s/REPLACE_WITH_RANDOM_TOKEN_40HEX_finance_staff/$(openssl rand -hex 20)/" \
+    -e 's/engine: python/engine: node/' \
+    -e '/runtimeDir:/d' \
+    -e '/defaultOcr:/d' \
+    "$TARGET"
+  rm -f "$TARGET.bak"
+  ok "已生成 cordis.patch.yml（含 3 个新 sidecar token；dsh-doc 用 node 引擎）"
+fi
+
+# ── 6. .credentials.yaml ───────────────────────────────────────
+step "6. DEEPSEEK_API_KEY"
+CRED="$ROOT/.credentials.yaml"
+if [[ -f "$CRED" ]]; then
+  ok ".credentials.yaml 已存在"
+else
+  read -rp "请输入 DEEPSEEK_API_KEY（留空跳过）: " key
+  if [[ -n "$key" ]]; then
+    printf 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: %s\n' "$key" > "$CRED"
+    ok "已生成 .credentials.yaml"
+  else
+    warn "未填 API key，稍后手动补 .credentials.yaml"
+  fi
+fi
+
+# ── 7. dsh-doc 运行时 ──────────────────────────────────────────
+step "7. dsh-doc 运行时"
+warn "Linux/macOS 用 node 引擎（无 win32 离线 OCR 运行时）；如需中文 OCR 请用 Windows 部署"
+
+# ── 8. Caddyfile + 启动脚本 ────────────────────────────────────
+step "8. Caddyfile + 启动脚本"
+if [[ -z "$LAN_IP" ]]; then
+  read -rp "请输入服务器局域网 IP: " LAN_IP
+fi
+[[ -n "$LAN_IP" ]] || fail "未提供局域网 IP（用 --lan-ip 传入）"
+
+CADDYFILE="$ROOT/Caddyfile"
+cat > "$CADDYFILE" <<EOF
+# dsh 局域网 HTTPS 反代（由 install.sh 生成）
+# 局域网设备访问 https://$LAN_IP:8443
+https://$LAN_IP:8443 {
+	tls internal
+	reverse_proxy 127.0.0.1:3080
+}
+EOF
+ok "已生成 Caddyfile: $CADDYFILE"
+
+START="$ROOT/start-dsh-lan.sh"
+cat > "$START" <<'EOF'
+#!/usr/bin/env bash
+# DeepSeek Harness LAN deployment startup (generated by install.sh)
+LAN_IP="__LAN_IP__"
+ENGINE_DIR="__ENGINE_DIR__"
+CADDY="${CADDY:-caddy}"
+ROOT="$HOME/.dsh"
+
+echo "[dsh-lan] starting caddy reverse proxy (0.0.0.0:8443 -> 127.0.0.1:3080)..."
+"$CADDY" run --config "$ROOT/Caddyfile" &
+CADDY_PID=$!
+
+echo "[dsh-lan] starting dsh web (127.0.0.1:3080)..."
+cd "$ENGINE_DIR"
+pnpm dsh --profile web --trusted-host "$LAN_IP"
+
+kill "$CADDY_PID" 2>/dev/null || true
+EOF
+sed -i.bak "s|__LAN_IP__|$LAN_IP|; s|__ENGINE_DIR__|$ENGINE_DIR|" "$START"
+rm -f "$START.bak"
+chmod +x "$START"
+ok "已生成启动脚本: $START"
+
+if ! command -v caddy >/dev/null 2>&1; then
+  warn "未找到 caddy。安装：macOS 用 'brew install caddy'；Debian/Ubuntu 用 'sudo apt install caddy'"
+fi
+
+# ── 9. 自检（内联，等价于 verify.ps1）────────────────────────
+step "9. 自检"
+errors=0
+for p in "${PRESETS[@]}"; do
+  [[ -f "$ROOT/.agent-presets/$p/agent.cordis.yml" ]] || { echo "    [x] preset $p 缺失"; errors=1; }
+done
+[[ -f "$ROOT/skills/sidecar/SKILL.md" ]] || { echo "    [x] sidecar skill 缺失"; errors=1; }
+for p in "${PLUGINS[@]}"; do
+  [[ -f "$ROOT/plugins/$p/lib/index.js" ]] || { echo "    [x] plugin $p 源码缺失"; errors=1; }
+done
+[[ -f "$TARGET" ]] || { echo "    [x] cordis.patch.yml 缺失"; errors=1; }
+grep -q 'REPLACE_WITH_RANDOM_TOKEN' "$TARGET" && { echo "    [x] sidecar token 仍为占位符"; errors=1; }
+[[ -f "$CRED" ]] || echo "    [~] .credentials.yaml 缺失（可后补）"
+
+if [[ "$errors" -eq 0 ]]; then
+  ok "自检通过"
+else
+  fail "自检未通过（见上方 [x]）"
+fi
+
+echo
+echo "安装完成。启动：bash $START"
+echo "首次启动后用 loopback 引导创建 admin，再在设置页建账号；信任 caddy 根证书见 README.md。"

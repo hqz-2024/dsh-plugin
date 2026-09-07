@@ -52,6 +52,15 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldUser <旧用户名> -NewUser <新用户名>
 ```
 
+> **Linux / macOS**：用 `install.sh`（bash）替代 `install.ps1`：
+>
+> ```bash
+> cd ~/.dsh
+> bash install.sh --lan-ip <局域网IP>
+> ```
+>
+> 差异：Linux/macOS 的 dsh-doc 用 `engine: node`（无 win32 离线 OCR 运行时）；启动脚本为 `start-dsh-lan.sh`（`bash start-dsh-lan.sh` 启动）。备份/恢复脚本（`backup.ps1` / `migrate.ps1`）目前仅 Windows（PowerShell），Linux/macOS 可先在 Windows 上打 zip，再到 Linux/macOS 手动解压恢复数据。
+
 `migrate.ps1` 会自动：解压 → 把 `workspace.json` / `cordis.patch.yml` / `settings.yaml` 等文本里的绝对路径从 `C:\Users\<旧用户名>\` 映射成 `C:\Users\<新用户名>\` → 重命名 `sessions\` / `sessions-archived\` 下的变形目录名 → 合并进 `~\.dsh`。
 
 > ⚠ **跨用户名限制**：会话日志 `session.jsonl.zstd` 是 zstd 压缩二进制，其内部 cwd 脚本不重写；跨用户名恢复旧会话可能被拒（"session outside your workspace"）。**建议新机保持同名用户**，或由维护者做 zstd 级重映射。
