@@ -57,6 +57,7 @@ window.__ModuleLoader__.load({
 				"localPlugins.title": "本地插件",
 				"localPlugins.intro": "以下插件需安装到用户本机才能生效。下载后按说明在本机启动。",
 				"localPlugins.download": "下载",
+				"localPlugins.downloadCmd": "下载启动脚本",
 				"localPlugins.token": "本账号 token",
 				"localPlugins.copy": "复制",
 				"localPlugins.copied": "已复制",
@@ -171,6 +172,7 @@ window.__ModuleLoader__.load({
 				"localPlugins.title": "Local Plugins",
 				"localPlugins.intro": "These plugins must be installed on your own machine to work. Download and start them as described.",
 				"localPlugins.download": "Download",
+				"localPlugins.downloadCmd": "Download launcher",
 				"localPlugins.token": "Your token",
 				"localPlugins.copy": "Copy",
 				"localPlugins.copied": "Copied",
@@ -1350,6 +1352,20 @@ window.__ModuleLoader__.load({
 			};
 
 			const host = (typeof window !== "undefined" && window.location && window.location.hostname) ? window.location.hostname : "";
+			const downloadStartCmd = () => {
+				if (!lp.token || !host) return;
+				const content = '@echo off\r\n'
+					+ 'REM dsh sidecar 启动脚本（token 已填入，与 sidecar.mjs 放同一文件夹）\r\n'
+					+ 'set NODE_TLS_REJECT_UNAUTHORIZED=0\r\n'
+					+ 'node "%~dp0sidecar.mjs" --server wss://' + host + ':8443/sidecar --token ' + lp.token + '\r\n'
+					+ 'pause\r\n';
+				const blob = new Blob([content], { type: 'text/plain' });
+				const url = URL.createObjectURL(blob);
+				const a = document.createElement('a');
+				a.href = url; a.download = 'start-sidecar.cmd';
+				document.body.appendChild(a); a.click(); a.remove();
+				URL.revokeObjectURL(url);
+			};
 			const startCmd = lp.token
 				? 'set NODE_TLS_REJECT_UNAUTHORIZED=0 && node sidecar.mjs --server wss://' + host + ':8443/sidecar --token ' + lp.token
 				: "";
@@ -1368,7 +1384,10 @@ window.__ModuleLoader__.load({
 									h("div", { style: { marginTop: "6px" } },
 										h("span", { style: chipStyle }, lp.connected ? t("localPlugins.connected") : t("localPlugins.disconnected")))
 								]),
-								h("a", { href: p.downloadUrl, download: p.filename, style: { ...buttonStyle, textDecoration: "none", display: "inline-block" } }, t("localPlugins.download"))
+								h("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } }, [
+									h("a", { href: p.downloadUrl, download: p.filename, style: { ...buttonStyle, textDecoration: "none", display: "inline-block", textAlign: "center" } }, t("localPlugins.download")),
+									h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadStartCmd }, t("localPlugins.downloadCmd"))
+								])
 							]),
 							lp.token
 								? h("div", { style: { marginTop: "10px" } }, [
