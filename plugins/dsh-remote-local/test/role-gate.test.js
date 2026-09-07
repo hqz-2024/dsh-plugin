@@ -58,9 +58,11 @@ test("evaluateRoleGate: workspace.list is allowed for every role", () => {
 });
 
 test("evaluateRoleGate: GET /api skips body-based role gating", () => {
-	// session.export stays guest-denied by its own rule; the point here is a
-	// GET with no body never falls into the envelope deny branch.
-	assert.equal(evaluateRoleGate("/api/session.export", "GET", null, "user").allowed, true);
+	// session.export is admin-only (a non-admin export would dump any account's
+	// session); the point here is a GET with no body never falls into the
+	// envelope deny branch.
+	assert.equal(evaluateRoleGate("/api/session.export", "GET", null, "admin").allowed, true);
+	assert.equal(evaluateRoleGate("/api/session.export", "GET", null, "user").allowed, false);
 	assert.equal(evaluateRoleGate("/api/session.export", "GET", null, "guest").allowed, false);
 	assert.equal(evaluateRoleGate("/api/session.list", "GET", null, "guest").allowed, true);
 });
