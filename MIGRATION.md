@@ -138,6 +138,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 4. 上传 docx / xlsx 能正常预览（验证 dsh-doc 运行时）。
 5. admin 能打开用量面板（admin-only）。
 6. 每台用户机 sidecar 能连上，`local_run` 能驱动用户本机。
+7. 安全门禁：非 admin 调 `session.search` / `session.export` 返回 403；`session.follow` 拉取他人会话被断连。
 
 ---
 
