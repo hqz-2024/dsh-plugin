@@ -201,7 +201,18 @@ export function apply(ctx, config) {
 					collect: Array.isArray(args.collect) ? args.collect : []
 				};
 				log('run for ' + username + ': ' + args.command + ' ' + request.args.slice(0, 4).join(' '));
-				return sendRun(socket, request);
+				const raw = await sendRun(socket, request);
+				// Strip the wire envelope (`type`/`id`) so the returned value matches
+				// the declared output schema exactly (additionalProperties: false).
+				const out = { ok: !!(raw && raw.ok === true) };
+				if (raw) {
+					if (typeof raw.stdout === 'string') out.stdout = raw.stdout;
+					if (typeof raw.stderr === 'string') out.stderr = raw.stderr;
+					if (typeof raw.exitCode === 'number') out.exitCode = raw.exitCode;
+					if (Array.isArray(raw.files)) out.files = raw.files;
+					if (typeof raw.error === 'string') out.error = raw.error;
+				}
+				return out;
 			},
 			presentCall: (args) => ({ card: 'generic', title: '本地执行 ' + String(args.command || ''), kind: 'run', rawInput: String(args.command || '') })
 		});
