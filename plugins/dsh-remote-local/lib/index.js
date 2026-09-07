@@ -172,7 +172,7 @@ const Config = z.object({
 	trustProxy: z.boolean().default(true),
 	mfa: z.object({
 		enabled: z.boolean().default(true),
-		issuer: z.string().default("DeepSeek Harness"),
+		issuer: z.string().default("HQZ-DSH"),
 		window: z.natural().min(0).max(3).default(1),
 		backupCodes: z.natural().min(0).max(20).default(10)
 	}).default({}),

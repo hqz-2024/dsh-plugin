@@ -2040,6 +2040,35 @@ window.__ModuleLoader__.load({
 				label: () => t("localPlugins.title"),
 				inject: () => ({})
 			}, LocalPluginsSection));
+
+			// ── HQZ-DSH branding (local fork, 2026-09-07) ─────────────────────────
+			// Override the official DeepSeek/DSH brand without touching the core
+			// checkout: re-provide the generic brand slots and pin the tab title.
+			const HqzBrandMark = (props) => h("span", {
+				className: props && props.className ? props.className : undefined,
+				style: {
+					fontSize: (props && props.size ? Math.round(props.size * 0.5) : 12) + "px",
+					fontWeight: 700,
+					letterSpacing: "0.5px",
+					color: "var(--dsw-alias-label-primary, #e6edf3)",
+					lineHeight: 1
+				}
+			}, "HQZ");
+			const HqzBrandName = () => h("span", {
+				style: {
+					fontWeight: 700,
+					letterSpacing: "0.3px",
+					color: "var(--dsw-alias-label-primary, #e6edf3)",
+					whiteSpace: "nowrap"
+				}
+			}, "HQZ-DSH");
+			ctx.slots.inject("sidebar.brand.mark", () => ctx.slots.register({ name: "sidebar.brand.mark" }, HqzBrandMark));
+			ctx.slots.inject("sidebar.brand.name", () => ctx.slots.register({ name: "sidebar.brand.name" }, HqzBrandName));
+			ctx.slots.inject("conversation.hero.brand.mark", () => ctx.slots.register({ name: "conversation.hero.brand.mark" }, HqzBrandMark));
+			const pinTitle = () => { if (document.title !== "HQZ-DSH") document.title = "HQZ-DSH"; };
+			pinTitle();
+			const titleTimer = setInterval(pinTitle, 1000);
+			ctx.effect(() => () => { clearInterval(titleTimer); }, "dsh-remote: hqz title");
 		}
 
 		exports.apply = apply;

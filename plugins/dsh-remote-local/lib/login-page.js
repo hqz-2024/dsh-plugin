@@ -32,7 +32,7 @@ const STRINGS = {
 	zh: {
 		pageTitle: "登录",
 		headingBootstrap: "创建首个管理员账号",
-		headingLogin: "登录 DeepSeek Harness",
+		headingLogin: "登录 HQZ-DSH",
 		buttonBootstrap: "创建管理员账号",
 		buttonLogin: "登录",
 		hintBootstrap: "尚未配置任何账号。出于安全考虑，首个管理员账号只能在本地（loopback）创建。",
@@ -66,7 +66,7 @@ const STRINGS = {
 	en: {
 		pageTitle: "Sign in",
 		headingBootstrap: "Create the first admin account",
-		headingLogin: "Sign in to DeepSeek Harness",
+		headingLogin: "Sign in to HQZ-DSH",
 		buttonBootstrap: "Create admin account",
 		buttonLogin: "Sign in",
 		hintBootstrap: "No account is configured yet. For safety, the first admin account can only be created locally (loopback).",
@@ -108,7 +108,7 @@ const STRINGS = {
  * @param {string} [options.lang] - "zh" or "en" (default "en").
  * @returns {string} the full HTML document.
  */
-export function renderLoginPage({ bootstrap, next = "/", error = "", title = "DeepSeek Harness", lang = "en" }) {
+export function renderLoginPage({ bootstrap, next = "/", error = "", title = "HQZ-DSH", lang = "en" }) {
 	const s = STRINGS[lang === "zh" ? "zh" : "en"] ?? STRINGS.en;
 	const htmlLang = lang === "zh" ? "zh-CN" : "en";
 	const heading = bootstrap ? s.headingBootstrap : s.headingLogin;
