@@ -149,7 +149,17 @@ if (Test-Path $cred) {
 Step "7. dsh-doc OCR 运行时"
 $rt = Join-Path $Root "runtimes\dshdoc-runtime-win32-x64"
 if (Test-Path $rt) { Ok ("运行时已存在：" + $rt) }
-else { Warn ("运行时缺失（需从旧机 robocopy 或离线包拷贝）：" + $rt) }
+else {
+  $fetch = Join-Path $ProfileDir "node_modules\dsh-doc\scripts\fetch-runtime-win32-x64.mjs"
+  if (Test-Path $fetch) {
+    Warn "运行时缺失，正在从 dsh-doc GitHub Release 下载（~178MB，含 SHA-256 校验）..."
+    & $NodePath $fetch $rt
+    if (($LASTEXITCODE -eq 0) -and (Test-Path $rt)) { Ok "运行时下载 + 校验完成" }
+    else { Warn ("下载失败。可稍后手动执行：node `"" + $fetch + "`" `"" + $rt + "`"") }
+  } else {
+    Warn "dsh-doc 未安装，无法自动下载运行时（请先完成 profile/插件的 pnpm install）"
+  }
+}
 
 # ── 8. 启动脚本 + caddy ────────────────────────────────────────
 Step "8. 启动脚本"

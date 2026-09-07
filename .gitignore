@@ -17,6 +17,9 @@ auth/
 # profile 真实配置含 sidecar token，只留本地；提交脱敏版 cordis.patch.example.yml
 profiles/web/cordis.patch.yml
 
+# 备份包（含机密 + 会话数据，绝不进 git）
+backup/
+
 # ---- 运行时数据 / 会话 / 附件 ----
 sessions/
 sessions-archived/
