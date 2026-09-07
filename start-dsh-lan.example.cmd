@@ -1,15 +1,16 @@
 @echo off
 REM ============================================================
-REM DeepSeek Harness LAN deployment startup script
+REM DeepSeek Harness LAN deployment startup script（模板）
+REM 真实 start-dsh-lan.cmd 由 install.ps1 按实际路径/IP 生成，且被 gitignore。
 REM   dsh web     -> 127.0.0.1:3080  (loopback only)
 REM   caddy https -> 0.0.0.0:8443     (reverse proxy -> 3080)
-REM LAN access: https://192.168.28.239:8443
+REM LAN access: https://<局域网IP>:8443
 REM ============================================================
 
-REM 以下三行是部署时可改项（其余路径自动用 %USERPROFILE% 定位 ~/.dsh）
-set "NODE=C:\nvm4w\nodejs\node.exe"
-set "DSH_DIR=C:\Users\bestarc\Desktop\deepseek-harness"
-set "LAN_IP=192.168.28.239"
+REM 部署时可改的三处（install.ps1 会自动填入）
+set "NODE=node"
+set "DSH_DIR=%USERPROFILE%\Desktop\deepseek-harness"
+set "LAN_IP=<局域网IP>"
 
 set "CADDY=%USERPROFILE%\.dsh\bin\caddy.exe"
 set "CADDYFILE=%USERPROFILE%\.dsh\Caddyfile"

@@ -1,9 +1,10 @@
-# dsh 局域网 HTTPS 反代
-# 局域网设备访问 https://192.168.28.239:8443
+# dsh 局域网 HTTPS 反代（模板）
+# 真实 Caddyfile 由 install.ps1 按 -LanIP 生成，且被 gitignore（含机器 IP，不进仓库）。
+# 局域网设备访问 https://<局域网IP>:8443
 # 转发到本机 dsh (127.0.0.1:3080)。dsh 仍只监听本机，caddy 是唯一对外入口。
 # tls internal = caddy 本地自签证书（首次访问浏览器会提示不受信，需手动信任）。
 # reverse_proxy 自动转发 WebSocket 升级，无需额外配置。
-https://192.168.28.239:8443 {
+https://<局域网IP>:8443 {
 	tls internal
 	reverse_proxy 127.0.0.1:3080
 }

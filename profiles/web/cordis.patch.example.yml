@@ -27,7 +27,7 @@
     enforceRoles: true
     # LAN/caddy 反代场景：trustProxy 默认 true 会让 normalizeForFence 把 /api 与
     # WebSocket 请求的 Host 强改为 127.0.0.1:3080，导致 browser-auth 按
-    # 127.0.0.1:3080 找 cookie，永远匹配不上按 192.168.28.239:8443 绑定的 cookie
+    # 127.0.0.1:3080 找 cookie，永远匹配不上按 <局域网IP>:8443 绑定的 cookie
     # → 401 / 前端一直"连接中"。设 false 保留原始 Host，配合启动时的
     # --trusted-host <LAN-IP> 即可通过浏览器信任栅栏。
     trustProxy: false

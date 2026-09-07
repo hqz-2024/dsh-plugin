@@ -51,7 +51,7 @@ if (Test-Path $patch) {
 }
 $pkg = Join-Path $ProfileDir "package.json"
 $pkgRaw = Get-Content $pkg -Raw
-Check ($pkgRaw -notmatch 'link:C://|bestarc') "package.json 的 link: 为相对路径（无绝对路径）"
+Check ($pkgRaw -notmatch 'link:[A-Za-z]:') "package.json 的 link: 为相对路径（无绝对盘符路径）"
 
 # 4. 密钥与引擎
 Write-Host "  [密钥/引擎]"

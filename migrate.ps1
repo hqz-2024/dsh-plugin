@@ -15,7 +15,7 @@
 .PARAMETER Backup
   备份 zip 的路径（必填）。
 .PARAMETER OldUser
-  旧机用户名（默认 bestarc）。
+  旧机用户名（默认=当前用户名，即同名迁移，无需重映射）。
 .PARAMETER NewUser
   新机用户名（默认当前用户名）。
 .PARAMETER DshHome
@@ -24,7 +24,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$Backup,
-  [string]$OldUser = "bestarc",
+  [string]$OldUser = $env:USERNAME,
   [string]$NewUser = $env:USERNAME,
   [string]$DshHome = (Join-Path $env:USERPROFILE ".dsh")
 )

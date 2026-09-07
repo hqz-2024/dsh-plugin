@@ -30,7 +30,7 @@ param(
   [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\deepseek-harness"),
   [string]$EngineRepo = "https://github.com/hqz-2024/hqz-dsh.git",
   [string]$EngineBranch = "hqz-dsh",
-  [string]$LanIP = "192.168.28.239",
+  [string]$LanIP = "",
   [string]$NodePath = "",
   [switch]$SkipEngine
 )
@@ -161,8 +161,29 @@ else {
   }
 }
 
-# ── 8. 启动脚本 + caddy ────────────────────────────────────────
-Step "8. 启动脚本"
+# ── 8. Caddyfile + 启动脚本 ────────────────────────────────────
+Step "8. Caddyfile + 启动脚本"
+if (-not $LanIP -or $LanIP.Trim() -eq "") {
+  $LanIP = Read-Host "请输入服务器局域网 IP（如 192.168.x.x）"
+}
+if (-not $LanIP -or $LanIP.Trim() -eq "") { Fail "未提供局域网 IP（用 -LanIP 传入）" }
+
+# Caddyfile（真实文件 gitignore，含机器 IP）
+$caddyfile = Join-Path $Root "Caddyfile"
+$caddyTxt = @"
+# dsh 局域网 HTTPS 反代（由 install.ps1 生成）
+# 局域网设备访问 https://${LanIP}:8443
+# 转发到本机 dsh (127.0.0.1:3080)。dsh 仍只监听本机，caddy 是唯一对外入口。
+# tls internal = caddy 本地自签证书；reverse_proxy 自动转发 WebSocket 升级。
+https://${LanIP}:8443 {
+	tls internal
+	reverse_proxy 127.0.0.1:3080
+}
+"@
+[System.IO.File]::WriteAllText($caddyfile, $caddyTxt, (New-Object System.Text.UTF8Encoding($false)))
+Ok ("已生成 Caddyfile：" + $caddyfile)
+
+# 启动脚本（真实文件 gitignore，含机器路径）
 $start = Join-Path $Root "start-dsh-lan.cmd"
 $startTxt = @"
 @echo off
