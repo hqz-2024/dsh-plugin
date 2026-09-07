@@ -108,7 +108,10 @@ const NON_ADMIN_DENY = new Set([
 	// /compact, ...) executes through this wire method; denying it for
 	// non-admin accounts removes the in-session way to re-widen their own
 	// sandbox/approval knobs.
-	"commands.execute"
+	"commands.execute",
+	// Cross-account full-text search would leak other accounts' message
+	// content without needing a sessionId; search is an admin capability.
+	"session.search"
 ]);
 
 /** Wire methods a guest (read-only) session may not call either. */
@@ -244,7 +247,7 @@ const diag = () => {};
 
 function evaluateRoleGate(pathname, httpMethod, body, role, user, mapResolver, mappedUsers) {
 	if (!pathname.startsWith("/api/")) return { allowed: true, body: null, replayed: false };
-	if (pathname === "/api/session.export") return { allowed: role !== "guest", body: null, replayed: false };
+	if (pathname === "/api/session.export") return { allowed: role === "admin", body: null, replayed: false };
 	if (httpMethod !== "POST") return { allowed: true, body: null, replayed: false };
 	if (body === null) return { allowed: role !== "guest", body: null, replayed: false };
 	let envelope;
