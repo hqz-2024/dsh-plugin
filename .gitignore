@@ -50,3 +50,6 @@ profiles/web/.dsh-module-fallback/
 
 # ---- 插件内嵌套的独立 git 仓库 ----
 plugins/*/.git/
+
+# ---- 误生成的 0 字节杂项文件 ----
+/3080
