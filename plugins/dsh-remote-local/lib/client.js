@@ -2044,16 +2044,7 @@ window.__ModuleLoader__.load({
 			// ── HQZ-DSH branding (local fork, 2026-09-07) ─────────────────────────
 			// Override the official DeepSeek/DSH brand without touching the core
 			// checkout: re-provide the generic brand slots and pin the tab title.
-			const HqzBrandMark = (props) => h("span", {
-				className: props && props.className ? props.className : undefined,
-				style: {
-					fontSize: (props && props.size ? Math.round(props.size * 0.5) : 12) + "px",
-					fontWeight: 700,
-					letterSpacing: "0.5px",
-					color: "var(--dsw-alias-label-primary, #e6edf3)",
-					lineHeight: 1
-				}
-			}, "HQZ");
+			const HqzBrandMark = () => null;
 			const HqzBrandName = () => h("span", {
 				style: {
 					fontWeight: 700,
