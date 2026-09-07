@@ -35,7 +35,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 > bash install.sh --lan-ip <局域网IP>
 > ```
 >
-> 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复脚本目前仅 Windows。
+> 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
 脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → 校验 8 个角色预设 → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 

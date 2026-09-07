@@ -59,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 > bash install.sh --lan-ip <局域网IP>
 > ```
 >
-> 差异：Linux/macOS 的 dsh-doc 用 `engine: node`（无 win32 离线 OCR 运行时）；启动脚本为 `start-dsh-lan.sh`（`bash start-dsh-lan.sh` 启动）。备份/恢复脚本（`backup.ps1` / `migrate.ps1`）目前仅 Windows（PowerShell），Linux/macOS 可先在 Windows 上打 zip，再到 Linux/macOS 手动解压恢复数据。
+> 差异：Linux/macOS 的 dsh-doc 用 `engine: node`（无 win32 离线 OCR 运行时）；启动脚本为 `start-dsh-lan.sh`（`bash start-dsh-lan.sh` 启动）。备份/恢复用 `backup.sh` / `migrate.sh`（bash）：`bash backup.sh` 打 tar.gz，`bash migrate.sh --backup <备份> --old-user <旧用户名>` 恢复并重映射路径（`/home`、`/Users`、`C:\Users` 三种老 home 都能映射到新 home）。
 
 `migrate.ps1` 会自动：解压 → 把 `workspace.json` / `cordis.patch.yml` / `settings.yaml` 等文本里的绝对路径从 `C:\Users\<旧用户名>\` 映射成 `C:\Users\<新用户名>\` → 重命名 `sessions\` / `sessions-archived\` 下的变形目录名 → 合并进 `~\.dsh`。
 
