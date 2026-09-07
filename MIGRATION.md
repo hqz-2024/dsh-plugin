@@ -83,6 +83,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
 | `.dsh\plugins\` | 4 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local` | 必须 |
 | `.dsh\.agent-presets\` | 8 个角色预设（含 skills）+ `standard-terminal` | 必须 |
+| `.dsh\skills\` | 全局 skill（sidecar 使用规范等），各预设 agent 共用 | 必须（或由 install.ps1 git clone 带来） |
 | `.dsh\runtimes\dshdoc-runtime-win32-x64\` | dsh-doc 离线 Python 运行时（openpyxl/python-docx + OCR） | 必须（或由 install.ps1 重新下载） |
 | `.dsh\settings.yaml` | 默认权限 danger-full-access、模型等 | 必须 |
 | `.dsh\.credentials.yaml` | API Key（**机密**） | 必须 |
@@ -121,6 +122,11 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - `profiles\web\cordis.patch.yml` 里的 local-bridge sidecar token
 
 丢了或改了会导致账号无法登录 / 本机桥接失效。请走可信通道拷贝，不要提交进 git。
+
+### 坑 4：sidecar 按「账号 token」路由，迁移必须保住 token
+- 每个账号一个独立 sidecar token（`profiles\web\cordis.patch.yml` 的 `local-bridge.tokens`）。
+- `local_run` 按「当前会话归属账号」自动路由到该账号的 sidecar，绝不串到别的账号的机器；「本地插件」设置页只显示当前登录账号自己的 token，属正常。
+- 迁移时**原样保留 token**——改了 token 会让已装好的 sidecar 全部失联，需重新给每台机器下发新 token。
 
 ---
 

@@ -175,6 +175,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
 | 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具 | `~\.dsh\plugins\dsh-local-bridge` |
 | 角色预设（8 + 默认） | 财务 2 + 扩展 6 + standard-terminal | `~\.dsh\.agent-presets\<id>\` |
+| 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
+| sidecar 全局 skill | 各预设 agent 共用（路由规则 + 使用规范） | `~\.dsh\skills\sidecar\SKILL.md` |
 
 ### 11.2 权限模型
 
@@ -187,6 +189,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 - finance-confined：写边界 = 账号工作区文件夹，禁止任何权限升级；角色预设无 shell/web/subagent/workflow 工具（"让 AI 重启服务器"已封死）。
 - 文件树权限矩阵：admin=全量、user=映射工作区、guest=403"需要升级权限才能使用该功能"。
+- sidecar 路由机制：`local_run` 永远在「当前会话归属账号」的本机上执行——服务器按 `会话 → 归属账号 → 独立 token → sidecar` 自动路由，绝不串到别的账号的机器。
 
 ### 11.3 改动记录（CHANGELOG）
 
@@ -195,7 +198,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **文件树**：窗格不显示修复（inject=["slots"]）、分列布局、上传/下载/拖拽复制、shell 依赖移除、xlsx 网格 + office_xlsx_write/office_docx_write、新建文件夹崩溃修复、Origin 按 hostname 放行、请求体 for-await、上传 mkdir recursive、文件夹上传。
 - **使用统计**：scan 模式 + 原始 sessionPersistence 读取（修复大日志卡死），非 admin 403。
 - **角色预设**：8 个角色预设 + standard-terminal 落地。
-- **本机桥接**：sidecar + local_run，per-account token。
+- **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；全局 sidecar skill + 8 预设部署逻辑说明。
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 
 ### 11.4 运维提示

@@ -28,6 +28,7 @@ foreach ($id in $expect) {
         (Test-Path (Join-Path $Root ".agent-presets\$id\skills"))
   Check $ok ("preset " + $id)
 }
+Check (Test-Path (Join-Path $Root "skills\sidecar\SKILL.md")) "全局 sidecar skill"
 
 # 2. 四个插件（源码 + node_modules）
 Write-Host "  [插件]"
