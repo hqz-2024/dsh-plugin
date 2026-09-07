@@ -698,9 +698,37 @@ const isVisible = (user, sessionId, cwd) => {
 // fiber's lifetime.
 const disposeOwnership = ctx.provide("sessionOwnership", { isVisible });
 ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership disposal");
+	// ── service-layer session visibility (local fork, 2026-09-07) ──────────
+	// mapResolver stamps scopeUser into session.list requests; this wrap filters
+	// the returned items at the service boundary (before HTTP serialization), so
+	// there is no content-length or gzip interaction and the core checkout stays
+	// untouched.
+	const armSessionFilter = (scope) => {
+		const controller = scope?.sessionController;
+		if (controller && typeof controller.list === "function") {
+			const origList = controller.list.bind(controller);
+			controller.list = async (request, signal) => {
+				const result = await origList(request, signal);
+				if (request && typeof request.scopeUser === "string" && result && Array.isArray(result.items)) {
+					result.items = result.items.filter((item) => isVisible(request.scopeUser, item.sessionId, item.cwd));
+				}
+				return result;
+			};
+			diag("session.list service filter armed");
+		} else {
+			diag("session.list service filter not armed: no sessionController.list");
+		}
+	};
+
 	// ── local-fork diagnostics (remove after P3 verification) ─────────────
 	const DIAG = join(dshHomePath(), "plugins", "dsh-remote-local", "run-diag.log");
 	const diag = (msg) => { try { appendFileSync(DIAG, new Date().toISOString() + " " + msg + "\n"); } catch { /* ignore */ } };
+	// session.list service filter: register after `diag` is defined (avoid TDZ)
+	try {
+		ctx.inject(["sessionController"], armSessionFilter);
+	} catch (err) {
+		diag("ctx.inject sessionController failed: " + String(err?.message ?? err));
+	}
 	diag("apply: roleMap=" + JSON.stringify(cfg.roleMap) + " enforceRoles=" + cfg.enforceRoles + " adminOnly=" + cfg.adminOnly);
 	// ── dynamic role-map (runtime-editable per-account workspace/preset) ──
 	// Settings > 登录与账号 assigns each account a preset + one or more
@@ -1013,7 +1041,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	// title via the workspace registry) sets the created session's workspace.
 	// Server-side authority: mapped accounts are rewritten even when the
 	// client asked for a different preset/workspace.
-		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select") return null; 			const mapping = effectiveRoleMap()[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "session.list") { 				const request = { ...(args.request ?? {}), scopeUser: username }; 				args.request = request; 				changed = true; 			} else if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspaces.length > 0) { 				const registry = ctx.get("workspaceRegistry"); 				const allowed = registry?.list?.().filter((w) => mapping.workspaces.indexOf(w.title) !== -1) ?? []; 				if (allowed.length > 0) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					const chosen = allowed.find((w) => w.id === request.workspaceId) ?? allowed[0]; if (request.workspaceId !== chosen.id) { request.workspaceId = chosen.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
+		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select" && method !== "session.list") return null; 			const mapping = effectiveRoleMap()[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "session.list") { 				const request = { ...(args.request ?? {}), scopeUser: username }; 				args.request = request; 				changed = true; 			} else if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspaces.length > 0) { 				const registry = ctx.get("workspaceRegistry"); 				const allowed = registry?.list?.().filter((w) => mapping.workspaces.indexOf(w.title) !== -1) ?? []; 				if (allowed.length > 0) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					const chosen = allowed.find((w) => w.id === request.workspaceId) ?? allowed[0]; if (request.workspaceId !== chosen.id) { request.workspaceId = chosen.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
 	const roleGate = async (req, role, username) => {
 		const pathname = pathnameOf(req);
 		const body = req.method === "POST"
@@ -1196,8 +1224,8 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 									}
 								}
 								if (methodDot === "session.list") {
-									diag("session.list filter for " + verdict.user.username);
-								outRes = filterSessionListResponse(outRes, (item) => isVisible(verdict.user.username, item.sessionId, item.cwd));
+									diag("session.list passthrough for " + verdict.user.username);
+								
 									return handler(replayable(req, body), outRes);
 								}
 								
