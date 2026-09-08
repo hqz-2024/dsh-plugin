@@ -1374,16 +1374,40 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		return gated;
 	};
 
+	// ── browser-shell cookie onboarding (local fork, 2026-09-09) ──────────
+	// The engine's client-connection layer requires every browser to mint a
+	// signed app-shell cookie once (the `?token=` URL printed by `dsh web`).
+	// Instead of distributing that link, this fork hands the browser the
+	// current launch token through the connection service: the login page
+	// redirects back through the token exchange after account login, and any
+	// authenticated page load whose shell cookie is missing or expired is
+	// redirected through the exchange first. LAN users open the bare https
+	// URL, log in, and the 30-day cookie mints and self-renews without anyone
+	// seeing a token. Reads are lazy so activation order against
+	// client-connection stays unbound; without the service every path falls
+	// back to the previous behaviour.
+	const getConnection = () => ctx.get("connection");
+	const tokenRedirectTarget = (req) => {
+		const connection = getConnection();
+		if (connection === undefined || typeof connection.authenticatedUrl !== "function") return null;
+		const host = String(req.headers?.host ?? "");
+		if (host.length === 0) return null;
+		const proto = String(req.headers?.["x-forwarded-proto"] ?? "http").split(",")[0].trim() || "http";
+		try {
+			const full = connection.authenticatedUrl(proto + "://" + host);
+			const url = new URL(full);
+			return url.pathname + url.search;
+		} catch {
+			return null;
+		}
+	};
 	const wrapFallback = (handler) => {
 		if (typeof handler !== "function" || handler[GATED]) return handler;
 		const gated = async (req, res) => {
-			if (!requireAuth(req).ok) {
+			const verdict = requireAuth(req);
+			if (!verdict.ok) {
 				if (req.method === "GET" || req.method === "HEAD") {
 					const pathname = pathnameOf(req);
-					// Preserve the query string (browser-auth launch token) so
-					// login redirects back to a URL the browser-auth gate can
-					// mint its cookie from. Without it LAN clients lose the
-					// token and see "authentication required".
 					const search = new URL(req.url ?? "/", "http://dsh.internal").search;
 					// i18n: prefer the app-level language preference (the same
 					// value the DSH shell follows); otherwise fall back to the
@@ -1396,13 +1420,37 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 					});
 					res.end(renderLoginPage({
 						bootstrap: !store.hasAccounts,
-						next: pathname + search,
+						next: tokenRedirectTarget(req) ?? pathname + search,
 						lang
 					}));
 					return;
 				}
 				denyJson(res, 403, "unauthorized");
 				return;
+			}
+			// Shell-cookie renewal: an authenticated load without a valid
+			// app-shell cookie goes through the launch-token exchange once,
+			// which mints (or refreshes) the cookie and lands back here.
+			// Requests already carrying the token ARE the exchange step and
+			// must pass through to the connection layer's authorizeIndex;
+			// redirecting them again would loop.
+			if (req.method === "GET" || req.method === "HEAD") {
+				const url = new URL(req.url ?? "/", "http://dsh.internal");
+				if (!url.searchParams.has("token")) {
+					const connection = getConnection();
+					if (connection !== undefined && connection.requestRejection?.(req) === 401) {
+						const target = tokenRedirectTarget(req);
+						if (target !== null) {
+							diag("browser-shell cookie refresh redirect for " + String(verdict.user?.username ?? "?") + " -> " + target);
+							res.writeHead(303, {
+								"Cache-Control": "no-store",
+								"Location": target
+							});
+							res.end();
+							return;
+						}
+					}
+				}
 			}
 			// Authenticated: static / SPA resources. Capture the original Host for
 			// the remote-only gzip decision and wrap `res` so bundles, index.html

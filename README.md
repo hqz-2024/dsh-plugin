@@ -202,6 +202,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 ### 11.3 改动记录（CHANGELOG）
 
 - **认证/角色**：fork `dsh-remote-local`；静态 roleMap + 动态 roleMap（多工作区 + 预设）、会话归属隔离、隐藏工作区/会话、账号管理界面、`/auth/config-options`。
+- **浏览器外壳 cookie 自动引导（2026-09-09）**：登录页 `next` 自动携带当前进程启动 token，登录成功后由连接层兑换 30 天签名 cookie；认证后页面加载若 cookie 缺失/过期自动 303 走 token 兑换续期——局域网用户直接打开 `https://<IP>:8443` 即可，无需手工下发 `?token=` 链接。
 - **会话可见性**：会话列表过滤在 `dsh-remote-local` 内**服务层包装 `sessionController.list`**（无核心改动、无 HTTP/gzip 副作用）。
 - **会话隔离加固（2026-09-07）**：封堵三个跨账号数据面泄漏口——`session.search`（全文搜索）与 `session.export`（导出）对非 admin 拒绝，`session.follow`（日志流）在 WebSocket mux 按 sessionId 归属校验；`session.control` 仍广播会话元数据（不含对话内容）为已知低风险残留。
 - **文件树**：窗格不显示修复（inject=["slots"]）、分列布局、上传/下载/拖拽复制、shell 依赖移除、xlsx 网格 + office_xlsx_write/office_docx_write、新建文件夹崩溃修复、Origin 按 hostname 放行、请求体 for-await、上传 mkdir recursive、文件夹上传。
