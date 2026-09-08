@@ -10,10 +10,10 @@
 #   真实 token 可用 `openssl rand -hex 20` 生成。
 # ============================================================
 
-# Default agent preset: standard + persistent terminal (installed by agent).
+# Default agent preset: the shipped full coding agent (standard).
 - id: agent-presets
   config:
-    default: standard-terminal
+    default: standard
 
 # ── dsh-remote 认证门禁（P1，2026-09-01 安装；P3 起为本地 fork）────────────────
 # 多账号模式：adminOnly:false 允许创建非管理员账号；enforceRoles:true 开启
@@ -36,7 +36,7 @@
         preset: finance-manager
         workspace: finance-ws
       Finance-staff:
-        preset: finance-staff
+        preset: finance-manager
         workspace: finance-ws
 
 # ── 权限预设表（P5 硬化，2026-09-02）────────────────────────────────────────

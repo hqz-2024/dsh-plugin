@@ -46,6 +46,9 @@
 # skill 注册表在宿主组合中，按 scope 分层；这些行注册进本预设的分层，无需 realm。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
