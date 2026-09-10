@@ -19,15 +19,17 @@ function Check($ok, $label, $level = "fail") {
 
 Write-Host "DSH 部署自检：" -ForegroundColor Cyan
 
-# 1. 角色预设（8 个）
+# 1. 角色预设（7 个自定义角色 + agency 角色库）
 Write-Host "  [角色预设]"
-$expect = @("finance-manager","finance-staff","art-design","business-sales","procurement","production","hr-management","rd-development")
+$expect = @("finance-manager","art-design","business-sales","procurement","production","hr-management","rd-development")
 foreach ($id in $expect) {
   $ok = (Test-Path (Join-Path $Root ".agent-presets\$id\agent.cordis.yml")) -and
         (Test-Path (Join-Path $Root ".agent-presets\$id\preset.yml")) -and
         (Test-Path (Join-Path $Root ".agent-presets\$id\skills"))
   Check $ok ("preset " + $id)
 }
+$allPresets = (Get-ChildItem -Directory (Join-Path $Root ".agent-presets") | Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }).Count
+Check ($allPresets -ge 7) ("预设总数 " + $allPresets + " 个（含 agency 角色库）")
 Check (Test-Path (Join-Path $Root "skills\sidecar\SKILL.md")) "全局 sidecar skill"
 
 # 2. 四个插件（源码 + node_modules）

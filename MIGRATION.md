@@ -91,8 +91,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 |---|---|---|
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
 | `.dsh\plugins\` | 4 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local` | 必须 |
-| `.dsh\.agent-presets\` | 8 个角色预设（含 skills）+ `standard-terminal` | 必须 |
-| `.dsh\skills\` | 全局 skill（sidecar 使用规范等），各预设 agent 共用 | 必须（或由 install.ps1 git clone 带来） |
+| `.dsh\.agent-presets\` | 7 个自定义角色预设（含 skills）+ 279 个 agency 角色预设 | 必须 |
+| `.dsh\skills\` | 全局 skill（sidecar / dsh-development / firecrawl / adobe-illustrator-scripting 等），各预设 agent 共用 | 必须（或由 install.ps1 git clone 带来） |
 | `.dsh\runtimes\dshdoc-runtime-win32-x64\` | dsh-doc 离线 Python 运行时（openpyxl/python-docx + OCR） | 必须（或由 install.ps1 重新下载） |
 | `.dsh\settings.yaml` | 默认权限 danger-full-access、模型等 | 必须 |
 | `.dsh\.credentials.yaml` | API Key（**机密**） | 必须 |

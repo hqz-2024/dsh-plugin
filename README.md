@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 >
 > 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
-脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → 校验 8 个角色预设 → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
+脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → 校验角色预设 → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -182,7 +182,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格） | `~\.dsh\plugins\folder-tree-sh-local` |
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
 | 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具 | `~\.dsh\plugins\dsh-local-bridge` |
-| 角色预设（8 + 默认） | 财务 2 + 扩展 6 + standard-terminal | `~\.dsh\.agent-presets\<id>\` |
+| 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
 | 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
 | sidecar 全局 skill | 各预设 agent 共用（路由规则 + 使用规范） | `~\.dsh\skills\sidecar\SKILL.md` |
 
@@ -190,9 +190,9 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 | 账号 | 预设 | 工作空间 | 沙箱 |
 |---|---|---|---|
-| `admin` | standard-terminal（全量） | 全部 | danger-full-access |
+| `admin` | standard（全量） | 全部 | danger-full-access |
 | `Finance-mgr` | finance-manager | finance-ws | finance-confined（workspace-write + never） |
-| `Finance-staff` | finance-staff | finance-ws | finance-confined |
+| `Finance-staff` | finance-manager | finance-ws | finance-confined |
 | 其他角色 | art-design / business-sales / procurement / production / hr-management / rd-development | 各自工作区（可多选） | finance-confined |
 
 - finance-confined：写边界 = 账号工作区文件夹，禁止任何权限升级；角色预设无 shell/web/subagent/workflow 工具（"让 AI 重启服务器"已封死）。
@@ -207,7 +207,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **会话隔离加固（2026-09-07）**：封堵三个跨账号数据面泄漏口——`session.search`（全文搜索）与 `session.export`（导出）对非 admin 拒绝，`session.follow`（日志流）在 WebSocket mux 按 sessionId 归属校验；`session.control` 仍广播会话元数据（不含对话内容）为已知低风险残留。
 - **文件树**：窗格不显示修复（inject=["slots"]）、分列布局、上传/下载/拖拽复制、shell 依赖移除、xlsx 网格 + office_xlsx_write/office_docx_write、新建文件夹崩溃修复、Origin 按 hostname 放行、请求体 for-await、上传 mkdir recursive、文件夹上传。
 - **使用统计**：scan 模式 + 原始 sessionPersistence 读取（修复大日志卡死），非 admin 403。
-- **角色预设**：8 个角色预设 + standard-terminal 落地。
+- **角色预设**：7 个自定义角色预设（finance-manager / art-design / business-sales / procurement / production / hr-management / rd-development）。
+- **agency 角色库**：从 [agency-agents](https://github.com/msitarzewski/agency-agents) 导入 279 个角色预设（中文名，基于 standard 全量工具集 + 各自 persona）；移除 `finance-staff` 与 `standard-terminal`，默认预设改为 `standard`，`Finance-staff` 改指 `finance-manager`。
 - **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；全局 sidecar skill + 8 预设部署逻辑说明。
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 
