@@ -1,0 +1,2 @@
+name: "通用文档编译器"
+description: "Architect of schema-agnostic document ASTs, algorithmic data-shape layout inference, bidirectional CST-to-canvas synchronization, and universal paged document publishing."

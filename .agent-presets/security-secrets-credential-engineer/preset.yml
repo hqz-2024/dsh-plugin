@@ -1,0 +1,2 @@
+name: "密钥与凭证治理工程师"
+description: "Owns the full lifecycle of secrets and credentials — detection, prevention, vaulting, rotation, and leak response — so an application runs on short-lived, least-privilege credentials that are never in the code and are already rotated by the time a leak is found."

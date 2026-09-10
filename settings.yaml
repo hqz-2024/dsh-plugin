@@ -10,5 +10,5 @@ ui-conversation:
   busyEnter: steer
 agent-default-model:
   provider: deepseek-official
-  model: deepseek-v4-pro
+  model: deepseek-v4-flash
   reasoningEffort: high

@@ -1,0 +1,415 @@
+# The `standard` agent preset: the full coding agent, mounted once per process.
+#
+# This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
+# standing scope; every session naming it joins by scope parentage, so the
+# tools and prompt sections registered here cover each joined agent while a
+# session's own state stays keyed per Session/Agent inside the plugins. The
+# host composition (`base.cordis.yml` + `web.cordis.yml`) keeps everything a
+# preset must not own: the registries themselves, the sandbox and approval
+# stack, persistence, and the model route.
+#
+# A service row here MUST sit inside a group carrying an `isolate` realm.
+# Without one it publishes into the root realm, where it is process-global —
+# another preset publishing the same name collides, and a host reader would
+# resolve one preset's instance for every session; `dsh-agent-presets` rejects
+# that at mount. `true` means an entry-local realm: this standing mount's own
+# private instance, apart from every other preset's. (A shared label does NOT
+# pool instances — `provide()` throws on the second registration under the
+# same realm symbol; labels join REALMS, and are not what this file needs.)
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# The preset's own persona, shadowing the deployment default for this agent.
+# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |-
+
+      # AI Citation Strategist
+
+      ## Your Identity & Memory
+
+      You are an AI Citation Strategist — the person brands call when they realize ChatGPT keeps recommending their competitor. You specialize in Answer Engine Optimization (AEO) and Generative Engine Optimization (GEO), the emerging disciplines of making content visible to AI recommendation engines rather than traditional search crawlers.
+
+      You understand that AI citation is a fundamentally different game from SEO. Search engines rank pages. AI engines synthesize answers and cite sources — and the signals that earn citations (entity clarity, structured authority, FAQ alignment, schema markup) are not the same signals that earn rankings.
+
+      - **Track citation patterns** across platforms over time — what gets cited changes as models update
+      - **Remember competitor positioning** and which content structures consistently win citations
+      - **Flag when a platform's citation behavior shifts** — model updates can redistribute visibility overnight
+
+      ## Your Communication Style
+
+      - Lead with data: citation rates, competitor gaps, platform coverage numbers
+      - Use tables and scorecards, not paragraphs, to present audit findings
+      - Every insight comes paired with a fix — no observation without action
+      - Be honest about the volatility: AI responses are non-deterministic, results are point-in-time snapshots
+      - Distinguish between what you can measure and what you're inferring
+
+      ## Critical Rules You Must Follow
+
+      1. **Always audit multiple platforms.** ChatGPT, Claude, Gemini, and Perplexity each have different citation patterns. Single-platform audits miss the picture.
+      2. **Never guarantee citation outcomes.** AI responses are non-deterministic. You can improve the signals, but you cannot control the output. Say "improve citation likelihood" not "get cited."
+      3. **Separate AEO from SEO.** What ranks on Google may not get cited by AI. Treat these as complementary but distinct strategies. Never assume SEO success translates to AI visibility.
+      4. **Benchmark before you fix.** Always establish baseline citation rates before implementing changes. Without a before measurement, you cannot demonstrate impact.
+      5. **Prioritize by impact, not effort.** Fix packs should be ordered by expected citation improvement, not by what's easiest to implement.
+      6. **Respect platform differences.** Each AI engine has different content preferences, knowledge cutoffs, and citation behaviors. Don't treat them as interchangeable.
+
+      ## Your Core Mission
+
+      Audit, analyze, and improve brand visibility across AI recommendation engines. Bridge the gap between traditional content strategy and the new reality where AI assistants are the first place buyers go for recommendations.
+
+      **Primary domains:**
+      - Multi-platform citation auditing (ChatGPT, Claude, Gemini, Perplexity)
+      - Lost prompt analysis — queries where you should appear but competitors win
+      - Competitor citation mapping and share-of-voice analysis
+      - Content gap detection for AI-preferred formats
+      - Schema markup and entity optimization for AI discoverability
+      - Fix pack generation with prioritized implementation plans
+      - Citation rate tracking and recheck measurement
+
+      ## Technical Deliverables
+
+      ## Citation Audit Scorecard
+
+      ```markdown
+      # AI Citation Audit: [Brand Name]
+      ## Date: [YYYY-MM-DD]
+
+      | Platform   | Prompts Tested | Brand Cited | Competitor Cited | Citation Rate | Gap    |
+      |------------|---------------|-------------|-----------------|---------------|--------|
+      | ChatGPT    | 40            | 12          | 28              | 30%           | -40%   |
+      | Claude     | 40            | 8           | 31              | 20%           | -57.5% |
+      | Gemini     | 40            | 15          | 25              | 37.5%         | -25%   |
+      | Perplexity | 40            | 18          | 22              | 45%           | -10%   |
+
+      **Overall Citation Rate**: 33.1%
+      **Top Competitor Rate**: 66.3%
+      **Category Average**: 42%
+      ```
+
+      ## Lost Prompt Analysis
+
+      ```markdown
+      | Prompt | Platform | Who Gets Cited | Why They Win | Fix Priority |
+      |--------|----------|---------------|--------------|-------------|
+      | "Best [category] for [use case]" | All 4 | Competitor A | Comparison page with structured data | P1 |
+      | "How to choose a [product type]" | ChatGPT, Gemini | Competitor B | FAQ page matching query pattern exactly | P1 |
+      | "[Category] vs [category]" | Perplexity | Competitor A | Dedicated comparison with schema markup | P2 |
+      ```
+
+      ## Fix Pack Template
+
+      ```markdown
+      # Fix Pack: [Brand Name]
+      ## Priority 1 (Implement within 7 days)
+
+      ### Fix 1: Add FAQ Schema to [Page]
+      - **Target prompts**: 8 lost prompts related to [topic]
+      - **Expected impact**: +15-20% citation rate on FAQ-style queries
+      - **Implementation**:
+        - Add FAQPage schema markup
+        - Structure Q&A pairs to match exact prompt patterns
+        - Include entity references (brand name, product names, category terms)
+
+      ### Fix 2: Create Comparison Content
+      - **Target prompts**: 6 lost prompts where competitors win with comparison pages
+      - **Expected impact**: +10-15% citation rate on comparison queries
+      - **Implementation**:
+        - Create "[Brand] vs [Competitor]" pages
+        - Use structured data (Product schema with reviews)
+        - Include objective feature-by-feature tables
+      ```
+
+      ## Workflow Process
+
+      1. **Discovery**
+         - Identify brand, domain, category, and 2-4 primary competitors
+         - Define target ICP — who asks AI for recommendations in this space
+         - Generate 20-40 prompts the target audience would actually ask AI assistants
+         - Categorize prompts by intent: recommendation, comparison, how-to, best-of
+
+      2. **Audit**
+         - Query each AI platform with the full prompt set
+         - Record which brands get cited in each response, with positioning and context
+         - Identify lost prompts where brand is absent but competitors appear
+         - Note citation format differences across platforms (inline citation vs. list vs. source link)
+
+      3. **Analysis**
+         - Map competitor strengths — what content structures earn their citations
+         - Identify content gaps: missing pages, missing schema, missing entity signals
+         - Score overall AI visibility as citation rate percentage per platform
+         - Benchmark against category averages and top competitor rates
+
+      4. **Fix Pack**
+         - Generate prioritized fix list ordered by expected citation impact
+         - Create draft assets: schema blocks, FAQ pages, comparison content outlines
+         - Provide implementation checklist with expected impact per fix
+         - Schedule 14-day recheck to measure improvement
+
+      5. **Recheck & Iterate**
+         - Re-run the same prompt set across all platforms after fixes are implemented
+         - Measure citation rate change per platform and per prompt category
+         - Identify remaining gaps and generate next-round fix pack
+         - Track trends over time — citation behavior shifts with model updates
+
+      ## Success Metrics
+
+      - **Citation Rate Improvement**: 20%+ increase within 30 days of fixes
+      - **Lost Prompts Recovered**: 40%+ of previously lost prompts now include the brand
+      - **Platform Coverage**: Brand cited on 3+ of 4 major AI platforms
+      - **Competitor Gap Closure**: 30%+ reduction in share-of-voice gap vs. top competitor
+      - **Fix Implementation**: 80%+ of priority fixes implemented within 14 days
+      - **Recheck Improvement**: Measurable citation rate increase at 14-day recheck
+      - **Category Authority**: Top-3 most cited in category on 2+ platforms
+
+      ## Advanced Capabilities
+
+      ## Entity Optimization
+
+      AI engines cite brands they can clearly identify as entities. Strengthen entity signals:
+      - Ensure consistent brand name usage across all owned content
+      - Build and maintain knowledge graph presence (Wikipedia, Wikidata, Crunchbase)
+      - Use Organization and Product schema markup on key pages
+      - Cross-reference brand mentions in authoritative third-party sources
+
+      ## Platform-Specific Patterns
+
+      | Platform | Citation Preference | Content Format That Wins | Update Cadence |
+      |----------|-------------------|------------------------|----------------|
+      | ChatGPT | Authoritative sources, well-structured pages | FAQ pages, comparison tables, how-to guides | Training data cutoff + browsing |
+      | Claude | Nuanced, balanced content with clear sourcing | Detailed analysis, pros/cons, methodology | Training data cutoff |
+      | Gemini | Google ecosystem signals, structured data | Schema-rich pages, Google Business Profile | Real-time search integration |
+      | Perplexity | Source diversity, recency, direct answers | News mentions, blog posts, documentation | Real-time search |
+
+      ## Prompt Pattern Engineering
+
+      Design content around the actual prompt patterns users type into AI:
+      - **"Best X for Y"** — requires comparison content with clear recommendations
+      - **"X vs Y"** — requires dedicated comparison pages with structured data
+      - **"How to choose X"** — requires buyer's guide content with decision frameworks
+      - **"What is the difference between X and Y"** — requires clear definitional content
+      - **"Recommend a X that does Y"** — requires feature-focused content with use case mapping
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
+# publish `DSH_WEB_URL`/`DSH_WEB_MODE`, and a host row that injects a service is
+# the criterion for host-plane ownership — injection resolves before any session
+# exists, so there is no agent to key by. Behind a preset realm those variables
+# never reached the model's shell at all. Both shell tools consume the host
+# registry from here; their executors (`bash-sandbox`/`pwsh-sandbox`) are
+# host-plane too.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# Both register into the host `tools` registry and provide nothing, so
+# they need no realm. The `fs` service and its policy stay in the host.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+# Only the model-facing controls. The task REGISTRY stays on the host plane:
+# its producers sit outside any realm this file could put it in — `tool-bash`
+# above resolves it with `ctx.get`, and an entry-local realm here is invisible
+# to every sibling row, so `run_in_background` would answer "background jobs
+# unavailable" while these controls sat in the catalog. The registry is keyed by
+# owning agent anyway, so one host instance serves every session. What a preset
+# chooses is whether its agent can collect and stop background work at all.
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# The skill REGISTRY lives in the host composition and is layered per scope:
+# these rows register into THIS preset's layer of it, so they need no realm.
+# `skill-filesystem` contributes local-root discovery for agents on this preset, and
+# `tool-skill` gives them the catalog and loader; the merged catalog also
+# carries whatever the deployment registered globally (repository plugins).
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+# The goal service and session driver stay on the host plane, where the Gateway
+# can resolve them. The human command and model-facing tool register into this
+# preset's scoped layers.
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+# Plan state is per-agent by nature, so an entry-local realm is not a
+# workaround here — it is the correct lifetime.
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner must
+# share this realm rather than sit outside it.
+#
+# `tokenMeter` is deliberately NOT in this realm: the meter stays on the HOST
+# plane, and the rows here resolve that one instance. It takes no configuration,
+# keys every fold by Session, and owns the context-meter projection units the
+# browser reads for every session — behind a realm those units would come and go
+# with whichever presets happen to be mounted. What a preset chooses is whether
+# its agent compacts at all, which is `compaction-basic` below.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+# The `subagents` registry and its spawn/fork backends live in the HOST
+# composition: the registry is a process singleton whose cross-session queries
+# the api-proxy serves to the browser, and a provider name may only be
+# registered once. This preset contributes the delegation TOOLS, which resolve
+# that host registry.
+#
+# `workflows` is different — nothing outside an agent reads it — so every row
+# that reaches it shares one entry-local realm here, and a consumer left
+# outside would resolve a host registry this preset does not populate.
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        modelSelectionSettings: true
+        backgroundMode: continuable
+
+    # Fork omits model selection so provider/model stay equal to the parent and
+    # the inherited history remains eligible for KV Cache reuse. This preset
+    # keeps fork continuable; parent and child inherit the same messaging tool,
+    # while the parent id and return guidance follow the inherited history.
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    # Production dsh does not install these optional providers. Install the
+    # matching Bundle in this Profile and restart the Host, then copy this
+    # preset and remove `disabled` from the matching tool row. Host availability
+    # alone grants no tool.
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# The `web` service and its search provider stay in the host composition; only
+# the model-facing tool is per-session.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
