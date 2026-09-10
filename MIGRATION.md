@@ -91,8 +91,9 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 |---|---|---|
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
 | `.dsh\plugins\` | 4 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local` | 必须 |
-| `.dsh\.agent-presets\` | 7 个自定义角色预设（含 skills）+ 279 个 agency 角色预设 | 必须 |
-| `.dsh\skills\` | 全局 skill（sidecar / dsh-development / firecrawl / adobe-illustrator-scripting 等），各预设 agent 共用 | 必须（或由 install.ps1 git clone 带来） |
+| `.dsh\.agent-presets\` | 7 个自定义角色预设（各自带 `skills\`，通过 `customSkillDirs` 接入）+ 279 个 agency 角色预设，共 286 个目录 | 必须 |
+| `.dsh\skills\` | 全局 skill 9 个：sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases（rank 400，所有预设 agent 共用） | 必须（本仓库已收录，clone 即得） |
+| `%USERPROFILE%\.agents\skills\` | 同一批 skill 的第二份用户根（rank 500），让 dsh 之外的 agent（Claude Code 等）也能读到 | 建议（缺了不影响 dsh；把它当成 `.dsh\skills\` 的副本整目录拷过去即可） |
 | `.dsh\runtimes\dshdoc-runtime-win32-x64\` | dsh-doc 离线 Python 运行时（openpyxl/python-docx + OCR） | 必须（或由 install.ps1 重新下载） |
 | `.dsh\settings.yaml` | 默认权限 danger-full-access、模型等 | 必须 |
 | `.dsh\.credentials.yaml` | API Key（**机密**） | 必须 |
@@ -141,13 +142,14 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ## 五、验证清单
 
-1. 三个账号都能登录：`admin` / `Finance-mgr` / `Finance-staff`。
-2. Finance-mgr、Finance-staff **只看到自己的会话**，看不到别人的。
+1. 能登录 `admin`（迁移后 `auth\store.json` 原样生效，账号/密码/TOTP 都跟着走）。
+2. 角色账号（如 `Finance-mgr`）能登录，且**只看到自己工作区的会话**，看不到别人的。账号由 admin 在设置页创建，名字必须与 `cordis.patch.yml` 的 roleMap 键**完全一致**（区分大小写）才生效。
 3. 文件树全操作正常：新建文件、新建文件夹、重命名、复制、粘贴（剪切）、删除、上传、编辑保存、Excel 保存。
 4. 上传 docx / xlsx 能正常预览（验证 dsh-doc 运行时）。
 5. admin 能打开用量面板（admin-only）。
 6. 每台用户机 sidecar 能连上，`local_run` 能驱动用户本机。
 7. 安全门禁：非 admin 调 `session.search` / `session.export` 返回 403；`session.follow` 拉取他人会话被断连。
+8. 预设与 skill 就位：`.agent-presets\` 286 个目录、`skills\` 9 个 skill——直接跑 `verify.ps1`，全绿即可。
 
 ---
 

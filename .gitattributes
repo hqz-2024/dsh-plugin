@@ -1,0 +1,10 @@
+# 统一行尾，避免 GitHub 上克隆到 Windows 时把 shell 脚本写成 CRLF
+# （CRLF 的 install.sh / backup.sh 在 Linux、macOS、WSL、git-bash 下会直接报错）
+.gitattributes text eol=lf
+*.sh    text eol=lf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf

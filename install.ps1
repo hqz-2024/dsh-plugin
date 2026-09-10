@@ -6,9 +6,9 @@
 .DESCRIPTION
   在 dsh-plugin 仓库（即 ~/.dsh）根目录运行。按顺序完成：
     0 前置检查          1 引擎拉取/安装    2 profile 依赖
-    3 四个插件依赖      4 角色预设校验    5 渲染 cordis.patch.yml
-    6 .credentials.yaml 7 dsh-doc 运行时  8 启动脚本 + caddy
-    9 自检 verify.ps1
+    3 四个插件依赖      4 角色预设 + 全局 skill 校验
+    5 渲染 cordis.patch.yml                  6 .credentials.yaml
+    7 dsh-doc 运行时    8 启动脚本 + caddy   9 自检 verify.ps1
 
   幂等：可重复运行，已存在的文件/已完成步骤会跳过（不覆盖你的 token）。
 
@@ -39,6 +39,9 @@ $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $ProfileDir = Join-Path $Root "profiles\web"
 $Plugins = @("dsh-remote-local", "folder-tree-sh-local", "dsh-usage-panel-local", "dsh-local-bridge")
+$Presets = @("finance-manager", "art-design", "business-sales", "procurement", "production", "hr-management", "rd-development")
+$Skills  = @("sidecar", "dsh-development", "firecrawl", "adobe-illustrator-scripting",
+             "defuddle", "json-canvas", "obsidian-cli", "obsidian-markdown", "obsidian-bases")
 
 function Step($msg) { Write-Host ("`n==> " + $msg) -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host ("    [ok] " + $msg) -ForegroundColor Green }
@@ -106,11 +109,26 @@ foreach ($p in $Plugins) {
   } finally { Pop-Location }
 }
 
-# ── 4. 角色预设（仓库自带，仅校验）─────────────────────────────
-Step "4. 角色预设"
-$presets = Get-ChildItem -Directory (Join-Path $Root ".agent-presets") |
-  Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }
-Ok ("角色预设数量：" + $presets.Count + " 个")
+# ── 4. 角色预设 + 全局 skill（仓库自带，仅校验）─────────────────
+Step "4. 角色预设 + 全局 skill"
+$missing = @()
+foreach ($p in $Presets) {
+  if (-not (Test-Path (Join-Path $Root (".agent-presets\" + $p + "\agent.cordis.yml")))) { $missing += $p }
+}
+if ($missing.Count -eq 0) { Ok ("自定义角色预设齐全：" + $Presets.Count + " 个（各带 skills 目录）") }
+else { Warn ("角色预设缺失：" + ($missing -join ", ")) }
+
+$allPresets = (Get-ChildItem -Directory (Join-Path $Root ".agent-presets") |
+  Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }).Count
+if ($allPresets -lt 286) { Warn ("预设总数 " + $allPresets + " 个，少于预期的 286（7 自定义 + 279 agency）") }
+else { Ok ("预设总数：" + $allPresets + " 个（7 自定义 + 279 agency）") }
+
+$missingSkill = @()
+foreach ($s in $Skills) {
+  if (-not (Test-Path (Join-Path $Root ("skills\" + $s + "\SKILL.md")))) { $missingSkill += $s }
+}
+if ($missingSkill.Count -eq 0) { Ok ("全局 skill 齐全：" + $Skills.Count + " 个（~\.dsh\skills 自动被 dsh 加载）") }
+else { Warn ("全局 skill 缺失：" + ($missingSkill -join ", ")) }
 
 # ── 5. 渲染 cordis.patch.yml ───────────────────────────────────
 Step "5. 渲染 cordis.patch.yml（token + 路径）"

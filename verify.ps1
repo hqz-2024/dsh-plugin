@@ -29,8 +29,11 @@ foreach ($id in $expect) {
   Check $ok ("preset " + $id)
 }
 $allPresets = (Get-ChildItem -Directory (Join-Path $Root ".agent-presets") | Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }).Count
-Check ($allPresets -ge 7) ("预设总数 " + $allPresets + " 个（含 agency 角色库）")
-Check (Test-Path (Join-Path $Root "skills\sidecar\SKILL.md")) "全局 sidecar skill"
+Check ($allPresets -ge 286) ("预设总数 " + $allPresets + " 个（7 自定义 + 279 agency）")
+foreach ($s in @("sidecar","dsh-development","firecrawl","adobe-illustrator-scripting",
+                 "defuddle","json-canvas","obsidian-cli","obsidian-markdown","obsidian-bases")) {
+  Check (Test-Path (Join-Path $Root ("skills\" + $s + "\SKILL.md"))) ("全局 skill " + $s)
+}
 
 # 2. 四个插件（源码 + node_modules）
 Write-Host "  [插件]"

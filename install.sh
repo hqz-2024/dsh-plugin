@@ -4,7 +4,7 @@
 #
 # 与 install.ps1（Windows）对应。按顺序完成：
 #   0 前置检查  1 引擎拉取/安装  2 profile 依赖  3 四个插件依赖
-#   4 角色预设校验  5 渲染 cordis.patch.yml  6 .credentials.yaml
+#   4 角色预设 + 全局 skill 校验  5 渲染 cordis.patch.yml  6 .credentials.yaml
 #   7 dsh-doc（Linux/macOS 用 node 引擎，无 win32 OCR 运行时）
 #   8 Caddyfile + 启动脚本  9 自检
 #
@@ -34,7 +34,8 @@ done
 
 PROFILE_DIR="$ROOT/profiles/web"
 PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge)
-PRESETS=(finance-manager finance-staff art-design business-sales procurement production hr-management rd-development)
+PRESETS=(finance-manager art-design business-sales procurement production hr-management rd-development)
+SKILLS=(sidecar dsh-development firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
 
 step() { echo; echo "==> $1"; }
 ok()   { echo "    [ok] $1"; }
@@ -75,12 +76,30 @@ for p in "${PLUGINS[@]}"; do
   if (cd "$d" && pnpm install); then ok "$p 依赖 ok"; else warn "$p pnpm install 失败"; fi
 done
 
-# ── 4. 角色预设 ────────────────────────────────────────────────
-step "4. 角色预设"
+# ── 4. 角色预设 + 全局 skill ───────────────────────────────────
+step "4. 角色预设 + 全局 skill"
+missing_preset=0
 for p in "${PRESETS[@]}"; do
-  [[ -f "$ROOT/.agent-presets/$p/agent.cordis.yml" ]] || warn "preset 缺失: $p"
+  [[ -f "$ROOT/.agent-presets/$p/agent.cordis.yml" ]] || { warn "角色预设缺失: $p"; missing_preset=1; }
 done
-ok "角色预设校验完成"
+[[ "$missing_preset" -eq 0 ]] && ok "自定义角色预设齐全: ${#PRESETS[@]} 个（各带 skills 目录）"
+
+all_presets=$(find "$ROOT/.agent-presets" -mindepth 2 -maxdepth 2 -name agent.cordis.yml | wc -l | tr -d ' ')
+if [[ "$all_presets" -lt 286 ]]; then
+  warn "预设总数 $all_presets 个，少于预期的 286（7 自定义 + 279 agency）"
+else
+  ok "预设总数: $all_presets 个（7 自定义 + 279 agency）"
+fi
+
+missing_skill=""
+for s in "${SKILLS[@]}"; do
+  [[ -f "$ROOT/skills/$s/SKILL.md" ]] || missing_skill="$missing_skill $s"
+done
+if [[ -z "$missing_skill" ]]; then
+  ok "全局 skill 齐全: ${#SKILLS[@]} 个（~/.dsh/skills 自动被 dsh 加载）"
+else
+  warn "全局 skill 缺失:$missing_skill"
+fi
 
 # ── 5. 渲染 cordis.patch.yml ───────────────────────────────────
 step "5. 渲染 cordis.patch.yml"
@@ -176,6 +195,9 @@ for p in "${PRESETS[@]}"; do
   [[ -f "$ROOT/.agent-presets/$p/agent.cordis.yml" ]] || { echo "    [x] preset $p 缺失"; errors=1; }
 done
 [[ -f "$ROOT/skills/sidecar/SKILL.md" ]] || { echo "    [x] sidecar skill 缺失"; errors=1; }
+for s in "${SKILLS[@]}"; do
+  [[ -f "$ROOT/skills/$s/SKILL.md" ]] || { echo "    [x] skill $s 缺失"; errors=1; }
+done
 for p in "${PLUGINS[@]}"; do
   [[ -f "$ROOT/plugins/$p/lib/index.js" ]] || { echo "    [x] plugin $p 源码缺失"; errors=1; }
 done

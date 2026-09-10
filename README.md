@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 >
 > 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
-脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → 校验角色预设 → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
+脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → **校验角色预设（7 个自定义 + agency 角色库）与全局 skill（9 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -48,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 | `-NodePath` | 自动取 PATH 里的 node | node.exe 绝对路径 |
 | `-SkipEngine` | - | 引擎已就绪时跳过拉取 |
 
-装完可随时跑 `verify.ps1` 自检（逐项断言 8 预设 / 4 插件 / 配置 / 密钥 / 引擎 / 运行时）。
+装完可随时跑 `verify.ps1` 自检（逐项断言 7 个自定义角色预设 + 预设总数 / 9 个全局 skill / 4 插件 / 配置 / 密钥 / 引擎 / 运行时）。
 
 ---
 
@@ -183,19 +183,21 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
 | 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具 | `~\.dsh\plugins\dsh-local-bridge` |
 | 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
+| 全局 skill 库 | 9 个 skill：sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`） |
 | 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
-| sidecar 全局 skill | 各预设 agent 共用（路由规则 + 使用规范） | `~\.dsh\skills\sidecar\SKILL.md` |
 
 ### 11.2 权限模型
 
-| 账号 | 预设 | 工作空间 | 沙箱 |
+`cordis.patch.yml` 的 `roleMap` 用**登录账号名**作键（区分大小写），在会话创建时把 `preset` 与 `workspace` 钉进该账号的会话。账号本身由 `admin` 在设置页创建——名字和 roleMap 的键对上才生效，对不上就用 `settings.yaml` 的默认预设。
+
+| roleMap 键（角色） | 预设 | 工作空间 | 沙箱 |
 |---|---|---|---|
-| `admin` | standard（全量） | 全部 | danger-full-access |
+| （不映射，默认） | standard（全量） | 全部 | danger-full-access |
 | `Finance-mgr` | finance-manager | finance-ws | finance-confined（workspace-write + never） |
 | `Finance-staff` | finance-manager | finance-ws | finance-confined |
 | 其他角色 | art-design / business-sales / procurement / production / hr-management / rd-development | 各自工作区（可多选） | finance-confined |
 
-- finance-confined：写边界 = 账号工作区文件夹，禁止任何权限升级；角色预设无 shell/web/subagent/workflow 工具（"让 AI 重启服务器"已封死）。
+- finance-confined：写边界 = 账号工作区文件夹，禁止任何权限升级；角色预设无 shell/web/subagent/workflow 工具（"让 AI 重启服务器"已封死）。它是通用「工作区限定」权限预设，不限于财务场景。
 - 文件树权限矩阵：admin=全量、user=映射工作区、guest=403"需要升级权限才能使用该功能"。
 - sidecar 路由机制：`local_run` 永远在「当前会话归属账号」的本机上执行——服务器按 `会话 → 归属账号 → 独立 token → sidecar` 自动路由，绝不串到别的账号的机器。
 
@@ -209,7 +211,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **使用统计**：scan 模式 + 原始 sessionPersistence 读取（修复大日志卡死），非 admin 403。
 - **角色预设**：7 个自定义角色预设（finance-manager / art-design / business-sales / procurement / production / hr-management / rd-development）。
 - **agency 角色库**：从 [agency-agents](https://github.com/msitarzewski/agency-agents) 导入 279 个角色预设（中文名，基于 standard 全量工具集 + 各自 persona）；移除 `finance-staff` 与 `standard-terminal`，默认预设改为 `standard`，`Finance-staff` 改指 `finance-manager`。
-- **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；全局 sidecar skill + 8 预设部署逻辑说明。
+- **全局 skill 库（2026-09-10）**：`~\.dsh\skills\` 收录 9 个 skill（sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases），并镜像到 `~\.agents\skills\`；预设自带的 `skills\` 目录通过 `customSkillDirs`（`!!js` 拼 `baseUrl`）接入，见 11.5。
+- **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；sidecar 使用规范做成全局 skill 供所有预设共用。
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 
 ### 11.4 运维提示
@@ -218,3 +221,22 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - 启动：`pnpm dsh --profile web --trusted-host <局域网IP>`（于引擎 checkout 根目录）。
 - 状态文件：`~\.dsh\auth\{store,session-owners,hidden-items,role-map}.json`、`~\.dsh\upgrade-state.json`、`~\.dsh\plugins\dsh-remote-local\run-diag.log`。
 - 完整迁移/备份：见 `MIGRATION.md`。
+
+### 11.5 全局 skill 与加载顺序
+
+`~\.dsh\skills\` 与 `~\.agents\skills\` 是 dsh 的**用户级 skill 根**，与本仓库的 roleMap / 预设无关——**任何预设的 agent 都能看到**。目录格式固定为 `<root>\<name>\SKILL.md`（**只扫一层**，不递归），frontmatter 必须有 `name` 与 `description`。
+
+| 来源 | rank | 路径 |
+|---|---|---|
+| `project-dsh` | 100 | `<项目>\.dsh\skills\` |
+| `project-agents` | 200 | `<项目>\.agents\skills\` |
+| `custom` | 300 | `customSkillDirs`（**预设自带的 `skills\` 走这条**） |
+| `user-dsh` | 400 | `~\.dsh\skills\` |
+| `user-agents` | 500 | `~\.agents\skills\` |
+| `bundled` | 600 | dsh 发行版内置 |
+
+rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册顺序。
+
+> **两个坑**：
+> 1. 预设目录里的 `skills\` **不会**被自动发现——必须在预设的 `agent.cordis.yml` 里用 `customSkillDirs` 指过去，本仓库的写法是 `!!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"`（`baseUrl` 由加载器注入）。
+> 2. 同一份 skill 放到 `~\.dsh\skills\` 与 `~\.agents\skills\` 两个根，是为了让 dsh 之外的 agent（Claude Code / Codex 等）也能读到；两边内容保持一致即可。

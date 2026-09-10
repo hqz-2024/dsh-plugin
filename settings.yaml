@@ -11,4 +11,4 @@ ui-conversation:
 agent-default-model:
   provider: deepseek-official
   model: deepseek-v4-flash
-  reasoningEffort: high
+  reasoningEffort: max
