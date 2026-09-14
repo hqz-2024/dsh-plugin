@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self' file:; style-src 'self'">
+  <title>manifest 校对工具</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="toolbar">
+    <button id="btn-select-dir" class="btn" data-i18n="select-dir">选择目录</button>
+    <span id="current-dir" class="muted" data-i18n="no-dir">未选择目录</span>
+    <span class="spacer"></span>
+    <label for="lang-switch" data-i18n="lang">语言</label>
+    <select id="lang-switch">
+      <option value="zh">中文</option>
+      <option value="en">English</option>
+    </select>
+  </header>
+
+  <main id="app">
+    <section id="left-panel" class="panel">
+      <div class="panel-title" data-i18n="video-list">视频列表</div>
+      <ul id="video-list" class="video-list"></ul>
+    </section>
+
+    <div id="divider" class="divider" title="拖动调整左右栏宽度"></div>
+
+    <section id="center-panel" class="panel">
+      <div class="panel-title" data-i18n="preview">视频预览</div>
+      <div class="preview-box">
+        <video id="video"></video>
+        <div id="preview-empty" class="empty" data-i18n="preview-empty">点击左侧视频进行预览</div>
+      </div>
+      <div id="progress-bar"><div id="progress-fill"></div></div>
+      <div class="preview-controls">
+        <button id="btn-step-back10" title="后退 10 秒">-10s</button>
+        <button id="btn-step-back1" title="后退 1 秒">-1s</button>
+        <button id="btn-prev-frame" data-i18n="prev-frame">-1帧</button>
+        <button id="btn-play-pause" class="primary" data-i18n="play">播放</button>
+        <button id="btn-next-frame" data-i18n="next-frame">+1帧</button>
+        <button id="btn-step-fwd1" title="前进 1 秒">+1s</button>
+        <button id="btn-step-fwd10" title="前进 10 秒">+10s</button>
+        <select id="speed-select" title="播放速度">
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </div>
+      <div class="preview-info muted" id="preview-info"></div>
+    </section>
+
+    <section id="right-panel" class="panel">
+      <div class="panel-title" data-i18n="manifest">manifest 信息</div>
+      <div id="manifest-form" class="manifest-form">
+        <div class="empty" data-i18n="form-empty">点击左侧视频查看 / 编辑标注</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

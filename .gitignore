@@ -42,6 +42,11 @@ start-dsh-lan.cmd
 bin/
 runtimes/
 
+# ---- manifest 校对工具：打包产物 / 内嵌 FFmpeg（可重建）----
+tools/manifest-tool/dist/
+tools/manifest-tool/ffmpeg/
+plugins/dsh-video-studio-local/assets/
+
 # ---- profile 内可再生 / 数据目录 ----
 profiles/web/data/
 profiles/web/.dsh-module-fallback/

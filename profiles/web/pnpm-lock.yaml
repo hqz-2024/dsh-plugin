@@ -29,6 +29,9 @@ importers:
       dsh-usage-panel:
         specifier: link:../../plugins/dsh-usage-panel-local
         version: link:../../plugins/dsh-usage-panel-local
+      dsh-video-studio:
+        specifier: link:../../plugins/dsh-video-studio-local
+        version: link:../../plugins/dsh-video-studio-local
       folder-tree-sh:
         specifier: link:../../plugins/folder-tree-sh-local
         version: link:../../plugins/folder-tree-sh-local

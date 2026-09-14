@@ -1,6 +1,6 @@
 # DSH 局域网部署迁移说明
 
-本文件描述如何把整套 DeepSeek Harness 局域网部署（多账号登录 + 角色权限 + 会话隔离 + 文件树 + 文档解析 + 本机桥接）迁移到另一台 Windows 服务器，并**完整保留所有数据**（会话历史、账号、工作区文件、配置、插件改动）。
+本文件描述如何把整套 DeepSeek Harness 局域网部署（多账号登录 + 角色权限 + 会话隔离 + 文件树 + 文档解析 + 本机桥接 + 视频剪辑）迁移到另一台 Windows 服务器，并**完整保留所有数据**（会话历史、账号、工作区文件、配置、插件改动）。
 
 > **占位符说明**：本文所有路径都不含真实用户名/IP。
 > - `<用户名>` = 你的 Windows 用户名（等价于 `%USERNAME%`）
@@ -90,11 +90,14 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
-| `.dsh\plugins\` | 4 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local` | 必须 |
+| `.dsh\plugins\` | 5 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local`、`dsh-video-studio-local` | 必须 |
 | `.dsh\.agent-presets\` | 7 个自定义角色预设（各自带 `skills\`，通过 `customSkillDirs` 接入）+ 279 个 agency 角色预设，共 286 个目录 | 必须 |
-| `.dsh\skills\` | 全局 skill 9 个：sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases（rank 400，所有预设 agent 共用） | 必须（本仓库已收录，clone 即得） |
+| `.dsh\skills\` | 全局 skill 10 个：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases（rank 400，所有预设 agent 共用） | 必须（本仓库已收录，clone 即得） |
 | `%USERPROFILE%\.agents\skills\` | 同一批 skill 的第二份用户根（rank 500），让 dsh 之外的 agent（Claude Code 等）也能读到 | 建议（缺了不影响 dsh；把它当成 `.dsh\skills\` 的副本整目录拷过去即可） |
 | `.dsh\runtimes\dshdoc-runtime-win32-x64\` | dsh-doc 离线 Python 运行时（openpyxl/python-docx + OCR） | 必须（或由 install.ps1 重新下载） |
+| `.dsh\plugins\dsh-video-studio-local\bin\` | 内嵌 FFmpeg（ffmpeg.exe + ffprobe.exe，各约 157MB） | 建议（原样拷贝最快；install.ps1 会自动下载 + SHA256 校验） |
+| `.dsh\tools\manifest-tool\` | manifest 校对工具源码（Electron 工程，不含 node_modules/dist/ffmpeg） | 必须（clone 即得） |
+| `.dsh\plugins\dsh-video-studio-local\assets\` | 打包的 manifest-tool.exe（供局域网下载） | 建议（或由 install.ps1 从 GitHub Release 下载） |
 | `.dsh\settings.yaml` | 默认权限 danger-full-access、模型等 | 必须 |
 | `.dsh\.credentials.yaml` | API Key（**机密**） | 必须 |
 | `.dsh\Caddyfile` | 反代配置 | 必须 |
@@ -149,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 5. admin 能打开用量面板（admin-only）。
 6. 每台用户机 sidecar 能连上，`local_run` 能驱动用户本机。
 7. 安全门禁：非 admin 调 `session.search` / `session.export` 返回 403；`session.follow` 拉取他人会话被断连。
-8. 预设与 skill 就位：`.agent-presets\` 286 个目录、`skills\` 9 个 skill——直接跑 `verify.ps1`，全绿即可。
+8. 预设与 skill 就位：`.agent-presets\` 286 个目录、`skills\` 10 个 skill——直接跑 `verify.ps1`，全绿即可。
 
 ---
 

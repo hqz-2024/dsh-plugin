@@ -1,0 +1,14 @@
+{
+  "name": "dsh-video-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness video studio plugin: bundles FFmpeg and exposes model tools to select, trim, and concatenate labeled clip material into product showcase videos (adjustable resolution/fps; transitions, BGM, subtitles planned).",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

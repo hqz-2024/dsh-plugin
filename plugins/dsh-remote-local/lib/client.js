@@ -1386,10 +1386,10 @@ window.__ModuleLoader__.load({
 								]),
 								h("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } }, [
 									h("a", { href: p.downloadUrl, download: p.filename, style: { ...buttonStyle, textDecoration: "none", display: "inline-block", textAlign: "center" } }, t("localPlugins.download")),
-									h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadStartCmd }, t("localPlugins.downloadCmd"))
+									p.id === "sidecar" ? h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadStartCmd }, t("localPlugins.downloadCmd")) : null
 								])
 							]),
-							lp.token
+							(p.id === "sidecar" && lp.token)
 								? h("div", { style: { marginTop: "10px" } }, [
 									h("label", { style: labelStyle }, t("localPlugins.token")),
 									h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } }, [

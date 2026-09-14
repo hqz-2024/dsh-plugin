@@ -1,0 +1,8 @@
+# dsh-video-studio bundle patch: inserts the video studio plugin row.
+# Applied as a profile bundle layer (package.json dsh.bundle.patch manifest).
+- insert:
+    - id: dsh-video-studio
+      name: 'dsh-video-studio'
+      config:
+        maxConcurrent: 2
+        outputDir: 'out'

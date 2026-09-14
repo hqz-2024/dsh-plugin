@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   DSH 局域网部署一键安装脚本。
@@ -6,9 +6,9 @@
 .DESCRIPTION
   在 dsh-plugin 仓库（即 ~/.dsh）根目录运行。按顺序完成：
     0 前置检查          1 引擎拉取/安装    2 profile 依赖
-    3 四个插件依赖      4 角色预设 + 全局 skill 校验
+    3 五个插件依赖      4 角色预设 + 全局 skill 校验
     5 渲染 cordis.patch.yml                  6 .credentials.yaml
-    7 dsh-doc 运行时    8 启动脚本 + caddy   9 自检 verify.ps1
+    7 dsh-doc 运行时  7b FFmpeg 二进制  8 启动脚本 + caddy  9 自检 verify.ps1
 
   幂等：可重复运行，已存在的文件/已完成步骤会跳过（不覆盖你的 token）。
 
@@ -38,9 +38,9 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $ProfileDir = Join-Path $Root "profiles\web"
-$Plugins = @("dsh-remote-local", "folder-tree-sh-local", "dsh-usage-panel-local", "dsh-local-bridge")
+$Plugins = @("dsh-remote-local", "folder-tree-sh-local", "dsh-usage-panel-local", "dsh-local-bridge", "dsh-video-studio-local")
 $Presets = @("finance-manager", "art-design", "business-sales", "procurement", "production", "hr-management", "rd-development")
-$Skills  = @("sidecar", "dsh-development", "firecrawl", "adobe-illustrator-scripting",
+$Skills  = @("sidecar", "dsh-development", "dsh-video-studio", "firecrawl", "adobe-illustrator-scripting",
              "defuddle", "json-canvas", "obsidian-cli", "obsidian-markdown", "obsidian-bases")
 
 function Step($msg) { Write-Host ("`n==> " + $msg) -ForegroundColor Cyan }
@@ -87,7 +87,7 @@ if (-not $SkipEngine) {
   } finally { Pop-Location }
 }
 
-# ── 2. profile 依赖（link: 相对路径，会创建 4 个插件 symlink）───
+# ── 2. profile 依赖（link: 相对路径，会创建 5 个插件 symlink）───
 Step "2. profile 依赖"
 Push-Location $ProfileDir
 try {
@@ -96,7 +96,7 @@ try {
   Ok "profile pnpm install 完成"
 } finally { Pop-Location }
 
-# ── 3. 四个插件依赖（link: 不装被链接包自己的依赖，须各自 install）───
+# ── 3. 五个插件依赖（link: 不装被链接包自己的依赖，须各自 install）───
 Step "3. 插件依赖"
 foreach ($p in $Plugins) {
   $d = Join-Path $Root ("plugins\" + $p)
@@ -176,6 +176,89 @@ else {
     else { Warn ("下载失败。可稍后手动执行：node `"" + $fetch + "`" `"" + $rt + "`"") }
   } else {
     Warn "dsh-doc 未安装，无法自动下载运行时（请先完成 profile/插件的 pnpm install）"
+  }
+}
+
+# ── 7b. FFmpeg 二进制（dsh-video-studio 内嵌）───────────────────
+Step "7b. FFmpeg 二进制"
+$vsBin = Join-Path $Root "plugins\dsh-video-studio-local\bin"
+$ffmpegExe = Join-Path $vsBin "ffmpeg.exe"
+$ffprobeExe = Join-Path $vsBin "ffprobe.exe"
+if ((Test-Path $ffmpegExe) -and (Test-Path $ffprobeExe)) {
+  Ok "FFmpeg 二进制已存在（ffmpeg.exe + ffprobe.exe）"
+} else {
+  New-Item -ItemType Directory -Force -Path $vsBin | Out-Null
+  $ffZip = Join-Path $env:TEMP "ffmpeg-master-latest-win64-gpl.zip"
+  $ffUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+  $ffSha = "073f39088fae36179dfe745406aa8ce67affcde0d91dc0bda7dba5c1964e03be"
+  Warn "正在下载 FFmpeg（~185MB，含 SHA-256 校验）..."
+  & curl.exe -L --fail --retry 3 -o $ffZip $ffUrl
+  if ($LASTEXITCODE -ne 0) {
+    Warn "curl 下载失败（可稍后手动下载 ffmpeg.exe/ffprobe.exe 到 $vsBin）"
+  } else {
+    $hash = (Get-FileHash -Algorithm SHA256 $ffZip).Hash.ToLowerInvariant()
+    if ($hash -ne $ffSha) {
+      Warn ("SHA256 不匹配：" + $hash)
+    } else {
+      $extract = Join-Path $env:TEMP "ffmpeg-extract"
+      if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+      Expand-Archive -Path $ffZip -DestinationPath $extract
+      $ff = Get-ChildItem -Path $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+      $fp = Get-ChildItem -Path $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1
+      Copy-Item $ff.FullName $ffmpegExe -Force
+      Copy-Item $fp.FullName $ffprobeExe -Force
+      Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+      Remove-Item $ffZip -ErrorAction SilentlyContinue
+      Ok "FFmpeg 下载 + SHA256 校验 + 解压完成"
+    }
+  }
+}
+
+# ── 7c. manifest 校对工具（下载 exe，失败则本地打包）─────────
+Step "7c. manifest 校对工具"
+$mtDir = Join-Path $Root "tools\manifest-tool"
+$mtExe = Join-Path $Root "plugins\dsh-video-studio-local\assets\manifest-tool.exe"
+$mtUrl = "https://github.com/hqz-2024/dsh-plugin/releases/download/v0.1.0/manifest-tool.exe"
+$mtSha = "120134f3dd7ba13e2df464d10468a74e201fdae968755aa85f81c4830962c1c5"
+if (Test-Path $mtExe) {
+  Ok "manifest 校对工具 exe 已存在"
+} else {
+  New-Item -ItemType Directory -Force -Path (Split-Path $mtExe) | Out-Null
+  Warn "正在下载 manifest 校对工具 exe（~152MB，含 SHA256 校验）..."
+  & curl.exe -L --fail --retry 2 -o $mtExe $mtUrl
+  $hash = if (Test-Path $mtExe) { (Get-FileHash -Algorithm SHA256 $mtExe).Hash.ToLowerInvariant() } else { "" }
+  if (($LASTEXITCODE -eq 0) -and ($hash -eq $mtSha)) {
+    Ok "manifest 校对工具下载 + 校验完成"
+  } else {
+    Remove-Item $mtExe -ErrorAction SilentlyContinue
+    if (-not (Test-Path (Join-Path $mtDir "package.json"))) {
+      Warn "下载失败且源码缺失，跳过（可稍后手动处理）"
+    } else {
+      Warn "下载失败，尝试本地打包（需网络下载 electron，约 2-5 分钟）..."
+      $ffmpegBin = Join-Path $Root "plugins\dsh-video-studio-local\bin"
+      $mtFfmpeg = Join-Path $mtDir "ffmpeg"
+      if ((Test-Path (Join-Path $ffmpegBin "ffmpeg.exe")) -and (-not (Test-Path (Join-Path $mtFfmpeg "ffmpeg.exe")))) {
+        New-Item -ItemType Directory -Force -Path $mtFfmpeg | Out-Null
+        Copy-Item (Join-Path $ffmpegBin "ffmpeg.exe") $mtFfmpeg -Force
+        Copy-Item (Join-Path $ffmpegBin "ffprobe.exe") $mtFfmpeg -Force
+      }
+      Push-Location $mtDir
+      try {
+        $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+        $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+        $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
+        & npm install
+        if ($LASTEXITCODE -ne 0) { Warn "manifest 工具 npm install 失败" }
+        else {
+          & npx electron-builder --win portable
+          $dist = Join-Path $mtDir "dist\manifest-tool.exe"
+          if (($LASTEXITCODE -eq 0) -and (Test-Path $dist)) {
+            Copy-Item $dist $mtExe -Force
+            Ok "manifest 校对工具本地打包完成"
+          } else { Warn "manifest 工具打包失败" }
+        }
+      } finally { Pop-Location }
+    }
   }
 }
 

@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 >
 > 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
-脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 4 个插件各自依赖 → **校验角色预设（7 个自定义 + agency 角色库）与全局 skill（9 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
+脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness）→ 安装 profile 依赖 → 安装 5 个插件各自依赖 → **校验角色预设（7 个自定义 + agency 角色库）与全局 skill（10 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ **下载 FFmpeg 二进制**（~185MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -48,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 | `-NodePath` | 自动取 PATH 里的 node | node.exe 绝对路径 |
 | `-SkipEngine` | - | 引擎已就绪时跳过拉取 |
 
-装完可随时跑 `verify.ps1` 自检（逐项断言 7 个自定义角色预设 + 预设总数 / 9 个全局 skill / 4 插件 / 配置 / 密钥 / 引擎 / 运行时）。
+装完可随时跑 `verify.ps1` 自检（逐项断言 7 个自定义角色预设 + 预设总数 / 10 个全局 skill / 5 插件 / 配置 / 密钥 / 引擎 / 运行时）。
 
 ---
 
@@ -182,8 +182,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格） | `~\.dsh\plugins\folder-tree-sh-local` |
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
 | 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具 | `~\.dsh\plugins\dsh-local-bridge` |
+| 视频批量剪辑 | dsh-video-studio（内嵌 FFmpeg：剪切/变速/转场/BGM/字幕/格式转换/滤镜，11 个工具） | `~\.dsh\plugins\dsh-video-studio-local` |
+| manifest 校对工具 | Electron 桌面工具（本地预览视频 + 帧级进度条 + 人工校对/修正 manifest），设置页「本地插件」下载 | `~\.dsh\tools\manifest-tool`（源码）+ `~\.dsh\plugins\dsh-video-studio-local\assets`（打包 exe） |
 | 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
-| 全局 skill 库 | 9 个 skill：sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`） |
+| 全局 skill 库 | 10 个 skill：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`） |
 | 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
 
 ### 11.2 权限模型
@@ -211,9 +213,11 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **使用统计**：scan 模式 + 原始 sessionPersistence 读取（修复大日志卡死），非 admin 403。
 - **角色预设**：7 个自定义角色预设（finance-manager / art-design / business-sales / procurement / production / hr-management / rd-development）。
 - **agency 角色库**：从 [agency-agents](https://github.com/msitarzewski/agency-agents) 导入 279 个角色预设（中文名，基于 standard 全量工具集 + 各自 persona）；移除 `finance-staff` 与 `standard-terminal`，默认预设改为 `standard`，`Finance-staff` 改指 `finance-manager`。
-- **全局 skill 库（2026-09-10）**：`~\.dsh\skills\` 收录 9 个 skill（sidecar / dsh-development / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases），并镜像到 `~\.agents\skills\`；预设自带的 `skills\` 目录通过 `customSkillDirs`（`!!js` 拼 `baseUrl`）接入，见 11.5。
+- **全局 skill 库（2026-09-10）**：`~\.dsh\skills\` 收录 10 个 skill（sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases），并镜像到 `~\.agents\skills\`；预设自带的 `skills\` 目录通过 `customSkillDirs`（`!!js` 拼 `baseUrl`）接入，见 11.5。
 - **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；sidecar 使用规范做成全局 skill 供所有预设共用。
-- **部署工具**：`install.ps1`（含 dsh-doc 运行时下载）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
+- **视频剪辑（2026-09-10）**：`dsh-video-studio` 插件内嵌 FFmpeg 完整版（BtbN win64-gpl，ffmpeg/ffprobe 各约 157MB），11 个模型工具（video_build / video_cut / video_concat / video_audio / video_subtitle / video_convert / video_filter / video_probe / video_list / video_thumbnail / ffmpeg_run），覆盖剪切、变速（不变调）、分辨率、xfade 转场、BGM、字幕、格式转换（容器互转/提取音频/转 GIF）、常用滤镜（亮度/对比度/饱和度/模糊/锐化/黑白/旋转/翻转等）；并发限流 + 工作区沙箱收容；全局 skill `dsh-video-studio` 承载「读标注选片出片」与「抽帧读图生成 manifest 标注」两条工作流。
+- **manifest 校对工具（2026-09-10）**：Electron 桌面工具（`~\.dsh\tools\manifest-tool`），三栏布局（视频列表 / 帧级预览 / manifest 表单），本地预览视频 + 帧级进度条 + 快进 + 加速 + 人工校对/修正 manifest（动态字段 / 新增字段 / tags 逗号分隔 / 直接保存 + 另存为），UI 中英切换；打包成 portable exe（内嵌 FFmpeg，约 151MB）挂到设置页「本地插件」供局域网用户下载。
+- **部署工具**：`install.ps1`（含 dsh-doc 运行时下载、FFmpeg 下载、manifest 校对工具打包）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 
 ### 11.4 运维提示
 

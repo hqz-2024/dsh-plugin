@@ -1,0 +1,25 @@
+{
+  "name": "dsh-manifest-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "manifest 校对工具：本地预览视频 + 人工校对修正 manifest.json",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.dsh.manifest-tool",
+    "productName": "manifest-tool",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "renderer/**/*"],
+    "extraResources": [
+      { "from": "ffmpeg/", "to": "ffmpeg/" }
+    ],
+    "win": { "target": ["portable"], "signAndEditExecutable": false },
+    "portable": { "artifactName": "manifest-tool.exe" }
+  }
+}

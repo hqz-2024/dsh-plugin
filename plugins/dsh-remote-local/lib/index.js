@@ -1875,6 +1875,12 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				description: "让 agent 操作本账号的 Windows 本机：PowerShell / Office / PDF / Photoshop / Blender 脚本。",
 				downloadUrl: "/dsh-local-bridge/sidecar.mjs",
 				filename: "sidecar.mjs"
+			}, {
+				id: "manifest-tool",
+				name: "manifest 校对工具",
+				description: "本地预览视频 + 人工校对/修正 manifest.json 的桌面工具（需与工作空间共享文件）。",
+				downloadUrl: "/dsh-video-studio/manifest-tool",
+				filename: "manifest-tool.exe"
 			}],
 			token,
 			connected

@@ -9,7 +9,8 @@
     "dsh-doc": "0.1.1",
     "dsh-local-bridge": "link:../../plugins/dsh-local-bridge",
     "dsh-usage-panel": "link:../../plugins/dsh-usage-panel-local",
-    "folder-tree-sh": "link:../../plugins/folder-tree-sh-local"
+    "folder-tree-sh": "link:../../plugins/folder-tree-sh-local",
+    "dsh-video-studio": "link:../../plugins/dsh-video-studio-local"
   },
   "dsh": {
     "profile": {
@@ -20,7 +21,8 @@
         "dsh-doc",
         "folder-tree-sh",
         "dsh-usage-panel",
-        "dsh-local-bridge"
+        "dsh-local-bridge",
+        "dsh-video-studio"
       ],
       "patchReload": "live"
     }

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   DSH 局域网部署自检：逐项断言"该有的模块都在"，输出 ✓/✗ 清单，全部通过返回 0。
@@ -30,12 +30,12 @@ foreach ($id in $expect) {
 }
 $allPresets = (Get-ChildItem -Directory (Join-Path $Root ".agent-presets") | Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }).Count
 Check ($allPresets -ge 286) ("预设总数 " + $allPresets + " 个（7 自定义 + 279 agency）")
-foreach ($s in @("sidecar","dsh-development","firecrawl","adobe-illustrator-scripting",
+foreach ($s in @("sidecar","dsh-development","dsh-video-studio","firecrawl","adobe-illustrator-scripting",
                  "defuddle","json-canvas","obsidian-cli","obsidian-markdown","obsidian-bases")) {
   Check (Test-Path (Join-Path $Root ("skills\" + $s + "\SKILL.md"))) ("全局 skill " + $s)
 }
 
-# 2. 四个插件（源码 + node_modules）
+# 2. 插件（四个 fork + dsh-video-studio 内嵌 FFmpeg）
 Write-Host "  [插件]"
 foreach ($p in @("dsh-remote-local","folder-tree-sh-local","dsh-usage-panel-local","dsh-local-bridge")) {
   $src = Test-Path (Join-Path $Root "plugins\$p\lib\index.js")
@@ -43,6 +43,12 @@ foreach ($p in @("dsh-remote-local","folder-tree-sh-local","dsh-usage-panel-loca
   Check ($src) ("plugin src " + $p)
   Check ($deps) ("plugin deps " + $p)
 }
+
+$vs = Join-Path $Root "plugins\dsh-video-studio-local"
+Check (Test-Path (Join-Path $vs "lib\index.js")) "plugin src dsh-video-studio-local"
+Check ((Test-Path (Join-Path $vs "bin\ffmpeg.exe")) -and (Test-Path (Join-Path $vs "bin\ffprobe.exe"))) "FFmpeg 二进制（ffmpeg.exe + ffprobe.exe）"
+$ffmpegVer = & (Join-Path $vs "bin\ffmpeg.exe") -version 2>&1 | Select-Object -First 1
+Check ($ffmpegVer -match 'ffmpeg version') "ffmpeg.exe 可执行（-version）"
 
 # 3. 配置
 Write-Host "  [配置]"
@@ -69,6 +75,7 @@ Check (Test-Path (Join-Path $engine "packages\api\session-controller\src\index.t
 # 5. 运行时 / caddy（警告级）
 Write-Host "  [可选运行时]"
 Check (Test-Path (Join-Path $Root "runtimes\dshdoc-runtime-win32-x64")) "dsh-doc OCR 运行时" "warn"
+Check (Test-Path (Join-Path $Root "plugins\dsh-video-studio-local\assets\manifest-tool.exe")) "manifest 校对工具 exe" "warn"
 Check (Test-Path (Join-Path $Root "bin\caddy.exe")) "caddy.exe" "warn"
 
 Write-Host ""

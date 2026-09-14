@@ -3,12 +3,12 @@ ui-onboarding:
 agent-presets:
   default: cordis
 ui-theme:
-  preference: light
+  preference: dark
 permission:
   defaultPreset: danger-full-access
 ui-conversation:
   busyEnter: steer
 agent-default-model:
   provider: deepseek-official
-  model: deepseek-v4-flash
-  reasoningEffort: max
+  model: deepseek-v4-pro
+  reasoningEffort: high
