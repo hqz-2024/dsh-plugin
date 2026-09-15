@@ -3,9 +3,10 @@
 # DSH 局域网部署一键安装（Linux / macOS）
 #
 # 与 install.ps1（Windows）对应。按顺序完成：
-#   0 前置检查  1 引擎拉取/安装  2 profile 依赖  3 四个插件依赖
+#   0 前置检查  1 引擎拉取/安装  2 profile 依赖  3 五个插件依赖
 #   4 角色预设 + 全局 skill 校验  5 渲染 cordis.patch.yml  6 .credentials.yaml
 #   7 dsh-doc（Linux/macOS 用 node 引擎，无 win32 OCR 运行时）
+#   7b FFmpeg / 7c manifest 校对工具（install.ps1 会下载 win32 产物；这里仅提示）
 #   8 Caddyfile + 启动脚本  9 自检
 #
 # 用法：
@@ -33,9 +34,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 PROFILE_DIR="$ROOT/profiles/web"
-PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge)
+PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge dsh-video-studio-local)
 PRESETS=(finance-manager art-design business-sales procurement production hr-management rd-development)
-SKILLS=(sidecar dsh-development firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
+SKILLS=(sidecar dsh-development dsh-video-studio firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
 
 step() { echo; echo "==> $1"; }
 ok()   { echo "    [ok] $1"; }
@@ -141,6 +142,24 @@ fi
 # ── 7. dsh-doc 运行时 ──────────────────────────────────────────
 step "7. dsh-doc 运行时"
 warn "Linux/macOS 用 node 引擎（无 win32 离线 OCR 运行时）；如需中文 OCR 请用 Windows 部署"
+
+# ── 7b. FFmpeg 二进制（dsh-video-studio）───────────────────────
+# install.ps1 会下载 win64 构建解压成 bin/ffmpeg.exe + bin/ffprobe.exe。
+# Linux 侧暂不下载：lib/ffmpeg.js 把路径硬编码为 bin/ffmpeg.exe，
+# 塞系统 ffmpeg 进去也不会被调用。等插件改成按平台解析后再补下载步骤。
+step "7b. FFmpeg 二进制"
+if command -v ffmpeg >/dev/null 2>&1; then
+  ok "系统已装 ffmpeg：$(command -v ffmpeg)"
+  warn "但 dsh-video-studio-local 仍指向 bin/ffmpeg.exe（硬编码），当前不会调用系统 ffmpeg"
+else
+  warn "系统未装 ffmpeg（如需命令行转码：Debian/Ubuntu 用 'sudo apt install ffmpeg'）"
+fi
+
+# ── 7c. manifest 校对工具 ──────────────────────────────────────
+# 该工具是 Windows Electron portable 产物（install.ps1 用 --win portable 构建），
+# 无 Linux 版本；缺失不影响 manifest.json 手工编辑，自检按可选处理。
+step "7c. manifest 校对工具"
+warn "manifest-tool.exe 仅 Windows，Linux 侧跳过（可选组件）"
 
 # ── 8. Caddyfile + 启动脚本 ────────────────────────────────────
 step "8. Caddyfile + 启动脚本"
