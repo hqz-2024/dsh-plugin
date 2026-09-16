@@ -1064,6 +1064,36 @@ keepalive 让**服务器**成了存活性判定的发起方，于是"服务器�
 
 > ⚠️ **顺带查清一件事：本部署里 `ctx.logger` 的输出没有任何可见去处。** 整个实施过程中跑过几十次服务器，`[client-transport] ...` 这类 `info` 行一次都没出现在 stdout / job 输出里；本轮这条 `warn` 同样没出现。**结论：诊断不能依赖 `ctx.logger`** —— 可观察面是插件自己写的产物：`dispatch-trace.jsonl`、`probe-result.jsonl`、执行器自己的 stdout、以及存储文件（`storages/client_binding.json`）。上面那条 warn 保留（与文件里既有写法一致，将来接了日志导出就会出现），但**不能把它当成用户会看到的提示**，所以补救动作写进了 README。
 
+### 切 profile 到底改了什么：用 `--dump-config` 对拍（本轮）
+
+此前"上线组合 dry run"是**行为上**证明挂载客户端世界对未绑定工作区是中性的。本轮补上更强的形式：把两个 profile 的**合成后组合**导出来逐行对拍 —— 这能抓住"复制来的 patch 悄悄落后于线上"这类只有上线那一刻才炸的问题。
+
+```powershell
+$env:DSH_HOME = "$env:USERPROFILE\.dsh"
+node --import tsx/esm apps/cli/src/bin.ts --profile web        --dump-config > $env:TEMP\dump-web.txt
+node --import tsx/esm apps/cli/src/bin.ts --profile web-client --dump-config > $env:TEMP\dump-webclient.txt
+Compare-Object (Get-Content $env:TEMP\dump-web.txt) (Get-Content $env:TEMP\dump-webclient.txt) -SyncWindow 40
+```
+
+**差异只有四类**（606 行 vs 634 行）：
+
+1. 注释行里写的 patch 文件名（`profiles\web\…` vs `profiles\web-client\…`）；
+2. `subprocess` 那一行多了 `disabled: true`；
+3. `remote` 那一行的配置里多了 `publicPrefixes: [/executor, /client-auth, /client-relay]`；
+4. 两行新插件（`client-bindings`、`subprocess-dispatch`）及其配置。
+
+**线上每一行（remote / permission / dsh-doc / local-bridge / llm-deepseek / agent-presets、以及 sidecar 的三个 token）在合成后都是逐字节相同的。** 所以"切换不改变现状、改变只发生在有人主动绑定之后"这句话，现在有对拍作证，不再只是断言。
+
+> **对拍时专门查的一件事**：`publicPrefixes` 会**替换整行配置**，而它在 `dsh-remote-local/lib/index.js:173` 的默认值是 `[]` —— 也就是说 web-client 一旦显式写这个键，就有可能把线上**原本靠默认值或别处配置**拿到的豁免丢掉。核对结果：不会。`/sidecar` 的豁免是 upgrade 门禁里**写死**的一条（`:1417` `if (pathname !== "/sidecar" && …)`），sidecar 也只升级这一个路径，所以这个列表对它是纯增量。若不查这一步，切换后 sidecar（`local_run`）会静默失效。
+
+**顺带把"怎么切"变成一处改动**：
+
+- `start-dsh-lan.cmd` 里 profile 现在是变量（`set "PROFILE=web-client"`），切换与回退都是一处改词；
+- `install.ps1` 新增 `-RunProfile`（默认 `web`）并把它写进生成的启动脚本，`install.sh` 用 `RUN_PROFILE` 对应；
+- ⚠️ **重跑 `install.ps1` 会把启动脚本改回 `web`**（不带 `-RunProfile` 时），这一点写进了生成脚本的注释里。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1235,6 +1265,8 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 3. **`spawn()` 同步 vs `resolveByPath()` 异步** —— 决策不能放在 spawn 里；本实现用一张同步路由索引 + 后台刷新。另：`resolveByPath` 对不存在的路径会 **reject**
 4. **Windows 环境变量名大小写不敏感，但"复制出来的普通对象"不是** —— 介质里写的是 `Path` 不是 `PATH`；把 `process.env` 复制进普通对象后按 `.PATH` 读会得到 `undefined`，PATH 搜索**静默空转**。本次 `argv[0]` 解析第一版就栽在这里（引擎在 `packages/subprocess/subprocess/src/index.ts:53-55` 同样警告过这一点）。所有环境变量查找必须大小写不敏感。
 5. **清理进程时不要用宽泛的匹配** —— 本轮收尾时用 `*chromium*` 过滤 `node.exe`，杀掉的不只是自己起的无头 Chromium，还有**四个早就存在的 Playwright MCP 服务进程**（父进程已不在，没人会重启它们）。规则：**只杀自己起的东西** —— 用 job id，或记下确切的 pid；非要用命令行子串匹配，先把会命中的清单打印出来看一眼。这条与本项目其它几次操作失误同源（端口没释放就重启、`job_kill` 连带整棵进程树），都是「图省事的一次性清理动作」。
+6. **带中文注释的 `.ps1` 必须存成 UTF-8 **带 BOM**** —— 否则 Windows PowerShell 5.1 按系统 ANSI 代码页读它，中文变乱码并**在解析期就报语法错**（报错指向 `'` 未闭合，看不出真正原因；`pwsh` 7 默认 UTF-8，所以同一个文件在 pwsh 下完全正常，很容易误判成"脚本没问题，是你环境不对"）。本轮写 `check-live-client-world.ps1` 时踩到，同一仓的 `backup.ps1` / `migrate.ps1` 之所以带上 BOM 也是这个原因（它们含中文，那两个 BOM 是**修复**，不是噪音）。写入方式：`[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($true)))`。
+7. **`$Home` 是 PowerShell 的只读自动变量** —— 拿它当脚本参数名（`param([string]$Home = ...)`）会在运行时直接报"无法覆盖变量 Home"。写这类脚本的参数时避开 `$Home`/`$Host`/`$Profile`/`$Args` 等自动变量；本轮的用法改成了 `-DshHome`。
 
 ### 一个时序事实
 
@@ -1261,6 +1293,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `setup-smb.ps1` | SMB 共享安装脚本（需管理员运行） |
 | `measure-smb-boundary.ps1` | P0-3 的边界/性能量具（在**客户端**上跑，也支持对本地盘跑基线） |
 | `link-proxy.mjs` | 静默断链量具：文件开关控制的 TCP 中继。写 `cut` 时**两条连接保持 ESTABLISHED、双向字节丢弃** —— 用来复现"不发 FIN/RST 的掉网"（见 §1 与 §6） |
+| `check-live-client-world.ps1` | 切换 profile 之后的**只读体检**：门禁是否还在、三条客户端前缀是否真被放行、处理器是否各自校验凭据、`/executor` 是否 4001。对 3080（`web`）跑会给 4 项 FAIL，对 3086（`web-client`）跑 exit 0 —— 两种情况都实测过 |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |
 
 ## 6. 怎么重跑
@@ -1498,8 +1531,15 @@ pnpm dsh --profile web-client --port 3086
 1. **在线上 GUI 里建 `smbtest` 工作区**（路径 `C:\dsh-workspaces\smbtest`）。
    线上 home（`~/.dsh`）目前的工作区只有 4 个：`deepseek-harness`、`宝单科技资料`、`微众诉讼`、`.dsh` —— **`smbtest` 只在 `.dsh-web-client` 那个测试 home 里**，线上没有。跨机验证要绑的就是它（它对应共享 `\\192.168.28.239\ws-smbtest`）。
    **不要手改 `storages/workspace.json`**：`global.workspaceIds` 是另一份顺序表，只加一处启动就报 "absent from registry order"；而且线上实例正在运行，内存里的副本会把我写进去的内容覆盖掉。走 GUI（设置 → 工作区 → 添加）。
-2. **改启动命令并重启**：`start-dsh-lan.cmd` 里 `--profile web` → `--profile web-client`，然后关掉 dsh-web 那个窗口重新运行这个 cmd。**caddy 不用重启**（它只是反代 127.0.0.1:3080，上游换组合对它是透明的）。
-   回退同样一条命令改回来即可；绑定记录留在 `client_binding` 域里不会丢（但跨重启一律不活跃，需要重新绑定）。
+2. **改启动命令并重启**：`start-dsh-lan.cmd` 里 profile 现在是变量（已预置 `set "PROFILE=web-client"`），关掉 dsh-web 那个窗口重新运行这个 cmd 即可。**caddy 不用重启**（它只是反代 127.0.0.1:3080，上游换组合对它是透明的）。
+   回退同样一处改回 `web`；绑定记录留在 `client_binding` 域里不会丢（但跨重启一律不活跃，需要重新绑定）。
+   **重启后立刻跑一次体检**，它把"门禁还在 / 三条前缀确实放行 / 处理器各自校验凭据"逐条摆出来：
+
+   ```powershell
+   & "$env:USERPROFILE\.dsh\check-live-client-world.ps1"          # 线上 3080，期望 exit 0
+   ```
+
+   切换**之前**跑同一条命令会得到 4 项 FAIL（`/client-auth/state` 返回 200 + index.html，即前端兜底路由）—— 那正是"这个实例没挂客户端世界"的判据，可以拿它确认自己切没切过去。
 3. **在 SUNDA 上装客户端**：装 Node → 设 `NODE_EXTRA_CA_CERTS`（见 README；忘了会得到一条写明补救办法的错误）→ 用浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 下载 `executor.mjs`** → `node executor.mjs` → 打开 `http://127.0.0.1:38460`，在配置页填服务器地址 `https://192.168.28.239:8443`、用 `admin` 登录一次 → 填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
 
 **判据（这一步才是跨机证明）**：在线上 GUI 里开一个会话、cwd 指向 `smbtest`，让 agent 跑 `hostname` 与 `Get-Location` —— **子进程自报 `SUNDA`** 就是跨机证明；同时 `execution:world` 提示词段应当出现（§2.5）。这一条同时把 `argv[0]` 跨机解析、UNC 路径翻译、"真实 shell 工具链而非探针直调 `spawn`"一并验掉。

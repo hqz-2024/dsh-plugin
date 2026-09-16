@@ -118,12 +118,20 @@
     serverRuntime: '@deepseek-ai/dsh-subprocess-local'
     refreshMs: 2000
     tracePath: !!js dshHomePath('profiles/web-client/dispatch-trace.jsonl')
-    # executor 用它换账号。每个账号一个 token；与 sidecar token 同理，泄露即等于
-    # 该账号在自己机器上的执行权限，所以按账号单独签发与撤销。
-    tokens:
-      REPLACE_WITH_EXECUTOR_TOKEN_FOR_ADMIN: admin
+    # executor 用它换账号。
+    #
+    # 推荐留空：每台客户端机器在本机配置页登录一次，由服务器签发一枚专属 token，
+    # 凭据与机器一一对应，可逐台撤销。下面的写死写法也受支持（`<token>: <账号>`），
+    # 适合无法交互登录的装机场景，代价是那份凭据撤不掉 —— 删账号只吊销账号库里的
+    # token，配置里的行要手工删掉并重启才失效。
+    tokens: {}
+    # 静态 token 的写法（与上面二选一）：
+    # tokens:
+    #   REPLACE_WITH_EXECUTOR_TOKEN_FOR_ADMIN: admin
     # 客户端 127.0.0.1 转发白名单。3845 = Figma Dev Mode MCP。只列真正需要转发的端口。
     relayPorts: [3845]
+    # 这条是**部署级路径密钥**，不能靠登录签发：持有它 = 能借该账号已绑定的机器访问
+    # 白名单端口。用 `openssl rand -hex 24` 生成一个。
     relayTokens:
       REPLACE_WITH_RELAY_PATH_SECRET: admin
     authPath: '/client-auth'
