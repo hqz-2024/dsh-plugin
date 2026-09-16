@@ -1,0 +1,16 @@
+# Overlay: run `pilot-auth` WITHOUT its smoke harness.
+#
+# The probe claims a workspace, spawns children and rebinds on its own schedule,
+# which makes it impossible to observe a quiet instance -- for example "what does
+# the client do when the server restarts while it holds a binding" (§2 of the
+# plan, and the README's promise that every binding lapses across a restart).
+# Focused cases therefore start the same composition with this overlay so the
+# only actor is the one the test drives.
+#
+#   pnpm dsh --profile pilot-auth --port 3084 --patch <this file>
+#
+# A patch replaces the row's whole `config`, so a row disabled here keeps the
+# configuration the profile gave it; only `disabled` is overridden.
+
+- id: subprocess-probe
+  disabled: true

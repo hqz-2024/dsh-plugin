@@ -335,13 +335,13 @@ function applySmbCredential(host) {
  * The server issues the token; this side only carries the cookie between the two
  * calls. Returning the workspace list is what lets the page offer a choice
  * instead of asking the user to type a workspace id.
- * @param server - Base URL of the DSH server.
+ * @param server - Base or endpoint URL of the DSH server, HTTP or WS scheme.
  * @param username - Account to sign in as.
  * @param password - Account password.
  * @returns `{ ok: true, token, username, workspaces, heartbeatMs }` or `{ ok: false, error }`.
  */
 async function signIn(server, username, password) {
-	const base = server.replace(/\/+$/, '')
+	const base = httpBase(server)
 	let response
 	try {
 		response = await fetch(`${base}/auth/login`, {
@@ -384,10 +384,31 @@ async function signIn(server, username, password) {
 }
 
 /** Call one authenticated endpoint with the enrolled executor token. */
+/**
+ * The HTTP base URL for one server spelling.
+ *
+ * `--server` on the command line normally names the executor endpoint
+ * (`ws://host:port/executor`) and the saved enrollment keeps whatever it was
+ * given, while every other call this process makes is plain HTTP mounted at the
+ * root. Converting here rather than at each call site is what makes both
+ * spellings work end to end: with only the connection normalizing, a page opened
+ * from endpoint-spelled enrollment answered `/status` and then failed every bind
+ * with a bare "fetch failed", because `fetch` refuses a `ws:` URL.
+ * @param server - An `http:`, `https:`, `ws:`, or `wss:` URL, with or without the endpoint path.
+ * @returns the base URL that `/auth/login` and `/client-auth/...` append to.
+ */
+function httpBase(server) {
+	const base = String(server ?? '').trim().replace(/\/+$/, '')
+	return base
+		.replace(/^wss:/i, 'https:')
+		.replace(/^ws:/i, 'http:')
+		.replace(/\/executor$/, '')
+}
+
 async function callEnrolled(action, body) {
 	if (!enrollment.token) return { ok: false, error: 'not enrolled yet' }
 	try {
-		const response = await fetch(`${enrollment.server}/client-auth/${action}`, {
+		const response = await fetch(`${httpBase(enrollment.server)}/client-auth/${action}`, {
 			method: body === undefined ? 'GET' : 'POST',
 			headers: {
 				authorization: `Bearer ${enrollment.token}`,

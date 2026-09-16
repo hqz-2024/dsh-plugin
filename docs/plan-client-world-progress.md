@@ -18,6 +18,7 @@
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
 | **P1** | executor 授权与登录链路 + **本地配置页**（§2.5 闭环） | ✅ 已验证（`pilot-auth`，真实门禁下） |
 | **P1** | admin 强制解绑（接口层 + **界面**） | ✅ 已验证（界面用真实浏览器验过，见 §1） |
+| **P1** | 服务端重启后绑定一律失效、需要重新绑定（README 的承诺） | ✅ 已验证（本轮：记录标 `endReason=server-restart`、重连后不重放陈旧绑定，见 §1） |
 | **P1 剩余** | 账号上的工作区授权字段 | ❌ 未做（`workspaces` 复用 roleMap，计划 §2.1 明确允许） |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
 | **P2** | **权限一致性**（§2.1：执行机必须是会话账号自己绑定的那台） | ✅ 已验证（本轮，`DSH_SESSION_ID` 归属比对） |
@@ -1010,6 +1011,43 @@ pnpm dsh --profile pilot-auth --port 3085 --host 192.168.28.239
 
 > 记这条的目的是**把一次差点发生的错误修正钉住**：只读命令行校验就下结论是不够的，插件的配置 schema 是第二道、而且更严的门。
 
+### 服务端重启：README 承诺过、但一直没验的那条（本轮补上）
+
+`README.md` 写着"**服务端重启后所有绑定一律失效**（心跳全部陈旧），重启后需要重新绑定——这是设计如此"。这条承诺此前**没有任何用例复查过**（`server-restart` 这个 `endReason` 在整个进度文档里一次都没出现过）。它影响每一次升级与服务重启，所以本轮直接测：
+
+用 `--patch profiles/pilot-auth/no-probe.patch.yml`（新增覆盖层，把探针那一行 `disabled`）起一个**安静的**实例 —— 探针会自己抢工作区、自己绑，安静不下来就没法观察"服务器没了的时候客户端在做什么"。然后手工用 executor 配置页的 `/bind` 绑上 `宝单科技资料`，重启服务器，再读**存储文件本身**（`<home>/storages/client_binding.json` 是明文 JSON，可以直接对账）：
+
+| 时刻 | 观察 | 说明 |
+|---|---|---|
+| 重启前 | `serverBoot=25a39fb8-…`，`lastHeartbeat` 在跳 | 记录属于这次 boot |
+| 杀掉服务器 | 客户端日志 `disconnected` + `retrying in 1000/2000/…ms` | **socket 被正常关闭**（进程死了会发 FIN）→ 走的是 `close` 那条路，不是看门狗 |
+| 新服务器起来后 | `connected=True`、**`held=''`** | 重连成功，**陈旧绑定没有被重放**（重放路径用 `isLive` 过滤，`isLive` 第一条就是 `serverBoot !== this.bootId`） |
+| 同刻读存储 | `endedAt` 已写、**`endReason=server-restart`**、`serverBoot` 仍是旧值 | 记录**保留**、标成重启失效，不是被删掉 |
+| 之后手工重绑 | `ok=true`，新记录 `serverBoot=7b828a08-…`（新的 boot） | "需要重新绑定"这半句也成立 |
+
+**两个机制的边界也因此清楚了**：`close` 负责"对端干净地走了"（进程死亡、正常重启），看门狗负责"对端不声不响地消失了"（静默链路）。这次重启走的是前者 —— 也就是说看门狗没有在真实重启里误伤，这正是它该有的表现。
+
+### 配置页的 HTTP 调用不认 `--server` 的 ws:// 写法（本轮踩到并修掉）
+
+上面这次测试第一次 `bind` 直接失败：
+
+```json
+{"ok":false,"error":"fetch failed"}
+```
+
+原因是 `callEnrolled()` 拼的是 `` `${enrollment.server}/client-auth/${action}` ``，而 `enrollment.server` 来自命令行/状态文件时常常是**端点写法** `ws://host:port/executor`（这正是 §6 与 README 教用户写的那一种）。`connect()` 一侧有 `socketUrl()`/`executorEndpoint()` 把两种写法都认下来，注释里也明说"两种拼法都会到达这个函数"，**但 HTTP 那几次调用没有做同样的归一化** —— `fetch` 拒绝 `ws:` scheme，于是配置页的 `/status` 正常、而 `bind` / `unbind` / 保存共享凭据**全部**以一句没有任何线索的 `fetch failed` 收场。
+
+修法：加一个 `httpBase()`（与 `socketUrl` 反向对称：`ws→http`、`wss→https`、去掉末尾 `/executor` 与斜杠），`signIn()` 与 `callEnrolled()` 都走它。四种拼法都验过：
+
+| 输入 | `httpBase()` |
+|---|---|
+| `ws://127.0.0.1:3084/executor` | `http://127.0.0.1:3084` |
+| `wss://h:8443/executor` | `https://h:8443` |
+| `http://127.0.0.1:3080` | `http://127.0.0.1:3080` |
+| `https://192.168.28.239:8443/` | `https://192.168.28.239:8443` |
+
+> 这条值得单独记一笔的原因不是它有多严重，而是**它是"按文档写命令"才会踩到的**：手工只测配置页的人永远碰不到它。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1200,6 +1238,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `plugins/dsh-subprocess-probe/fixtures/local-service.mjs` | 本机服务 fixture（`/ping`、`/echo`、`/sse`），验证转发用 |
 | `profiles/pilot/` | pilot profile（无门禁，验证客户端执行机制） |
 | `profiles/pilot-auth/` | pilot + `dsh-remote`（门禁开启 + 种一个 admin），验证 §2.5 登录链路与门禁豁免 |
+| `profiles/pilot-auth/no-probe.patch.yml` | 覆盖层：把探针那一行 `disabled`，用来观察**安静**的实例（探针自己会抢工作区，见 §1 的服务端重启用例）。用法：`dsh --profile pilot-auth --patch <此文件> --port 3084`（`--patch` 必须写在 app 自己的 flag **之前**，launcher 的 flag 到第一个不认识的 token 就停） |
 | **`profiles/web-client/`** | **上线 profile**：`profiles/web` 组合的逐行副本 + 客户端世界四行。已按真实组合验证 |
 | `~/.dsh-web-client/` | web-client 的隔离 home（junction 复用 plugins/profiles/.agent-presets/skills，独立 auth/sessions/storages） |
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |
