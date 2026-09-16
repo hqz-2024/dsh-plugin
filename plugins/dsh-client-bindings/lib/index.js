@@ -120,6 +120,20 @@ const bindingDomainSpec = defineDomain({
 })
 
 /**
+ * Whether a string can name a directory on the machine that is claiming.
+ *
+ * A drive path (`C:\work`) or a UNC share (`\\server\share`) — the two spellings a
+ * Windows client can have. A relative path is refused as well as an empty one: it
+ * would resolve against whatever directory the executor happens to run in, which is
+ * not a decision either side can make on the user's behalf.
+ * @param value - The path as submitted.
+ * @returns true when it is an absolute path on a Windows client.
+ */
+function isClientAbsolutePath(value) {
+	return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)
+}
+
+/**
  * Workspace-to-executor binding store. Registered as `ctx.clientBindings`.
  */
 export default class ClientBindings extends Service {
@@ -483,6 +497,14 @@ export default class ClientBindings extends Service {
 
 	/**
 	 * Claim a workspace for one machine. Refused while an active occupant holds it.
+	 *
+	 * The two paths are validated here rather than at the HTTP endpoint, because
+	 * this is the operation that records them: a binding is a promise that commands
+	 * can run in a real directory on a real machine, and a blank one breaks that
+	 * promise twice over — the dispatcher would hand the client a working directory
+	 * that does not exist, and the prompt section would tell the model its commands
+	 * run in "`…: ``". Enforcing it at the endpoint would leave every other caller
+	 * free to write the same broken record.
 	 * @param request - Workspace identity plus the claiming account, machine, and paths.
 	 * @returns `{ ok: true, binding }`, or `{ ok: false, reason, occupant… }` when held.
 	 */
@@ -492,6 +514,22 @@ export default class ClientBindings extends Service {
 			if (!workspaceId) return { ok: false, reason: 'missing-workspace' }
 			const username = String(request?.username ?? '')
 			if (!username) return { ok: false, reason: 'missing-username' }
+			const visiblePath = String(request?.visiblePath ?? '').trim()
+			if (!isClientAbsolutePath(visiblePath)) {
+				return {
+					ok: false,
+					reason: 'invalid-visible-path',
+					error: `the workspace must be given as an absolute path on the client machine (C:\\work or \\\\server\\share); got ${JSON.stringify(String(request?.visiblePath ?? ''))}`,
+				}
+			}
+			const stagingDir = String(request?.stagingDir ?? '').trim()
+			if (!isClientAbsolutePath(stagingDir)) {
+				return {
+					ok: false,
+					reason: 'invalid-staging-dir',
+					error: `a staging directory is required and must be absolute on the client machine (C:\\work or \\\\server\\share); got ${JSON.stringify(String(request?.stagingDir ?? ''))}`,
+				}
+			}
 			const existing = this.get(workspaceId)
 			if (this.isLive(existing)) {
 				return {
@@ -508,8 +546,8 @@ export default class ClientBindings extends Service {
 				workspaceTitle: String(request?.workspaceTitle ?? existing?.workspaceTitle ?? ''),
 				username,
 				machine: String(request?.machine ?? ''),
-				visiblePath: String(request?.visiblePath ?? ''),
-				stagingDir: String(request?.stagingDir ?? ''),
+				visiblePath,
+				stagingDir,
 				serverBoot: this.bootId,
 				boundAt: now,
 				lastHeartbeat: now,

@@ -661,7 +661,7 @@ export function apply(ctx, config) {
 				username: `racer-${index}`,
 				machine: `machine-${index}`,
 				visiblePath: `\\\\probe-host\\share-${index}`,
-				stagingDir: '',
+				stagingDir: `C:\\probe-staging-${index}`,
 			})))
 			const winners = results.filter((result) => result.ok)
 			const loserReasons = results.filter((result) => !result.ok).map((result) => `${result.reason}${result.occupant ? `:${result.occupant}` : ''}`)
@@ -693,7 +693,7 @@ export function apply(ctx, config) {
 		if (sweepRaceTest) {
 			const w1 = 'sweep-race-1'
 			const w2 = 'sweep-race-2'
-			const seed = { workspaceTitle: 'sweep-race', username: 'sweep-stale', machine: 'm1', visiblePath: '', stagingDir: '' }
+			const seed = { workspaceTitle: 'sweep-race', username: 'sweep-stale', machine: 'm1', visiblePath: 'C:\\probe-stale', stagingDir: 'C:\\probe-staging' }
 			try {
 				await bindings.claim({ workspaceId: w1, ...seed })
 				await bindings.claim({ workspaceId: w2, ...seed })
@@ -707,7 +707,7 @@ export function apply(ctx, config) {
 				const sweeping = bindings.sweep()
 				const claiming = bindings.claim({
 					workspaceId: w2, workspaceTitle: 'sweep-race', username: 'fresh-claimer',
-					machine: 'm2', visiblePath: '', stagingDir: '',
+					machine: 'm2', visiblePath: 'C:\\probe-fresh', stagingDir: 'C:\\probe-staging',
 				})
 				const claimed = await claiming
 				const expiredByThisSweep = await sweeping
@@ -744,7 +744,7 @@ export function apply(ctx, config) {
 			const sid = 'semantics-probe'
 			const fresh = (username, machine) => ({
 				workspaceId: sid, workspaceTitle: 'semantics-probe',
-				username, machine, visiblePath: '', stagingDir: '',
+				username, machine, visiblePath: `\\\\probe-host\\${machine}`, stagingDir: 'C:\\probe-staging',
 			})
 			await bindings.claim(fresh('machine-a', 'A'))
 			// Let it lapse without heart-beating it.
@@ -943,7 +943,7 @@ export function apply(ctx, config) {
 					await bindings.claim({
 						workspaceId: otherId, workspaceTitle: otherTitle,
 						username: viewerUser, machine: 'probe-viewer-machine',
-						visiblePath: '', stagingDir: '',
+						visiblePath: 'C:\\probe-viewer', stagingDir: 'C:\\probe-staging',
 					})
 					const held = bindings.isLive(bindings.get(otherId))
 					const grant = await fetch(`${serverBase}/auth/accounts`, {
@@ -1096,6 +1096,22 @@ export function apply(ctx, config) {
 			record({ step: 'auth-bind-unknown-workspace', status: bogus.status, body: await bogus.json() })
 		} catch (error) {
 			record({ step: 'auth-bind-unknown-workspace', error: String((error && error.message) || error) })
+		}
+		// A binding is a promise that commands run in a real directory on a real
+		// machine, and the two paths are what make that promise. Both spellings of
+		// "not a path" must be refused where the record is written, not silently
+		// accepted and then discovered by a child process that cannot start.
+		for (const [label, submitted] of [['blank', ''], ['relative', 'some\\dir']]) {
+			try {
+				const rejected = await fetch(`${authBase}/bind`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+					body: JSON.stringify({ workspaceId, visiblePath: submitted, stagingDir: 'C:\\dsh-staging' }),
+				})
+				record({ step: `auth-bind-rejects-${label}-visible-path`, status: rejected.status, body: await rejected.json() })
+			} catch (error) {
+				record({ step: `auth-bind-rejects-${label}-visible-path`, error: String((error && error.message) || error) })
+			}
 		}
 
 		// ── 7. Disconnect semantics (plan §4.5 / §4.6, and the P3 crashtest) ──

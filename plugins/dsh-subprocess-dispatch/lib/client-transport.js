@@ -872,7 +872,11 @@ export class ClientTransport {
 					// heartbeating and the binding lapses on its own grace clock.
 					this.notifyBindApply(username, claimed.binding, bindings.heartbeatMs)
 				}
-				this.respond(res, claimed.ok ? 200 : 409, {
+				// A refused claim is the store's decision; an invalid path is the
+				// caller's mistake, and 400 says so where 409 would imply a conflict
+				// with another occupant.
+				const refused = String(claimed.reason ?? '').startsWith('invalid-') ? 400 : 409
+				this.respond(res, claimed.ok ? 200 : refused, {
 					...claimed,
 					bindings: this.bindingsFor(username),
 				})

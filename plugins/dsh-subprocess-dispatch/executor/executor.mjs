@@ -516,7 +516,7 @@ function renderWorkspaces(list){
   if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
   $('workspaces').innerHTML = list.map((w)=>
     '<div style="margin:.4rem 0"><b>'+w.title+'</b><br><code>'+w.path+'</code><br>'+
-    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" value="">'+
+    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="">'+
     '<label>本机暂存目录（留空则用 '+DEFAULT_STAGING+'）</label><input id="sd-'+w.id+'" placeholder="'+DEFAULT_STAGING+'" value="">'+
     '<button onclick="bind(\\''+w.id+'\\')">绑定</button></div>').join('');
 }

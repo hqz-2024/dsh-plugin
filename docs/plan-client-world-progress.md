@@ -1198,6 +1198,23 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 
 
 
+### 同一个形状的第二处：`visiblePath` 留空（本轮，在"记录它的那个操作"里拒绝）
+
+修完暂存目录的默认值，我去看了**同一张表单上的另一个可选字段** —— 结果更糟：`/client-auth/bind` **接受空 `visiblePath`**，于是
+
+- 分派索引把这个工作区标成 `client`，并把每一次 spawn 的 cwd 翻译成 **`''`**；
+- 提示词里出现的是：`A shell command's working directory is the SAME directory seen from the user's computer: ``.` —— **一句没有路径的话**，而这类句子正是 agent 会照着做的。
+
+**约束加在 `bindings.claim()`，不是 HTTP 端点**：claim 才是**记录这两个路径**的操作，加在端点上只会让别的调用者照样写出坏记录（引擎自己的规矩：enforcement 要在做决定的那一步）。两个路径都必须是**客户端机器上的绝对路径**（盘符或 UNC）；端点对 `invalid-*` 回 **400**（而不是 409），让"你的输入不对"和"被别的机器占着"分得开。
+
+**验证**：空 → 400 `invalid-visible-path`；相对路径 → 400；合法 UNC + 空暂存 → 通过（暂存由执行器填默认值）。并**固化进回归**：探针新增 `auth-bind-rejects-blank-visible-path` 与 `auth-bind-rejects-relative-visible-path` 两步，smoke 里都是 400 + `invalid-visible-path`。
+
+**真正有意思的是连带影响**：探针里有**四处合成 claim** 传的是 `visiblePath: ''` / `stagingDir: ''`（race、sweep-race、semantics、account-authorization）—— 它们此前"能跑"只是因为**没人校验过**。改成真实形状的路径之后，smoke（65 行）照旧通过，说明这次收紧没有悄悄弄坏它本该不碰的那几条语义用例。
+
+> **这是本项目第三个同形状的 bug**（stdin 丢字段、暂存段条件输出、空 visiblePath）：**一个"可选"字段其实在一侧是承重的**。三者都不是逻辑写错，而是"两半只在被测过的那一种配置下一致"。查完这两个之后我按同一把尺子过了一遍剩下的可选字段：`machine`（执行器自报）、`workspaceTitle`（服务端从注册表取）、`relayPorts`/`relayTokens`（使用时校验）—— 都没有这种"缺了就静默降级"的性质。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1559,7 +1576,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 
 **判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
 
-> **最近一次（本轮，加了 `spawn-latency` 之后、fixture 已启动）**：**63 行**（= 原来的 62 + `spawn-latency` 一行）、`probe-complete`、`HUNG` 计数 **0**、失败项仍然恰好是下面那两条，关键值与下表逐项一致。`spawn-latency` 只是**信息行**（它不设 `ok`），所以"恰好两条失败"这条判据不受它影响 —— 数值见 §1。
+> **最近一次（本轮，加了 `spawn-latency` 与两条 bind 拒绝用例之后、fixture 已启动）**：**65 行**（62 + `spawn-latency` + 两条 `auth-bind-rejects-*`）、`probe-complete`、`HUNG` 计数 **0**、失败项仍然恰好是下面那两条，关键值与下表逐项一致。`spawn-latency` 只是**信息行**（它不设 `ok`），两条拒绝用例按期望返回 400，所以"恰好两条失败"这条判据不受影响 —— 数值与用例见 §1。
 
 | 允许失败的两条 | 为什么它们是"对的" |
 |---|---|
@@ -1579,6 +1596,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `crash-inflight-spawn` | `outcome` 以 `rejected:` 开头，`ms` 在几千以内 |
 | `crash-binding-active` | **true**（否则它下面那条不成立） |
 | `spawn-latency` | 信息行：客户端/服务器两条路径的中位数应当接近（同机对照下差几 ms，见 §1） |
+| `auth-bind-rejects-blank-visible-path` / `-relative-` | 都是 **400** `invalid-visible-path`：绑定记录里不允许出现空的或相对的路径（见 §1） |
 | `prompt-section-bound` / `unbound` | 长度 1463 / 0 |
 | `relay-sse` | `streamed` true，三个 `arrivals` 间隔约 400ms |
 | `relay-upstream-dead` | **502**，且错误文本含 `ECONNREFUSED` 与**确切端口**（3845 无人监听），不能是挂起或无理由的 502 |
