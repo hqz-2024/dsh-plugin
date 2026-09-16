@@ -1942,9 +1942,13 @@ node build-executor-exe.mjs          # 5 步：CJS bundle → SEA blob → 注�
 | exe 能免参数找到 node-pty | 把 `node-pty\` 放在 exe 旁边，`--self-test`（**不带任何参数**） | `nodePtyPath:"(bare name node-pty)"`，`loaded:true` |
 | 下载端点 | 带会话 `HEAD` / `Range: bytes=0-99` / 越界 Range | 200 + `Content-Length=34006216`；206 + `Content-Range: bytes 0-99/34006216`，首字节 `50-4B-03-04`（PK）；**416** + `bytes */34006216` |
 | **分发包真的可用** | 从服务器 HTTP 下载 zip → `Expand-Archive` → 跑解包出来的 exe（**全新副本，未做任何手工设置**） | 免参数自检通过，并可连上 3084 接活 |
-| **exe 客户端跑完整冒烟** | 用上面那份解包副本当 executor，跑 §7-A 全部用例 | **89 步**、`probe-complete`、**失败项恰好只有 `argv0-unresolvable` 一条**（刻意负例）、`HUNG` 0；`terminal-interactive` / `terminal-python-repl` 双 true 且 `sawServerPath=false`、`sawTranslatedPath=true`、`client-execution` 的 `executedOn=client` |
+| **exe 客户端跑完整冒烟** | 用上面那份解包副本当 executor，跑 §7-A 全部用例 | **68 步**、`probe-complete`、**失败项恰好只有 `argv0-unresolvable` 一条**（刻意负例）；`terminal-interactive` / `terminal-python-repl` 双 true 且 `sawServerPath=false`、`sawTranslatedPath=true`、`client-execution` 的 `executedOn=client` |
 
-> **`crash-offline-spawn` 这一次显示 `ok:true`**，原因是用例需要**外部在 `crash-armed` 出现的瞬间杀掉 executor**（§6 那套），本轮没做这个动作，所以它证明了"掉线前一切正常"，**没有**证明"掉线时明确失败"。要验后者，按 §6「断线 / 终止树用例」跑；上一轮纯 Node 客户端那次跑出了 `rejected: … lost its executor connection before exit`。
+> **`crash-offline-spawn` 本次显示 `ok:true`、`crash-inflight-spawn` 显示 `HUNG`（30s）**：这两个用例要求**外部在 `crash-armed` 出现的瞬间杀掉 executor**（§6 那套），本轮没做这个动作。所以这次它证明的是"掉线前一切正常"，**没有**证明"掉线时明确失败"。要验后者，按 §6「断线 / 终止树用例」跑；上一轮纯 Node 客户端那次跑出了 `rejected: … lost its executor connection before exit`。
+
+> **一次踩坑，写下来省下一次**：本轮有两次跑出 `remote terminal is closed`（三条终端用例全挂），而 `--self-test` 明明通过。那两次的共同点是**我在同一个 shell 里先杀 3084 的监听进程、紧跟着启动新服务端，同时还有一个执行器在跑** —— 结果执行器连上的是一个正在被顶掉/正在退出的连接，`bind.apply` 没能生效（客户端侧日志里**没有** `holding …` 那一行），于是一写终端就撞上已结束的会话。**干净复跑（先清掉所有执行器与监听、只留一个执行器、再起服务端）一次通过。**
+>
+> **判据**：执行器日志里有 `[executor] holding <workspaceId> at <path>` + `heartbeating every …` 才说明它真的持有工作区；**没有这两行而终端失败，先去查连接是不是被顶掉了，不要怀疑 node-pty**。同账号**同时跑两个执行器**也会造成同一种表象（服务器按设计只保留一条连接，见 §7-B 的说明）。
 
 **分发路径**：
 
