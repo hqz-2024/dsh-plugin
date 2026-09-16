@@ -1315,6 +1315,36 @@ credential in this machine's executor page)
 
 
 
+### 跨机第一次真跑：机制全对，客户端缺两个程序（本轮，用户首次绑定后）
+
+用户把 `smbtest` 绑到 `sunda` 之后，在 `smbtest` 会话里跑 `hostname`，拿到的是：
+
+```
+Error: program not found on this machine:
+C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe
+(tried 'pwsh.exe' on PATH); the server resolved that absolute path in its own world,
+and this machine has no equivalent
+```
+
+**这条报错本身说明链路全部走通了**，只是最后一步缺程序。逐段核对：
+
+| 环节 | 证据 |
+|---|---|
+| 引擎在**服务器**上解析程序 | `Get-Command pwsh` → `C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0…\pwsh.exe`（**服务器的**绝对路径） |
+| 绑定生效、命令路由到客户端 | 绑定记录 `machine=sunda`、`visiblePath=\\192.168.28.239\ws-smbtest`、**`stagingDir=C:\Users\111\.dsh-staging`**（用户没填，执行器自动填的默认值 ✓）、`lastHeartbeat` 每次差 30s、`endedAt` 为空 |
+| 执行器在线 | 从服务器打 `/client-relay/<密钥>/3845/x` → `connect ECONNREFUSED 127.0.0.1:3845` —— 那个 `127.0.0.1` 是 **sunda 的** loopback，说明请求真的走完了 服务器 → WS → sunda → sunda 的 127.0.0.1。**转发的跨机链路因此也第一次得到验证** |
+| executor 的退化规则按设计工作 | `resolveProgram`：绝对路径本机存在 → 用它；否则取**文件名**在本机 PATH 上找；再不行就抛出上面那句**指名道姓**的错误（§3.1 修的就是这条） |
+
+**根因是客户端机器缺程序**：`sunda` 上没装 PowerShell 7（只有系统自带的 Windows PowerShell **5.1**），也没有 ripgrep。引擎给的 `pwsh.exe` 路径在它那儿不存在，按文件名在它的 PATH 上找也没有 —— 于是**明确失败**，而不是静默降级到服务器（这正是 §4.5 要的语义）。
+
+**PATH 用的是客户端的，不是服务器的**（这一点查过 `childEnvironment`：它从**本机** `process.env` 起底、再用请求里的非冲突键覆盖，所以 `PATH` 保留本机的）—— **因此在客户端装同名程序就能解决**，不需要复刻服务器上的路径。`glob`/`grep` 同理：引擎用的是 `@vscode/ripgrep` 里**打包的** `rg.exe`（绝对路径），客户端得有 `rg`（或 `rg.exe`）在 PATH 上。
+
+**这是文档缺口，已补**：README 的"每台客户端机器的一次性准备"从两件事改成三件事，第三件就是装 **PowerShell 7** 与 **ripgrep**，并写明典型症状是"文件能读写、命令一条都跑不起来"（因为 `read`/`write`/`edit` 是引擎内部调用，不走 spawn）。
+
+> 附带一条观察：用户那次 `hostname` 返回 `DESKTOP-LCLS51R` 是**绑定之前**跑的（当时确实未绑定 → 服务器，判断正确）；绑定之后同一个会话就改走客户端了 —— 所以"**同一个会话在不同时刻可能跑在不同机器上**"，判断依据永远是**当次**的分派结果，而不是某一次的观察。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1771,6 +1801,7 @@ pnpm dsh --profile web-client --port 3086
 
    切换**之前**跑同一条命令会得到 4 项 FAIL（`/client-auth/state` 返回 200 + index.html，即前端兜底路由）—— 那正是"这个实例没挂客户端世界"的判据，可以拿它确认自己切没切过去。
 3. **在 SUNDA 上装客户端**：装 Node → 设 `NODE_EXTRA_CA_CERTS`（见 README；忘了会得到一条写明补救办法的错误）→ 用浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 下载 `executor.mjs`** → `node executor.mjs` → 打开 `http://127.0.0.1:38460`，在配置页填服务器地址 `https://192.168.28.239:8443`、用 `admin` 登录一次 → 填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
+   **还要装 agent 会用到的程序**（否则绑定成功、命令却一条都跑不起来）：**PowerShell 7**（`pwsh`，shell 工具用）与 **ripgrep**（`rg`，`glob`/`grep` 用），装完重启执行器 —— 详见 README"每台客户端机器的一次性准备"第 3 条与 §1 的跨机首跑记录。
 
 **判据（这一步才是跨机证明）**：在线上 GUI 里开一个会话、cwd 指向 `smbtest`，让 agent 跑 `hostname` 与 `Get-Location` —— **子进程自报 `SUNDA`** 就是跨机证明；同时 `execution:world` 提示词段应当出现（§2.5）。这一条同时把 `argv[0]` 跨机解析、UNC 路径翻译、"真实 shell 工具链而非探针直调 `spawn`"一并验掉。
 
