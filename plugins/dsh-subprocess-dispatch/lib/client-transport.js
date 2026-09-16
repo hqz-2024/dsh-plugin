@@ -367,6 +367,31 @@ class RemoteTerminalHandle {
 }
 
 /**
+ * The oldest executor program that answers this server's keepalive.
+ *
+ * The two halves ship together — the client machine downloads the program from
+ * this server — so the version is compared only to name the remedy for a machine
+ * that still runs the previous copy.
+ */
+const KEEPALIVE_MIN_EXECUTOR = '0.3.0'
+
+/**
+ * Whether a dotted version string sorts below another.
+ * @param version - Version reported by an executor at `hello`.
+ * @param floor - Lowest version that satisfies the caller.
+ * @returns true when `version` is older than `floor`.
+ */
+function olderThan(version, floor) {
+	const parse = (text) => String(text).split('.').map((part) => Number.parseInt(part, 10) || 0)
+	const [left, right] = [parse(version), parse(floor)]
+	for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+		const [a, b] = [left[index] ?? 0, right[index] ?? 0]
+		if (a !== b) return a < b
+	}
+	return false
+}
+
+/**
  * Server-side half of the client execution transport: the `/executor` endpoint,
  * the per-account connection registry, and remote spawn construction.
  */
@@ -1125,6 +1150,14 @@ export class ClientTransport {
 				})
 			}
 			this.ctx.logger?.info?.(`[client-transport] ${username} executor: host=${message.host} platform=${message.platform}`)
+			// An executor older than the keepalive answers neither ping nor, when
+			// it holds nothing, anything else — so this server would retire it for
+			// silence every few seconds and the machine would look like it keeps
+			// flapping. Naming the remedy here is the difference between that and
+			// an hour of guessing; the program is downloadable from this server.
+			if (typeof message.version === 'string' && olderThan(message.version, KEEPALIVE_MIN_EXECUTOR)) {
+				this.ctx.logger?.warn?.(`[client-transport] ${username} runs executor ${message.version}, which predates the keepalive (needs ${KEEPALIVE_MIN_EXECUTOR}): re-download ${this.downloadPath} on that machine, or it will be dropped whenever it is idle`)
+			}
 			return
 		}
 		// Relayed HTTP frames carry a requestId, not a procId, so they are routed

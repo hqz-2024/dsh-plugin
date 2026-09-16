@@ -45,7 +45,7 @@ import { homedir, hostname, platform, release } from 'node:os'
 import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const VERSION = '0.2.0'
+const VERSION = '0.3.0'
 /** How long a WebSocket handshake may stay unanswered before this side retries. */
 const HANDSHAKE_MS = 15000
 const DSH_ENV_PREFIX = 'DSH_'
