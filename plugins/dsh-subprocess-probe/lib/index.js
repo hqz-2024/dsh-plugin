@@ -21,7 +21,9 @@
  *
  * Delete this package with its pilot bundle entry once v1 is signed off.
  */
-import { appendFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 export const name = 'dsh-subprocess-probe'
 export const inject = ['subprocess', 'clientBindings', 'systemPrompt']
@@ -445,6 +447,49 @@ export function apply(ctx, config) {
 			})
 		} catch (error) {
 			record({ step: 'stdout-spill', ok: false, error: String((error && error.message) || error) })
+		}
+
+		// ── 3g. A stream that outgrows the spill cap must not be offered as complete ──
+		// The seam says a spill holding a whole-stream byte cap is discarded once the
+		// stream passes it. Two things have to hold: the reader must NOT be handed a
+		// path to a partial file (a caller would take it as the complete output), and
+		// the partial file must not be left on disk. The second is the one the engine's
+		// own provider handles explicitly, so it is worth checking rather than assuming.
+		try {
+			const spillDir = join(tmpdir(), 'dsh-remote-spill')
+			const listSpills = () => {
+				try { return readdirSync(spillDir) } catch { return [] }
+			}
+			const before = new Set(listSpills())
+			const total = 200000
+			const overflow = ctx.subprocess.spawn({
+				argv: [process.execPath, '-e', `process.stdout.write("T".repeat(${total}))`],
+				cwd: serverCwd,
+				stdio: {
+					stdin: 'ignore',
+					// The stream is 4x the cap, so the spill can never be complete.
+					stdout: { maxBytes: 4096, spill: { maxBytes: 50000 } },
+					stderr: { maxBytes: 4096 },
+				},
+				graceMs: 10000,
+			})
+			const outcome = await overflow.done
+			const read = overflow.collected.stdout.readFrom(0)
+			await sleep(300)
+			const leaked = listSpills().filter((name) => !before.has(name))
+			record({
+				step: 'stdout-spill-overflow',
+				ok: true,
+				exitCode: outcome.exitCode,
+				inMemoryBytes: read.text.length,
+				lossy: read.lossy,
+				spillPath: read.spillPath ?? null,
+				advertisesNoSpill: read.spillPath === undefined,
+				partialFilesLeftOnDisk: leaked,
+				leakedAPartialSpill: leaked.length > 0,
+			})
+		} catch (error) {
+			record({ step: 'stdout-spill-overflow', ok: false, error: String((error && error.message) || error) })
 		}
 
 		// ── 4. Termination settles instead of hanging (plan P2 acceptance) ────

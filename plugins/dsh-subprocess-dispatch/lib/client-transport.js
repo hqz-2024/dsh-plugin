@@ -17,7 +17,7 @@
  * file, every chunk is also appended there before any truncation, so the
  * complete stream stays recoverable.
  */
-import { createWriteStream, mkdirSync, readFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -122,12 +122,38 @@ class RemoteHandle {
 			mkdirSync(dir, { recursive: true })
 			const path = join(dir, `${this.procId}-${name}.log`)
 			const stream = createWriteStream(path)
-			stream.on('error', () => { /* a spill failure only costs recovery of the full stream */ })
 			this.spills = this.spills ?? {}
 			this.spills[name] = { stream, path, written: 0, maxBytes, intact: true }
+			// A write failure leaves the file incomplete, so it must stop being offered:
+			// its path would otherwise be handed to the caller as the whole stream.
+			stream.on('error', () => { this.discardSpill(name) })
 		} catch {
 			// No spill file: the in-memory tail is still reported.
 		}
+	}
+
+	/**
+	 * Stop offering one spill and delete its file.
+	 *
+	 * The seam's contract is that a spill which cannot hold the complete stream is
+	 * discarded rather than reported. That is not only about the path: a truncated
+	 * file left in the spill directory is indistinguishable from a complete one to
+	 * whoever reads the directory, which is exactly the way a partial capture gets
+	 * mistaken for the whole output. The engine's own provider removes it for the
+	 * same reason.
+	 *
+	 * The unlink waits for `close`: Windows refuses to delete a file that still has
+	 * an open handle.
+	 * @param name - Stream name (`stdout` or `stderr`).
+	 */
+	discardSpill(name) {
+		const spill = this.spills?.[name]
+		if (!spill || !spill.intact) return
+		spill.intact = false
+		spill.stream.once('close', () => {
+			try { unlinkSync(spill.path) } catch { /* already removed */ }
+		})
+		spill.stream.destroy()
 	}
 
 	/** Bytes for one stream, spilled first and tailed second. */
@@ -138,8 +164,7 @@ class RemoteHandle {
 			if (spill.written + bytes > spill.maxBytes) {
 				// A spill that cannot hold the whole stream is discarded rather than
 				// reported as complete; the seam's contract requires exactly that.
-				spill.intact = false
-				spill.stream.destroy()
+				this.discardSpill(name)
 			} else if (spill.intact) {
 				spill.written += bytes
 				spill.stream.write(text)

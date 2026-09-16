@@ -679,6 +679,37 @@ PowerShell 自己认这个形式（`Test-Path` 为 True），但**别的程序�
 
 **如实说明**：要在测试台上稳定复现，需要一组刻意敌对的配置（宽限 800ms、周期扫描推到 10 分钟）。生产配置是宽限 120s、扫描 15s，窗口真实存在但很窄 —— 触发条件是"一次扫描遇到 ≥2 条失效记录，且期间有人认领其中靠后的一条"。所以这是一个**低概率但真实的正确性缺陷**，不是日常可复现的故障。
 
+### spill 超过上限时留下的半截文件，以及一条更糟的错误路径（本轮，已复现并修复）
+
+接上一轮的思路：继续找**被断言但没被验过**的性质。这次是 spill 的失败路径。
+
+seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a larger stream discards its now-incomplete spill"。这句话有两个可以分别成立、也可以分别失败的部分：
+
+1. **不能把半截文件的路径交给调用方**（否则调用方会把它当成完整输出）
+2. **那半截文件不该留在磁盘上**
+
+**第 1 条是成立的**：超限用例里 `advertisesNoSpill = True`，`readFrom` 不返回 `spillPath`。安全的那一半没问题。
+
+**第 2 条不成立**：`leakedAPartialSpill = True`，目录里多出一个截断的 `proc-…-stdout.log`。而引擎自己的 provider 是**显式删掉**它的（`discardSpill()`，注释就写着 "the file may be incomplete"）。留下的危害不是占空间，而是**它和一份完整的 spill 在目录里长得一模一样** —— 谁去读那个目录，都可能把截断的捕获当成完整输出。这与上一轮那个 bug 是同一类：**没有报错，但结果是错的**。
+
+**读代码时又发现第二条通往同一后果的路，而且更糟**：`stream.on('error')` 的回调只是空注释，**没有清掉 `intact`**。也就是说 spill 写入失败（磁盘满、句柄失效）之后，`intact` 仍为 true，`readCollected` **照样把那个截断文件的路径报给调用方** —— 这一条正好违反上面第 1 条。
+
+**修法**：把两条路径收进一个 `discardSpill(name)`（标记 `intact = false` + 删文件）。删除要等 `close` 之后再 `unlink` —— Windows 不允许删一个还有打开句柄的文件。
+
+**验证**（同一次运行，两半都断言）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 超限：`advertisesNoSpill` | true | true |
+| 超限：`leakedAPartialSpill` | **true** | **false** |
+| 超限：磁盘上多出的文件 | 截断的 50KB | 无 |
+| **未超限（对照）**：`spillBytes` / `complete` | 300000 / true | **300000 / true**（没有把好路径也一起弄坏） |
+| 跑完后目录里的文件 | 2 个（1 完整 + 1 半截） | **1 个**（只有那份完整的） |
+
+唯一的 FAIL 仍是刻意构造的 `argv0-unresolvable`。
+
+**顺带一个运维观察**：完整 spill 是**按设计保留**的（调用方负责读走并清理），所以我前面十几轮跑下来，`%TEMP%\dsh-remote-spill\` 里积了 15 个 300KB 文件。这不是缺陷，但值得知道 —— 长期跑大量长输出的会话，这个目录会涨。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
