@@ -1,0 +1,23 @@
+{
+  "name": "dsh-profile-pilot-auth",
+  "private": true,
+  "dependencies": {
+    "@xgone/dsh-remote": "link:../../plugins/dsh-remote-local",
+    "dsh-client-bindings": "link:../../plugins/dsh-client-bindings",
+    "dsh-subprocess-dispatch": "link:../../plugins/dsh-subprocess-dispatch",
+    "dsh-subprocess-probe": "link:../../plugins/dsh-subprocess-probe"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@xgone/dsh-remote",
+        "dsh-client-bindings",
+        "dsh-subprocess-dispatch",
+        "dsh-subprocess-probe"
+      ],
+      "patchReload": "live"
+    }
+  }
+}

@@ -159,6 +159,18 @@ const Config = z.object({
 		password: z.string().min(1)
 	}),
 	adminOnly: z.boolean().default(true),
+	// Path prefixes whose handlers authenticate their own callers, so the session
+	// gate must let them through rather than answering 403 before the handler can
+	// look at the request.
+	//
+	// The client-execution relay is the case this exists for: its URL goes into an
+	// MCP client's configuration, which cannot present a `dsh_session` cookie, so
+	// the relay carries its own secret in the path instead. Without this the gate
+	// refuses the request — including from the server's own loopback, since the
+	// gate has no loopback exemption.
+	//
+	// Only list a prefix whose handler actually verifies a credential.
+	publicPrefixes: z.array(z.string()).default([]),
 	// Role-map injection (local fork): per-account rewrite of session.create.
 	// Free-form object: { <username>: { preset?, workspace? } }; shape checked at use.
 	roleMap: z.any().default({}),
@@ -954,6 +966,33 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		return { ok: true, user: { username: account.username, role: account.role ?? "user" } };
 	};
 
+	// ── Executor authorization bridge (plan-client-world §2.5) ──────────────────
+	//
+	// The client-execution plugin's `/client-auth/login` runs on a page served to
+	// the user's own machine, so it must not believe anything that page says about
+	// who the user is. It needs a verified answer instead, and this is the only
+	// component that can give one: `requireAuth` is what turns a signed session
+	// cookie into an account.
+	//
+	// Publishing it as a service keeps that knowledge here — the alternative was
+	// reimplementing this store's password and session formats in another plugin,
+	// which would drift the first time either changed.
+	//
+	// `workspaces` narrows which workspaces the account may bind to an executor.
+	// It reuses the existing role mapping rather than introducing a second
+	// account field: an account mapped to one workspace may bind that one, and an
+	// unmapped account (admin) is not restricted.
+	const disposeAuthResolver = ctx.provide("clientAuthResolver", {
+		resolveSession: (req) => {
+			const verdict = requireAuth(req);
+			if (!verdict.ok) return undefined;
+			const mapped = effectiveRoleMap()[verdict.user.username];
+			const workspaces = mapped && mapped.workspace ? [mapped.workspace] : undefined;
+			return { username: verdict.user.username, role: verdict.user.role, workspaces };
+		}
+	});
+	ctx.effect(() => () => { disposeAuthResolver(); }, "remote: clientAuthResolver");
+
 	// ── MFA challenge tokens (second login step) ────────────────────────────────
 	// A signed, short-lived, single-use token proving the password step already
 	// passed; replay is prevented with an in-memory consumed-nonce set. The
@@ -1075,10 +1114,21 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		}
 	};
 
+	/**
+	 * A path whose handler authenticates its own callers (see `publicPrefixes`).
+	 *
+	 * Shared by both wrappers: a client-execution endpoint is reached by a program
+	 * on the user's machine, which holds a token but no browser session cookie, so
+	 * neither the HTTP gate nor the upgrade gate may refuse it first.
+	 */
+	const isSelfAuthenticating = (pathname) => cfg.publicPrefixes.some(
+		(prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+	);
+
 	const wrapHttp = (handler) => {
 		if (typeof handler !== "function" || handler[GATED]) return handler;
 		const gated = async (req, res) => {
-			if (isPublicPath(pathnameOf(req))) return handler(req, res);
+			if (isPublicPath(pathnameOf(req)) || isSelfAuthenticating(pathnameOf(req))) return handler(req, res);
 			captureOriginalHost(req);
 			const verdict = requireAuth(req);
 			if (!verdict.ok) {
@@ -1355,8 +1405,11 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		const gated = (req, socket, head) => {
 			// The local-machine bridge endpoint carries its own per-account
 			// token (sidecar has no browser session cookie); pass it through.
+			// Configured `publicPrefixes` join it for the same reason: a program
+			// on the user's machine holds a token, not a session cookie, and
+			// destroying its upgrade would leave the feature unreachable.
 			const pathname = pathnameOf(req);
-			if (pathname !== "/sidecar" && !requireAuth(req).ok) {
+			if (pathname !== "/sidecar" && !isSelfAuthenticating(pathname) && !requireAuth(req).ok) {
 				socket.destroy();
 				return;
 			}

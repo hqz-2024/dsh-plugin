@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@xgone/dsh-remote':
+        specifier: link:../../plugins/dsh-remote-local
+        version: link:../../plugins/dsh-remote-local
+      dsh-client-bindings:
+        specifier: link:../../plugins/dsh-client-bindings
+        version: link:../../plugins/dsh-client-bindings
+      dsh-subprocess-dispatch:
+        specifier: link:../../plugins/dsh-subprocess-dispatch
+        version: link:../../plugins/dsh-subprocess-dispatch
+      dsh-subprocess-probe:
+        specifier: link:../../plugins/dsh-subprocess-probe
+        version: link:../../plugins/dsh-subprocess-probe

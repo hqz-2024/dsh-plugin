@@ -362,6 +362,17 @@ export class ClientTransport {
 		this.relayPorts = new Set(
 			(Array.isArray(config?.relayPorts) ? config.relayPorts : []).filter((port) => Number.isInteger(port)),
 		)
+		/**
+		 * Relay secret -> account. The relay URL goes into an MCP client's
+		 * configuration, and such a client cannot present a `dsh_session` cookie,
+		 * so the credential rides the path instead. An unknown secret is refused
+		 * outright, which is what keeps this from being an open proxy into a bound
+		 * machine's local services.
+		 */
+		this.relayTokens = new Map(
+			Object.entries(config?.relayTokens && typeof config.relayTokens === 'object' ? config.relayTokens : {})
+				.map(([secret, username]) => [String(secret), String(username)]),
+		)
 		/** Mount point for the relay; the path carries the account and target port. */
 		this.relayPath = typeof config?.relayPath === 'string' ? config.relayPath : '/client-relay'
 		/** Mount point for the executor authorization endpoint. */
@@ -702,14 +713,19 @@ export class ClientTransport {
 		const url = new URL(req.url ?? '/', 'http://localhost')
 		const segments = url.pathname.slice(this.relayPath.length).split('/').filter((part) => part.length > 0)
 		if (segments.length < 2) {
-			this.relayFail(res, 404, `relay path must be ${this.relayPath}/<account>/<port>/<path>`)
+			this.relayFail(res, 404, `relay path must be ${this.relayPath}/<secret>/<port>/<path>`)
 			return
 		}
-		let username
+		let secret
 		try {
-			username = decodeURIComponent(segments[0])
+			secret = decodeURIComponent(segments[0])
 		} catch {
-			this.relayFail(res, 400, 'account segment is not valid percent-encoding')
+			this.relayFail(res, 400, 'relay secret segment is not valid percent-encoding')
+			return
+		}
+		const username = this.relayTokens.get(secret)
+		if (username === undefined) {
+			this.relayFail(res, 403, 'unknown relay secret')
 			return
 		}
 		const port = Number(segments[1])

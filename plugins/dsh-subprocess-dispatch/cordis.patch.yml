@@ -29,6 +29,11 @@
         # safe default — a non-empty list without a matching policy would be an
         # open proxy into every bound machine's local services.
         relayPorts: []
+        # Relay secret -> account. The relay URL is pasted into an MCP client's
+        # configuration, which cannot carry a `dsh_session` cookie, so the
+        # credential rides the path: /client-relay/<secret>/<port>/<path>.
+        # EXPERIMENTAL: without an entry every relay request is refused.
+        relayTokens: {}
         # Mount point. The path carries the account and target port:
         #   /client-relay/<account>/<port>/<path>
         relayPath: '/client-relay'

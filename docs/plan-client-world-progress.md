@@ -13,7 +13,7 @@
 | **P0-1** | `cwd → 工作区 → 执行机` 分派链 | ✅ 已验证 |
 | **P0-2 / P0-3** | SMB 双向可见 / 边界实测 | ⛔ 阻塞：需管理员提权 + 第二台设备 |
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
-| **P1** | executor 授权端点（签发 token / state / bind / unbind） | ✅ 已验证（`login` 需接入 `clientAuthResolver`） |
+| **P1** | executor 授权与登录链路（token 签发 / state / bind / unbind；`/auth/login` → cookie → token） | ✅ 已验证（`pilot-auth`，真实门禁下） |
 | **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面、executor 本地配置页 | ❌ 未做 |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；stdin / spill 未验证 | 🟡 部分 |
@@ -113,6 +113,27 @@ harness：`profiles/pilot`，绑定 `宝单科技资料`，`visiblePath = C:\dsh
 
 **验证中发现并修掉的一个 bug**：`authorize()` 一开始直接调 `bindings.resolveToken()`，而那是"只认已签发 token"的存储查询 —— **配置里写的 token 被 401 拒绝**。改为统一走 `usernameForToken()`（先查配置、再查存储）。这个 bug 只有把端点和 WebSocket 两条路径都跑一遍才会暴露。
 
+### P4 追加：转发通道的凭据模型（本轮修正）
+
+**发现的部署级问题**：读 `dsh-remote` 的门禁实现后发现 —— `wrapHttp`（`lib/index.js:1105`）对**所有**通过 `webServer.register` 注册的路由生效，且**没有 loopback 例外**；`isPublicPath`（`:80`）只放行 `/auth` 与 `/auth/*`。
+
+后果：`/client-relay/...` 被门禁拦住，**连服务器自己的 loopback 也拿 403**。而 MCP 客户端的配置里放的就是一个 URL，它**没法带 `dsh_session` cookie** —— 也就是说上一轮"已验证"的转发，在真实 web profile 里**根本用不了**。
+
+**修法（两处）**：
+
+1. `dsh-remote` 新增 `publicPrefixes` 配置项：列入的前缀由处理器**自己验证调用方**，门禁放行而不是先答 403。注释里写明"只列真正校验凭据的前缀"。
+2. 转发路径改为 `/client-relay/<secret>/<port>/<path>`：凭据走路径（`relayTokens`：secret → 账号），因为 MCP 客户端能粘贴 URL 但设不了 cookie。未知密钥 → **403 `unknown relay secret`**。
+
+**复验**（改用密钥后同一次运行）：`relay-plain` 200（请求头过去 + 响应头回来）、`relay-post-body` 200、**`relay-sse` 3 事件 / arrivals `[420, 825, 1230]` / streamed=true**、`relay-port-denied` 403、**`relay-unknown-secret` 403**。其余全部步骤仍通过。
+
+### P1 追加：`clientAuthResolver` 服务（本轮）
+
+`dsh-remote` 现在提供 `clientAuthResolver`（`resolveSession(req) → {username, role, workspaces?}`），实现直接复用它的 `requireAuth`：**唯一能把签名会话 cookie 变成账号的组件就是它**，所以把这份知识留在原处，而不是在另一个插件里重新实现它的密码与会话格式。
+
+`workspaces` 复用既有的 `roleMap`（映射到某工作区的账号只能绑定那一个；未映射的 admin 不限制）—— 计划 §2.5 要的是"账号记录上的字段"，用现成的 `roleMap` 比新造一个平行的账号字段更少漂移。
+
+`dsh-remote` 自带测试：**45 通过 / 0 失败**。
+
 **executor 侧独立日志**（同一回路的另一半）：
 
 ```
@@ -123,6 +144,49 @@ harness：`profiles/pilot`，绑定 `宝单科技资料`，`visiblePath = C:\dsh
 ```
 
 清理后**无孤儿进程**；线上 `web` 实例（PID 16628 / 3080）全程未受影响。
+
+### P1 登录链路 + 门禁豁免（pilot-auth，本轮）
+
+`pilot` 不挂 `dsh-remote`，路由不受门禁保护 —— 它证明了客户端执行机制，但证明不了只在有门禁时才存在的两件事。`pilot-auth` = `pilot` + `dsh-remote`（门禁开启、启动即种一个 admin）。
+
+| 步骤 | 结果 |
+|---|---|
+| `POST /auth/login` | **200**，拿到会话 cookie |
+| `/client-auth/login`（带 cookie） | **200**，`username=probe-admin`，`workspaces=4`，`heartbeatMs=1000` |
+| `/client-auth/state`（用**签发的** token） | **200**，`username=probe-admin`，`label=probe-executor` |
+| executor 连接 `/executor` | **连上了** |
+| `bind` 后 spawn | **`target=client`** |
+| relay 全程无 cookie | 200 / 200 / SSE `[408, 814, 1217]` / 403 / 403 |
+
+**门禁确实在拦**（无 cookie 直连）：
+```
+/api                  -> {"ok":false,"error":"unauthorized"}          ← 门禁
+/client-auth/state    -> {"error":"a valid executor token is required"} ← 我的处理器
+/client-relay/x/1/ping -> {"error":"unknown relay secret"}             ← 我的处理器
+```
+外加本轮同一路径的前后对照：豁免前 **403**（门禁），豁免后 **401**（我的处理器）。
+
+### ⚠️ 本轮挖出的最重要问题：三道门禁，executor 根本连不上
+
+`dsh-remote` 不只拦 HTTP 路由 —— 它连**已注册**的路由都重新包装，而且 **WebSocket upgrade 也拦**：
+
+```js
+for (const route of webServer.upgrades.values()) route.handler = wrapUpgrade(route.handler);  // :2386
+```
+
+`wrapUpgrade` 里只有一个**硬编码**的例外（`:1402`，给既有的 `/sidecar`）：`if (pathname !== "/sidecar" && !requireAuth(req).ok) socket.destroy()`。
+
+后果：**`/executor` 的升级被 destroy**，executor 重试 16 次全部失败（`[executor] error: Received network error or non-101 status code.`）。也就是说，**在开了登录门禁的真实 web profile 里，客户端执行整个世界根本连不上** —— 上一轮我把它标记为"已验证"，那是在无门禁的 pilot 里验的。
+
+**修法**：`publicPrefixes` 的检查**同时接入 HTTP 与 upgrade 两个包装器**（把 `isSelfAuthenticating` 提到两者共享的作用域），并把 `/sidecar` 那个硬编码例外保留为原有行为。配置从只列 `/client-relay` 扩到三个：
+
+```
+/executor      WebSocket upgrade，由 executor token 认证
+/client-auth   Bearer executor token；只有 login 用会话
+/client-relay  路径密钥
+```
+
+三者的处理器都自己校验凭据 —— 这正是 `publicPrefixes` 注释里写的前提（"只列真正校验凭据的前缀"）。`dsh-remote` 自带测试 45 通过 / 0 失败。
 
 ### 为什么这条证据是有效的
 
@@ -174,10 +238,10 @@ harness：`profiles/pilot`，绑定 `宝单科技资料`，`visiblePath = C:\dsh
 - spill 文件（已实现，未测）
 - **P5 的三个真实软件端到端未做**：Blender（`-b -P`）、Photoshop（COM/ExtendScript）、Figma（MCP）。前两个需要目标机装好对应软件，第三个依赖 P4
 - **P4 的 Figma 端到端未做**：需要目标机开着 Figma 桌面 App 并在 Dev Mode 启用 MCP server。转发机制本身已验证，最后一段是配置与实测
-- executor 授权：**端点已实现并验证**（token 签发 / state / bind / unbind，fail-closed）。缺的是 `login` 的接线 —— 需要一个 `clientAuthResolver` 服务（`resolveSession(req) → {username, role, workspaces?}`）由 `dsh-remote` 提供。在那之前 `login` 一律 503，配置 token 仍可用
-- **executor 本地配置页未做**：计划 §2.5 的界面（登录 / 选工作区 / 选暂存目录 / 主动解绑）。服务端接口已就绪，客户端页面还没有
-- 账号上的工作区授权字段、admin 强制解绑界面：未做
-- 转发端点的鉴权边界：当前 = 账号在线 + 持有活跃绑定 + 端口在白名单。**不校验调用方身份**（HTTP 请求没有会话），与 `webServer` 上其它路由同级。LAN 内可接受，公网部署前必须收紧
+- executor 授权：**端点与登录链路均已验证**（`pilot-auth` 里走通 `/auth/login` → cookie → `/client-auth/login` → 签发 token → 该 token 可用）。配置 token 仍可用
+- **executor 本地配置页未做**：计划 §2.5 的界面（登录 / 选工作区 / 选暂存目录 / 主动解绑）。服务端接口全部就绪，客户端页面还没有
+- 账号上的工作区授权字段、admin 强制解绑界面：未做（`workspaces` 目前复用 `roleMap`）
+- 转发端点的鉴权边界：**路径密钥**（`relayTokens`：secret → 账号）+ 账号在线 + 持有活跃绑定 + 端口在白名单。未知密钥一律 403（见 §1 的 P4 追加）。**这不替代 DSH 会话门禁** —— 它是一条自带凭据的通道，所以必须同时把它的前缀列入 `publicPrefixes` 才能绕过门禁
 - `local_binding` 只读工具未做 —— 计划 §2.6 把它与提示词段列为"或"关系，提示词段已覆盖
 
 ### 3.4 P3（终端）的 substrate 限制 —— 已知并接受
@@ -229,7 +293,8 @@ typeof pid: number value: 0
 | `plugins/dsh-client-bindings/` | 绑定存储（`client_binding` domain + `clientBindings` 服务） |
 | `plugins/dsh-subprocess-probe/` | pilot 验证 harness（**v1 签字后删除**） |
 | `plugins/dsh-subprocess-probe/fixtures/local-service.mjs` | 本机服务 fixture（`/ping`、`/echo`、`/sse`），验证转发用 |
-| `profiles/pilot/` | pilot profile |
+| `profiles/pilot/` | pilot profile（无门禁，验证客户端执行机制） |
+| `profiles/pilot-auth/` | pilot + `dsh-remote`（门禁开启 + 种一个 admin），验证 §2.5 登录链路与门禁豁免 |
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |
 | `setup-smb.ps1` | SMB 共享安装脚本（需管理员运行） |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |

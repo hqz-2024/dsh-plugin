@@ -39,6 +39,17 @@ export function apply(ctx, config) {
 	const serverPort = Number.isInteger(config?.serverPort) ? config.serverPort : 3082
 	/** Port the fixture service listens on, standing in for a client-localhost service. */
 	const fixturePort = Number.isInteger(config?.fixturePort) ? config.fixturePort : 38450
+	/** Relay path secret, standing in for the credential an MCP client would carry. */
+	const relaySecret = String(config?.relaySecret ?? '')
+	/** The configured executor token this profile's transport accepts. */
+	const configuredToken = String(config?.executorToken ?? '')
+	/**
+	 * When set, the profile mounts a login gate, so the probe runs the plan §2.5
+	 * flow: sign in, then turn that verified session into an executor token. Only
+	 * a gated profile can show that `publicPrefixes` really bypasses the gate.
+	 */
+	const loginUser = String(config?.loginUser ?? '')
+	const loginPassword = String(config?.loginPassword ?? '')
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -177,7 +188,9 @@ export function apply(ctx, config) {
 		// ── 2c. Client-loopback relay (plan P4) ───────────────────────────────
 		// The relay is the only way the server can reach a service on the bound
 		// machine's 127.0.0.1, which is where an MCP endpoint like Figma's lives.
-		const relayBase = `http://127.0.0.1:${serverPort}/client-relay/${encodeURIComponent(username)}`
+		// The relay URL carries its own secret: an MCP client's configuration cannot
+		// present a session cookie, and the login gate has no loopback exemption.
+		const relayBase = `http://127.0.0.1:${serverPort}/client-relay/${encodeURIComponent(relaySecret)}`
 		try {
 			const ping = await fetch(`${relayBase}/${fixturePort}/ping`, { headers: { 'x-probe': 'relay-test' } })
 			record({
@@ -230,8 +243,8 @@ export function apply(ctx, config) {
 			record({ step: 'relay-sse', error: String((error && error.message) || error) })
 		}
 		for (const [label, url] of [
-			['relay-port-denied', `http://127.0.0.1:${serverPort}/client-relay/${username}/1234/ping`],
-			['relay-unknown-account', `http://127.0.0.1:${serverPort}/client-relay/nobody/${fixturePort}/ping`],
+			['relay-port-denied', `http://127.0.0.1:${serverPort}/client-relay/${relaySecret}/1234/ping`],
+			['relay-unknown-secret', `http://127.0.0.1:${serverPort}/client-relay/not-a-real-secret/${fixturePort}/ping`],
 		]) {
 			try {
 				const denied = await fetch(url)
@@ -326,17 +339,75 @@ export function apply(ctx, config) {
 		// `x-dsh-user` header this sends, which is what a naive implementation
 		// would trust.
 		const authBase = `http://127.0.0.1:${serverPort}/client-auth`
-		const configuredToken = 'pilot-executor-token-0123456789'
 		const jsonHeaders = { 'content-type': 'application/json' }
-		try {
-			const refused = await fetch(`${authBase}/login`, {
-				method: 'POST',
-				headers: { ...jsonHeaders, 'x-dsh-user': 'nobody', 'x-dsh-role': 'admin' },
-				body: JSON.stringify({ label: 'probe' }),
-			})
-			record({ step: 'auth-login-fail-closed', status: refused.status, body: await refused.json() })
-		} catch (error) {
-			record({ step: 'auth-login-fail-closed', error: String((error && error.message) || error) })
+		if (loginUser) {
+			// ── Gated flow: the profile mounts dsh-remote's login gate ──────────
+			const serverBase = `http://127.0.0.1:${serverPort}`
+			let cookie = ''
+			try {
+				const signedIn = await fetch(`${serverBase}/auth/login`, {
+					method: 'POST',
+					headers: jsonHeaders,
+					body: JSON.stringify({ username: loginUser, password: loginPassword }),
+				})
+				cookie = (signedIn.headers.get('set-cookie') ?? '').split(';')[0]
+				record({ step: 'gate-login', status: signedIn.status, gotCookie: cookie.length > 0 })
+			} catch (error) {
+				record({ step: 'gate-login', error: String((error && error.message) || error) })
+			}
+			try {
+				// A gated route with no cookie must be refused: without this the
+				// relay's own 200 below would prove nothing about a bypass.
+				const refused = await fetch(`${authBase}/state`)
+				record({ step: 'gate-active-without-cookie', status: refused.status })
+			} catch (error) {
+				record({ step: 'gate-active-without-cookie', error: String((error && error.message) || error) })
+			}
+			let issued = ''
+			try {
+				const minted = await fetch(`${authBase}/login`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, cookie },
+					body: JSON.stringify({ label: 'probe-executor' }),
+				})
+				const payload = await minted.json()
+				issued = typeof payload.token === 'string' ? payload.token : ''
+				record({
+					step: 'gate-mint-executor-token',
+					status: minted.status,
+					gotToken: issued.length > 0,
+					username: payload.username ?? null,
+					workspaces: Array.isArray(payload.workspaces) ? payload.workspaces.length : null,
+					heartbeatMs: payload.heartbeatMs ?? null,
+				})
+			} catch (error) {
+				record({ step: 'gate-mint-executor-token', error: String((error && error.message) || error) })
+			}
+			if (issued) {
+				try {
+					// The token the login flow minted must work where the configured
+					// one does: same resolution path, different provenance.
+					const state = await fetch(`${authBase}/state`, { headers: { authorization: `Bearer ${issued}` } })
+					const payload = await state.json()
+					record({ step: 'gate-issued-token-state', status: state.status, username: payload.username, label: payload.label })
+				} catch (error) {
+					record({ step: 'gate-issued-token-state', error: String((error && error.message) || error) })
+				}
+			}
+		} else {
+			// Ungated profile: the endpoint must refuse rather than believe the
+			// `x-dsh-user` header this sends, which is what a naive implementation
+			// would trust.
+			try {
+				const refused = await fetch(`${authBase}/login`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, 'x-dsh-user': 'nobody', 'x-dsh-role': 'admin' },
+					body: JSON.stringify({ label: 'probe' }),
+				})
+				record({ step: 'auth-login-fail-closed', status: refused.status, body: await refused.json() })
+			} catch (error) {
+				record({ step: 'auth-login-fail-closed', error: String((error && error.message) || error) })
+			}
 		}
 		try {
 			const state = await fetch(`${authBase}/state`, { headers: { authorization: `Bearer ${configuredToken}` } })

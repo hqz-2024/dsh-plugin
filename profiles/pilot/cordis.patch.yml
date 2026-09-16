@@ -25,6 +25,8 @@
     # 3845 is Figma's Dev Mode MCP port, kept here so the real endpoint needs no
     # composition change once someone has Figma running.
     relayPorts: [3845, 38450]
+    relayTokens:
+      pilot-relay-secret-abcdef0123456789: probe-primary
 
 # 3. The binding store, on a deliberately short clock: the pilot proves expiry
 #    in seconds instead of the production two minutes. Production values live in
@@ -50,4 +52,6 @@
     executorWaitMs: 40000
     serverPort: 3082
     fixturePort: 38450
+    relaySecret: pilot-relay-secret-abcdef0123456789
+    executorToken: pilot-executor-token-0123456789
     resultPath: !!js dshHomePath('profiles/pilot/probe-result.jsonl')
