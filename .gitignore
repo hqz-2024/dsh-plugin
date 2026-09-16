@@ -68,5 +68,6 @@ plugins/*/.git/
 # pilot / pilot-auth verification harness output
 profiles/pilot*/dispatch-trace.jsonl
 profiles/pilot*/probe-result.jsonl
+profiles/pilot*/crash-armed.marker
 profiles/web-client/dispatch-trace.jsonl
 profiles/web-client/probe-result.jsonl

@@ -1,13 +1,24 @@
 ---
 name: sidecar
-description: 用 local_run 工具操作用户本机的 Windows（PowerShell / Office / PDF / Photoshop / Blender 脚本），前提是用户本机已安装并启动 sidecar。
+description: 用 local_run 工具操作用户本机的 Windows（PowerShell / Office / PDF / Photoshop / Blender 脚本），前提是用户本机已安装并启动 sidecar。逃生口用途——处理工作区里的文件请优先用客户端执行世界（见 local-staging skill）。
 ---
 
 # sidecar 本机助手使用规范
 
+## 定位：逃生口，不是主路径
+
+`local_run` 是**逃生口**：跑一次不常用的 exe、临时排查、操作**工作区之外**的本机路径。
+
+**处理工作区里的文件不要用它。** 工作区一旦被用户电脑绑定，该工作区的 shell 就已经在用户电脑上执行了（客户端执行世界），文件本来就在工作区里，不需要把字节搬进模型的上下文再搬出去。那种做法在客户端执行世界下已经过时：
+
+- `local_run` 的 `inputFiles`（base64 进模型上下文）与 `collect`（只能 glob 文件路径、看不到文件字节）两处缺陷，正是因为它必须在两个世界之间搬运文件；
+- 客户端执行世界不需要搬运 —— 工作区在用户电脑上就是那个共享，`Copy-Item` 直接读。
+
+所以：**工作区内的文件操作 → 走客户端执行世界；工作区之外或有副作用的一次性动作 → 才用 `local_run`。** 大文件与工程格式的暂存流程见 `local-staging` skill。
+
 ## 什么情况下用
 
-用户要求「打开/编辑我电脑上的文件」「跑我本机的脚本」「用 Photoshop/Blender 处理」「执行本地 PowerShell」时——这些都发生在**用户自己的 Windows 电脑**上，而你运行在服务器上，默认够不到本机。此时用 `local_run` 工具，通过用户本机安装的 sidecar 执行。
+用户要求「跑我本机上某个不常用的 exe」「操作工作区外我电脑上的文件」「本机应急排查」时用 `local_run` 工具，通过用户本机安装的 sidecar 执行。
 
 ## 前提：sidecar 已连接
 

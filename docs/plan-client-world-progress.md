@@ -13,7 +13,8 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **P0-1** | `cwd → 工作区 → 执行机` 分派链 | ✅ 已验证 |
-| **P0-2 / P0-3** | SMB 双向可见 / 边界实测 | ⛔ 阻塞：需管理员提权 + 第二台设备 |
+| **P0-2** | SMB 双向可见（服务器↔客户端，同一份字节） | ✅ 已验证（本轮，第二台机器 `SUNDA`） |
+| **P0-3** | SMB 边界实测（8–10MB 边界 / Office 锁文件） | ⛔ 未做：需在客户端侧测量 |
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
 | **P1** | executor 授权与登录链路 + **本地配置页**（§2.5 闭环） | ✅ 已验证（`pilot-auth`，真实门禁下） |
 | **P1** | admin 强制解绑（接口层） | ✅ 已验证；Web UI 入口未做 |
@@ -337,11 +338,61 @@ subprocess/src/index.ts:114     SubprocessSpawnSpec.env
 
 **方法上的一个坑（值得记）**：我起初想证"executor 死了也不留孤儿"，两次都得到**假通过** —— 第一次 `job_kill` 把整个后台作业树一起收了；第二次只按 pid 杀 executor，母进程（pwsh 包装）退出时又把树带走了。两次都不是 executor 自己的清理在起作用。回头重读判据才发现：P2 说的是**超时终止**（executor 还活着时的终止阶梯），不是 executor 之死。改按孙进程测，才既打中真正的判据、又能被独立复核。
 
+### SMB 双向可见（P0-2）—— ✅ 已验证（本轮，用户操作第二台设备）
+
+用户在一台**独立的 Windows 机器 `SUNDA`** 上访问共享并完成了双向读写。服务器侧核对：
+
+| 观察点 | 值 |
+|---|---|
+| 共享 | `\\192.168.28.239\ws-smbtest` → `C:\dsh-workspaces\smbtest`（`setup-smb.ps1` 建） |
+| 共享 ACL | `DESKTOP-LCLS51R\dshtest` = Change |
+| 445 | 正在监听 |
+| **客户端写 → 服务器可见** | `client-wrote.txt` = `written by client (SUNDA) at 2026-09-16T11:36:45` |
+| 客户端上传 | `flash_download_tool_3.9.7/`（内含 20.7 MB 的 exe） |
+| **服务器写 → 客户端可见** | `server-wrote.txt` = `written by server (DESKTOP-LCLS51R) at 2026-09-16T10:31:56`，用户在客户端能拉取 |
+
+**主机名是这份证据的承重处**：`client-wrote.txt` 的内容里写着 `SUNDA`，而服务器是 `DESKTOP-LCLS51R` —— 两台上写着各自名字的文件出现在同一个目录里，这既证明了双向可见，也证明了**是两台机器**而不是同机的错觉。
+
+**"同一份字节"（§2.1 的原文判据）单独证过一次**：服务器用 `net use` 以 `dshtest` 身份连上 UNC，写 `\\192.168.28.239\ws-smbtest\unc-proof.txt`，然后立刻用**本地路径** `C:\dsh-workspaces\smbtest\unc-proof.txt` 读回来 —— 内容完全一致。服务器路径与 UNC 路径指向同一份字节，不是两份副本。（验证后已删除该文件并断开 `net use` 会话。）
+
+**次生事实**：客户端上传来的是一个 20.7 MB 的目录，说明 >10MB 的文件经 SMB 传输本身没有问题 —— 这与 P0-3 的边界判据相关（那条针对的是"在网络上原地编辑"，不是传输）。
+
+### 跨机执行：三条本轮才暴露出来的约束（还没验，但决定了怎么验）
+
+P0-2 通了之后，下一步理所当然是**真正跨机跑一次命令**（executor 跑在 SUNDA 上）。本轮准备时撞到三件事，都不是代码问题，但都会挡住那次验证：
+
+**① dsh 按设计拒绝绑定局域网地址。** `--host 0.0.0.0` 被硬拒绝：
+
+```
+error: --host 0.0.0.0 is intentionally not supported yet for safety:
+       it would expose remote code execution to the network; use 127.0.0.1 instead
+```
+
+后果：executor **永远无法直连 dsh 的端口**，只能走反向代理。线上已有 caddy（`https://192.168.28.239:8443 → 127.0.0.1:3080`），且 `reverse_proxy` 自动转发 WebSocket 升级 —— 所以 `/executor` 走 caddy 是通的，**前提是客户端世界挂在 3080 那个实例上**。这意味着跨机验证没法用一个旁路服务器做，只能落在真实拓扑上（即上线）。
+
+**② executor 不建立 SMB 凭据。** 计划 §2.2 写的是"用每账号的 SMB 凭据建立会话（`net use` 或 `cmdkey`）"，但 `executor.mjs` 里没有任何 `net use` / `cmdkey`（全文搜过），绑定记录里也没有存凭据的地方。所以客户端机器必须**先自己具备**该共享的凭据。v1 的可接受做法是每台客户端机器上存一次：
+
+```powershell
+cmdkey /add:192.168.28.239 /user:dshtest /pass:<密码>
+```
+
+`cmdkey` 的凭据跨重启保留，之后 `\\192.168.28.239\ws-*` 对用户会话透明可用（executor 跑在用户的交互式会话里，所以继承得到 —— 这正是计划 §2.2 强调"executor 必须跑在交互式登录会话"的原因之一）。
+
+> 顺带一个生产差距：`setup-smb.ps1` 只建**一个** SMB 账号，而计划 §2.1 要求 ACL 与"账号可访问工作区"一致。要让共享层面的 ACL 真正按 DSH 账号区分，需要**一个 DSH 账号一个 SMB 账号**。v1 测试用一个共享账号可以，生产要补。
+
+**③ 手工改 `storages/workspace.json` 会破坏域不变量。** 我为了让 `smbtest` 成为可绑定工作区，直接往 `tables.workspaces` 加了一条记录，启动即报：
+
+```
+workspace domain is inconsistent: workspace '<id>' is absent from registry order
+```
+
+原因是 `global.workspaceIds` 是**另一份顺序表**，每个工作区都必须同时出现在两处。补上之后启动正常。**结论：工作区应当通过注册表（Web UI）创建，不要手改存储文件** —— 手改会绕过 zod 之外的这层一致性校验。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
 
-> ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。
+> ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.8）。
 
 ---
 
@@ -442,8 +493,8 @@ typeof pid: number value: 0
 
 | 判据出处 | 判据 | 状态 |
 |---|---|---|
-| P0 验收 | SMB 双向可见 | ⛔ 阻塞（需管理员 + 第二台设备） |
-| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 阻塞（依赖 SMB） |
+| P0 验收 | SMB 双向可见 | ✅ **已验证**（本轮，见 §1） |
+| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 未做：需在客户端侧测量 |
 | P3 验收 | **python REPL** 可用（已验的是 PowerShell） | 🟡 未做 |
 | P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失） |
 | P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP |
@@ -453,6 +504,27 @@ typeof pid: number value: 0
 | §3.3 | `proc.stdin`、spill 文件 | 🟡 已实现未测 |
 
 其中 **P5 的文档那条是唯一完全不依赖外部条件的缺口**，下一轮做。P0-3 的 Office 与"断网"两项都真实需要 P0-2 先落地。
+
+---
+
+## 3.8 跨机验证（唯一还缺的那类证据）
+
+**这是本项目至今最大的证据缺口**：所有运行时证据都是**服务器与 executor 同机**（环回）。计划自己警告过这一点 —— "本次 executor 与服务器同机，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题"。同机跑通**不等于**跨机跑通。
+
+P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.168.28.57 存在、可达、能读写共享）。本轮把路铺到了"只差用户按一次启动"，并撞出三条约束（详见 §1「跨机执行」）：
+
+| # | 约束 | 后果 |
+|---|---|---|
+| ① | dsh **按设计拒绝** `--host 0.0.0.0` | executor 无法直连 dsh 端口，只能走 caddy。而 caddy 指向 3080，所以跨机验证必须落在**真实拓扑**上（= 上线），没法用旁路服务器糊过去 |
+| ② | executor **不建立 SMB 凭据** | 客户端机器须先 `cmdkey /add:192.168.28.239 /user:<smb账号> /pass:<密码>` 存一次凭据 |
+| ③ | 手改 `storages/workspace.json` 破坏域不变量 | 工作区要通过 Web UI 建，别手改存储 |
+
+**因此跨机验证的形态是**：把 3080 切到 `web-client`（`patchReload: live` 之外的那一步需要重启），在真实 GUI 里建一个会话、cwd 指向 `\\192.168.28.239\ws-smbtest` 对应的工作区，由 agent 跑一条 `hostname` —— **子进程自报 `SUNDA` 就是跨机证明**。这也顺带把 `argv[0]` 跨机解析、UNC 路径翻译、真实 shell 工具链（而不是探针直调 `spawn`）一次性验掉。
+
+**为什么这可以接受**：挂载客户端世界对**未绑定的工作区是行为中性的** —— 所有未绑定工作区照旧在服务器执行，与今天完全一致（真实组合的 dry run 已证）。所以切换本身不改变任何现状，改变只发生在有人主动绑定之后。
+
+**上线前还差的准备**：① 在 3080 那个 home 里建好 `smbtest` 工作区；② 把 `web-client` 的 executor token / relay 密钥换成真实签发的；③ SUNDA 上装 Node、存 SMB 凭据、启动 executor。**防火墙不需要新规则** —— 走的是已经在开的 8443。
+
 
 ### 3.6 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
 
@@ -570,7 +642,7 @@ pnpm dsh --profile web-client --port 3086               # 后台
 # 起 executor，然后直接用它验绑定→路由翻转（无 probe 也能验）
 node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-dispatch\executor\executor.mjs" `
   --server ws://127.0.0.1:3086/executor `
-  --token web-client-executor-token-0123456789 --label go-live-check
+  --token <该 profile 配置里的 executor token> --label go-live-check
 ```
 
 绑定后隔 2–3 秒读 `profiles/web-client/dispatch-trace.jsonl` 里最后一条 `routing-index`：应从 `宝单科技资料=server` 翻为 `=client`，`unbind` 后翻回。
@@ -578,7 +650,7 @@ node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-dispatch\executor\executor.mj
 三条门禁判据（**看错误文本判断是谁答的**：有处理器文本 = 已放行）：
 
 ```powershell
-$h = @{ authorization = "Bearer web-client-executor-token-0123456789" }
+$h = @{ authorization = "Bearer <该 profile 配置里的 executor token>" }
 Invoke-WebRequest http://127.0.0.1:3086/api -SkipHttpErrorCheck                                   # 403 门禁
 Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -SkipHttpErrorCheck                     # 401 我的处理器
 Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -Headers $h -SkipHttpErrorCheck         # 200

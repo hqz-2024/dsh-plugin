@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     DSH 客户端执行世界 — SMB 工作区共享安装（P0-2 验证用）
 
@@ -31,9 +31,18 @@ param(
     # 专用 SMB 本地账号名
     [string]$SmbUser = 'dshtest',
 
-    # 该账号的密码。必须满足本机密码复杂度策略（长度>=8 且含大小写/数字/符号）
+    # 该账号的密码。留空则本次随机生成一个强密码并打印。
+    # 刻意**不给默认值**：写死在脚本里的密码会被提交进 git，而它对一个真实存在的
+    # 本机账号有效 —— 本脚本的第一版就是这么泄的（已从工作副本里去掉，历史里仍有，
+    # 见 README 的运维提示）。
     [string]$SmbPassword = ''
 )
+
+if (-not $SmbPassword) {
+    # 保证四类字符齐全，满足本机密码复杂度策略。
+    $body = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })
+    $SmbPassword = $body + 'aA1!'
+}
 
 $ErrorActionPreference = 'Stop'
 

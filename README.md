@@ -181,7 +181,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 办公文档解析 | dsh-doc（PDF/DOCX/XLSX/PPTX/MD/CSV + OCR） | `profiles\web\cordis.patch.yml` |
 | 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格） | `~\.dsh\plugins\folder-tree-sh-local` |
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
-| 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具 | `~\.dsh\plugins\dsh-local-bridge` |
+| 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具（**已降级为逃生口**，见 11.6） | `~\.dsh\plugins\dsh-local-bridge` |
+| **客户端执行世界** | 工作区绑定决定命令跑在哪台机器：`dsh-client-bindings`（绑定存储）+ `dsh-subprocess-dispatch`（接管 `subprocess`）+ 客户端 executor | `~\.dsh\plugins\dsh-client-bindings`、`~\.dsh\plugins\dsh-subprocess-dispatch` |
 | 视频批量剪辑 | dsh-video-studio（内嵌 FFmpeg：剪切/变速/转场/BGM/字幕/格式转换/滤镜，11 个工具） | `~\.dsh\plugins\dsh-video-studio-local` |
 | manifest 校对工具 | Electron 桌面工具（本地预览视频 + 帧级进度条 + 人工校对/修正 manifest），设置页「本地插件」下载 | `~\.dsh\tools\manifest-tool`（源码）+ `~\.dsh\plugins\dsh-video-studio-local\assets`（打包 exe） |
 | 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
@@ -218,13 +219,16 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **视频剪辑（2026-09-10）**：`dsh-video-studio` 插件内嵌 FFmpeg 完整版（BtbN win64-gpl，ffmpeg/ffprobe 各约 157MB），11 个模型工具（video_build / video_cut / video_concat / video_audio / video_subtitle / video_convert / video_filter / video_probe / video_list / video_thumbnail / ffmpeg_run），覆盖剪切、变速（不变调）、分辨率、xfade 转场、BGM、字幕、格式转换（容器互转/提取音频/转 GIF）、常用滤镜（亮度/对比度/饱和度/模糊/锐化/黑白/旋转/翻转等）；并发限流 + 工作区沙箱收容；全局 skill `dsh-video-studio` 承载「读标注选片出片」与「抽帧读图生成 manifest 标注」两条工作流。
 - **manifest 校对工具（2026-09-10）**：Electron 桌面工具（`~\.dsh\tools\manifest-tool`），三栏布局（视频列表 / 帧级预览 / manifest 表单），本地预览视频 + 帧级进度条 + 快进 + 加速 + 人工校对/修正 manifest（动态字段 / 新增字段 / tags 逗号分隔 / 直接保存 + 另存为），UI 中英切换；打包成 portable exe（内嵌 FFmpeg，约 151MB）挂到设置页「本地插件」供局域网用户下载。
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载、FFmpeg 下载、manifest 校对工具打包）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
+- **客户端执行世界（2026-09-16）**：本机桥接之后的更进一步——不再需要 agent 显式选 `local_run`，而是**整个执行面跟着工作区走**。新增两个插件（`dsh-client-bindings` 绑定存储、`dsh-subprocess-dispatch` 按 cwd→工作区→绑定分派）与一个跑在用户机器上的 executor；文件仍是服务器上那一份，客户端通过 SMB 共享（`\\<服务器>\ws-<工作区>`）看到同一份字节。另加全局 skill `local-staging`（>10MB / 工程格式走本机暂存）。实施与验收记录见 `docs/plan-client-world-progress.md`，设计见 `docs/plan-client-world.md`。
 
 ### 11.4 运维提示
 
 - host 改动（插件 `lib\index.js`、cordis.patch.yml）需整进程重启；客户端 `lib\client.js` 经 HMR 自动重发，浏览器 Ctrl+F5 生效。
 - 启动：`pnpm dsh --profile web --trusted-host <局域网IP>`（于引擎 checkout 根目录）。
 - 状态文件：`~\.dsh\auth\{store,session-owners,hidden-items,role-map}.json`、`~\.dsh\upgrade-state.json`、`~\.dsh\plugins\dsh-remote-local\run-diag.log`。
+- **客户端执行世界**：绑定记录存在部署侧存储域 `client_binding`（**不在**引擎的 `workspace` 域里，两者只靠 id 关联），所以引擎升级不会动它。**服务端重启后所有绑定一律失效**（心跳全部陈旧），重启后需要重新绑定——这是设计如此，不是故障。executor 必须跑在用户的**交互式登录会话**里（映射盘符是按登录会话的），并且优先直接把 UNC 路径交给软件。
 - 完整迁移/备份：见 `MIGRATION.md`。
+- **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。**
 
 ### 11.5 全局 skill 与加载顺序
 
@@ -244,3 +248,30 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 > **两个坑**：
 > 1. 预设目录里的 `skills\` **不会**被自动发现——必须在预设的 `agent.cordis.yml` 里用 `customSkillDirs` 指过去，本仓库的写法是 `!!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"`（`baseUrl` 由加载器注入）。
 > 2. 同一份 skill 放到 `~\.dsh\skills\` 与 `~\.agents\skills\` 两个根，是为了让 dsh 之外的 agent（Claude Code / Codex 等）也能读到；两边内容保持一致即可。
+
+### 11.6 客户端执行世界（用户须知）
+
+> 这一节是写给**使用者**的，不是写给运维的。运维侧另见 `docs/plan-client-world-progress.md`。
+
+**它做什么**：某个工作区被你的电脑"绑定"之后，这个工作区里的命令就**在你的电脑上执行**，而不是在服务器上。文件没有搬家——还是服务器上那一份，你的电脑通过 SMB 共享看到同一份字节。没绑定的工作区照旧在服务器上跑，行为和现在完全一样。
+
+**你需要做的**：
+
+1. 在你的电脑上启动本机助手（executor），并在它的配置页登录一次。助手会记住状态，通常开机自启即可。
+2. 在配置页选择要绑定到这台电脑的工作区。**同一时刻一个工作区只能被一台电脑绑定**；被别人占着时页面会告诉你是谁占用的。
+
+**要知道的四件事**：
+
+- **合上笔记本 / 关掉助手 / 网络抖动超过宽限期，都会让出工作区。** 回来时可能已经被别人绑走，需要重新绑定。宽限期就是这个体验的调节旋钮。
+- **助手没在跑的时候，命令不会"改到服务器上跑"，而是直接报错。** 这是故意的：如果它悄悄改到服务器执行，你会以为命令作用在自己的文件上，实际上没有。
+- **大文件（>10MB）和 PS/Blender 工程文件不要直接用共享路径打开。** Adobe 官方只支持在本地硬盘上使用 Photoshop，明确"不支持把网络或可移动驱动器作为暂存盘"；在网络上原地编辑可能报 `file is locked` / `disk error` / `unknown format`，而且**损坏可能延迟出现、当场看不出来**。请让 agent 走本机暂存流程（签出到本地 → 处理 → 回写）。最要紧的一条：**不要在资源管理器里双击共享上的大文件直接用 PS 打开。**
+- **工作区被别的账号占用时，对你而言等同于没绑定**——你的命令会在服务器上执行，绝不会跑到别人的电脑上。
+
+**和"本机软件调用"（`local_run`）的关系**：`local_run` 现在退居**逃生口**——跑一次不常用的 exe、应急排查用。处理工作区里的文件请用客户端执行世界，因为文件本来就在工作区里，不需要在模型上下文里来回搬运。
+
+**每台客户端机器的一次性准备**（SMB 凭据）：客户端机器需要具备工作区共享的访问凭据，助手本身不会替你建立。存一次即可，跨重启保留：
+
+```powershell
+cmdkey /add:<服务器IP> /user:<SMB账号> /pass:<密码>
+```
+
