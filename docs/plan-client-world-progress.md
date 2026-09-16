@@ -2012,4 +2012,28 @@ pnpm dsh --profile web-client --patch "$env:USERPROFILE\.dsh\profiles\web-client
 
 至于"这个路径确实解析到那个 zip"：同一段处理逻辑在 `pilot-auth` 上已用真会话验过（`HEAD` 200 + `Content-Length=34006216`、`Range` 206、越界 416），而 `dshHomePath()` 在两个 profile 下都指向同一个部署根 —— 两个 home 的 `plugins` 本来就是指向同一个目录的 junction。
 
+#### D-4. 陈旧客户端提示（计划 §6.2 第 5 条）
+
+**做法**：两边各自报**自己正在跑的那个文件的修改时间**，不需要任何一方发布版本号 ——
+
+- 执行器在 `hello` 里多带一个 `build`（`ownBuildTime()`）；
+- 服务端在收到 `hello` 时拿它和**它当前分发的那个 zip** 的 mtime 比，差超过 1 天就在日志里点名：`… runs an executor built N day(s) before the one this server hands out: re-download <packPath> …`。
+
+**为什么用文件时间而不是版本号**：要回答的问题是"这台机器跑的是不是我现在发的这一版"，而版本号只有在**有人记得改它**的时候才回答得了。下载下来的副本自带它被写入的时间，两边因此可以直接比。
+
+**两个必须写下来的判读点**：
+
+- **`process.execPath` 在两种形态下含义不同。** 打包形态下它就是本程序；`node executor.mjs` 形态下它是 **node.exe 自己**，直接 stat 会得到一个毫无意义的"构建时间"。所以按 `basename(process.execPath)` 是否为 `node(.exe)` 决定 stat 哪一个。
+- **1 天容差不是随手写的**：zip 和它里面的 exe 相差几十秒，装机时间也各不相同；只有超过一天的差距才值得提醒，否则每次连接都会刷一条假警告。
+
+**验证到什么程度（不要读多）**：
+
+| 验了 | 结果 |
+|---|---|
+| 新构建不误报 | 单个执行器连上 3084 稳定 25s，日志里**没有**该警告（也**没有**重连） |
+| 边界与方向 | `served - client`：0.5 天 → 静默、1.5/9 天 → 提醒；符号取反（`-9 天`）→ 不提醒，说明方向没写反 |
+| 警告分支本身**没有**端到端跑过 | 需要人为回拨 dist 里 exe 的 mtime 再重启服务端，本轮被沙箱挡在 `Stop-Process`/`Start-Process` 上（`spawn EPERM`）。它是**纯日志、不参与控制流**，所以留作未验项而不是假装验过 |
+
+> **排查这条时踩的坑（值得记）**：测试期间**同时跑了两个执行器**（同一个 token、同一个账号），于是服务器按设计"一个账号只保留一条连接"来回顶，日志表现为**每秒重连一次**。我一度以为是自己新加的代码把它弄崩了。**判据**：`[client-transport] … superseded by a newer connection`；**规避**：测试时确保只有一个执行器在跑（README 也记了同一条）。
+
 

@@ -1246,6 +1246,34 @@ export class ClientTransport {
 		return { host: connection.host, platform: connection.platform, release: connection.release }
 	}
 
+	/**
+	 * Report a machine whose executor build is older than the one this server hands out.
+	 *
+	 * Both times come from the running file's own modification time (see the executor's
+	 * `ownBuildTime`), so neither side has to publish a version number for the comparison
+	 * to work. Nothing is enforced: a stale machine keeps working, and the log names it
+	 * along with the remedy, which is the whole of plan §6.2 item 5 at LAN scale.
+	 * @param username - Account the executor speaks for.
+	 * @param message - The `hello` frame, for its `build`.
+	 */
+	noteStaleBuild(username, message) {
+		if (!Number.isFinite(message?.build)) return
+		let served
+		try {
+			served = statSync(this.packEntry).mtimeMs
+		} catch {
+			// No packaged distribution on this server, so there is nothing to be stale
+			// against; a `.mjs` client has no build time of its own either.
+			return
+		}
+		// A tolerance rather than an exact compare: the archive and the executable inside
+		// it are written seconds apart, and a machine that unpacked the current one must
+		// not be reported as stale.
+		if (served - message.build < 24 * 60 * 60 * 1000) return
+		const days = Math.round((served - message.build) / 86400000)
+		this.ctx.logger?.warn?.(`[client-transport] ${username} runs an executor built ${days} day(s) before the one this server hands out: re-download ${this.packPath} on that machine and replace its folder`)
+	}
+
 	/** Send one frame to an account's executor; drops silently when it is gone. */
 	send(username, message) {
 		const connection = this.connections.get(String(username))
@@ -1295,6 +1323,12 @@ export class ClientTransport {
 			if (typeof message.version === 'string' && olderThan(message.version, KEEPALIVE_MIN_EXECUTOR)) {
 				this.ctx.logger?.warn?.(`[client-transport] ${username} runs executor ${message.version}, which predates the keepalive (needs ${KEEPALIVE_MIN_EXECUTOR}): re-download ${this.downloadPath} on that machine, or it will be dropped whenever it is idle`)
 			}
+			// Plan §6.2 item 5's update channel, in the form a LAN deployment can act on
+			// without a version feed: the machine reports when its own program was built,
+			// and the server knows when the copy it hands out was built. A machine running
+			// an older one is named in the log, with the remedy, instead of being left to
+			// discover the mismatch as a capability that quietly does not work.
+			this.noteStaleBuild(username, message)
 			return
 		}
 		// Relayed HTTP frames carry a requestId, not a procId, so they are routed

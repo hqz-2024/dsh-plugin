@@ -42,7 +42,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { homedir, hostname, platform, release } from 'node:os'
-import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, basename, extname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
@@ -68,6 +68,28 @@ function isScrubbed(name) {
 }
 
 const IS_WINDOWS = platform() === 'win32'
+
+/**
+ * When the program this machine is running was built.
+ *
+ * Read from the running file's own modification time rather than from a version
+ * constant, because the question the server has to answer is "is this machine running
+ * the build I am currently handing out?" — and a version string only answers it when a
+ * human remembers to bump one. A downloaded copy carries the time it was written, so
+ * the two sides can be compared without either one publishing a new number.
+ * @returns Epoch milliseconds, or null when the file's time cannot be read.
+ */
+function ownBuildTime() {
+	// The two launch modes differ in which file *is* this program: packaged, it is the
+	// executable; run as a script, `process.execPath` is the Node runtime, whose own
+	// modification time would be reported as a build time that means nothing.
+	const packaged = !/^node(\.exe)?$/i.test(basename(process.execPath))
+	try {
+		return statSync(packaged ? process.execPath : fileURLToPath(import.meta.url)).mtimeMs
+	} catch {
+		return null
+	}
+}
 
 /**
  * Read one environment entry.
@@ -1320,7 +1342,7 @@ function connect(server, token, label) {
 		reconnectAttempt = 0
 		lastContactAt = Date.now()
 		console.log('[executor] connected to', server)
-		lastHello = { version: VERSION, label, host: hostname(), platform: platform(), release: release() }
+		lastHello = { version: VERSION, build: ownBuildTime(), label, host: hostname(), platform: platform(), release: release() }
 		send(socket, { type: 'hello', ...lastHello })
 		// One second is finer than any budget the server hands out (its pings are
 		// seconds apart), so a gap this observes is never the timer's granularity.
