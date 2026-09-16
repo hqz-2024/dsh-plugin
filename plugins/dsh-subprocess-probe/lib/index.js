@@ -68,6 +68,12 @@ export function apply(ctx, config) {
 	 * used because the kill must come from outside this process.
 	 */
 	const crashMarker = typeof config?.crashMarker === 'string' ? config.crashMarker : ''
+	/**
+	 * Interpreter the P3 acceptance REPL step starts. A server-absolute path is
+	 * what a real shell call produces (the shell tool resolves the command on the
+	 * server), so it also exercises the executor's cross-machine `argv[0]` rule.
+	 */
+	const pythonPath = String(config?.pythonPath ?? 'python')
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -328,6 +334,41 @@ export function apply(ctx, config) {
 			record({ step: 'terminal-terminated', ms: Date.now() - startedAtTerm, settled: await terminal.waitForExit() })
 		} catch (error) {
 			record({ step: 'terminal-interactive', ok: false, error: String((error && error.message) || error) })
+		}
+
+		// ── 3d. python REPL in the ConPTY (plan P3 acceptance names it) ───────
+		// A REPL is a stricter test than `powershell -Command`: it reads from the
+		// terminal line by line and prints each result, so a successful round trip
+		// proves interactive stdin really reaches the remote program. `os.getcwd()`
+		// is read by Python itself from the OS, so it reports the cwd the child was
+		// actually started with rather than anything the harness passed along.
+		try {
+			const repl = await ctx.subprocess.spawnTerminal({
+				argv: [pythonPath, '-i'],
+				cwd: serverCwd,
+				rows: 24,
+				cols: 100,
+				graceMs: 3000,
+			})
+			let replText = ''
+			repl.output.on('data', (chunk) => { replText += chunk.toString('utf8') })
+			await sleep(3500)
+			await repl.write('import os; print("REPL-MARKER", os.getcwd())\r')
+			await sleep(3500)
+			record({
+				step: 'terminal-python-repl',
+				ok: true,
+				sawBanner: /Python 3\./.test(replText),
+				sawMarker: replText.includes('REPL-MARKER'),
+				sawTranslatedPath: replText.includes(visiblePath),
+				sawServerPath: replText.includes(serverCwd),
+				bytes: replText.length,
+				tail: replText.slice(-260),
+			})
+			await repl.terminate()
+			record({ step: 'terminal-python-terminated', settled: await repl.waitForExit() })
+		} catch (error) {
+			record({ step: 'terminal-python-repl', ok: false, error: String((error && error.message) || error) })
 		}
 
 		// ── 4. Termination settles instead of hanging (plan P2 acceptance) ────

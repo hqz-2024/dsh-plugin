@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 PROFILE_DIR="$ROOT/profiles/web"
-PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge dsh-video-studio-local)
+PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge dsh-video-studio-local dsh-client-bindings dsh-subprocess-dispatch)
 PRESETS=(finance-manager art-design business-sales procurement production hr-management rd-development)
 SKILLS=(sidecar dsh-development dsh-video-studio local-staging firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
 
@@ -220,6 +220,11 @@ done
 for p in "${PLUGINS[@]}"; do
   [[ -f "$ROOT/plugins/$p/lib/index.js" ]] || { echo "    [x] plugin $p 源码缺失"; errors=1; }
 done
+# 客户端执行世界：executor 是要拷到用户机器上单独运行的程序，是独立交付物，
+# 上面那个通用检查只覆盖 lib/index.js，覆盖不到它。
+[[ -f "$ROOT/plugins/dsh-subprocess-dispatch/executor/executor.mjs" ]] || { echo "    [x] executor 程序缺失"; errors=1; }
+# 跨机/上线用的 profile 与它的脱敏模板（真实 patch 含 token，不入库）
+[[ -f "$ROOT/profiles/web-client/cordis.patch.example.yml" ]] || { echo "    [x] web-client 模板缺失"; errors=1; }
 [[ -f "$TARGET" ]] || { echo "    [x] cordis.patch.yml 缺失"; errors=1; }
 grep -q 'REPLACE_WITH_RANDOM_TOKEN' "$TARGET" && { echo "    [x] sidecar token 仍为占位符"; errors=1; }
 [[ -f "$CRED" ]] || echo "    [~] .credentials.yaml 缺失（可后补）"

@@ -27,7 +27,8 @@
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；stdin / spill 未验证 | 🟡 部分 |
 | **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证 |
 | **P3** | crashtest：关 executor 时终端不挂死 | ✅ 已验证（本轮） |
-| **P5** | 暂存工作流：v1 提示词段 + 全局 skill | ✅ 机制已验证；三个真实软件端到端未做 |
+| **P3** | python REPL 可用（计划 P3 验收原文） | ✅ 已验证（本轮） |
+| **P5** | 暂存工作流：v1 提示词段 + 全局 skill + 文档（AGENTS/README/用户须知） | ✅ 机制与文档已完成；三个真实软件端到端未做（本机无那些软件，见 §1） |
 | **P4** | 本机 localhost 转发（`/client-relay`） | ✅ 已验证（含 SSE 流式与端口白名单）；Figma 端到端待真实环境 |
 
 ---
@@ -388,11 +389,43 @@ workspace domain is inconsistent: workspace '<id>' is absent from registry order
 
 原因是 `global.workspaceIds` 是**另一份顺序表**，每个工作区都必须同时出现在两处。补上之后启动正常。**结论：工作区应当通过注册表（Web UI）创建，不要手改存储文件** —— 手改会绕过 zod 之外的这层一致性校验。
 
+### P3 python REPL（计划 P3 验收的原文判据，本轮）
+
+计划的 P3 验收写的是"**vim / python REPL 可用**"。此前只验过 `powershell.exe`，本轮补上 REPL。
+
+REPL 比 `powershell -Command` 是**更严的**测试：它逐行从终端读输入、逐条求值并打印结果，所以一次成功的往返证明的是**交互式 stdin 真的到达了对端程序**，而不只是"进程起来了、输出回来了"。
+
+| 观察 | 值 |
+|---|---|
+| 解释器 | `C:\Users\bestarc\AppData\Local\Programs\Python\Python313\python.exe -i`（**服务器绝对路径**，与真实 shell 调用一致，因此同时走了 executor 的 `argv[0]` 规则） |
+| 横幅 | `sawBanner: true`（`Python 3.13`） |
+| 写入 | `import os; print("REPL-MARKER", os.getcwd())` |
+| 读回 | `REPL-MARKER C:\dsh-executor-root` —— `sawMarker: true`、`sawTranslatedPath: true`、**`sawServerPath: false`** |
+| 终止 | `settled: true` |
+
+**`os.getcwd()` 由 Python 自己向操作系统读取**，所以它报的是子进程真实的 cwd，而不是链路上任何一方转述的路径。回读的尾巴里还有 readline 的转义序列（`\u001b[?2004h` 括号粘贴、`\u001b[?25h` 光标显隐、`\u001b[16X` 擦除）—— 那是**行编辑器在真 PTY 上工作**的证据，管道喂 stdin 不会有这些。
+
+### P5 真实软件端到端：本机没有那些软件（本轮核实）
+
+计划 P5 要三个真实场景（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP）。本轮先核实执行机上到底有什么：
+
+| 软件 | 本机（服务器） |
+|---|---|
+| Photoshop | ❌ 未安装（`Adobe` 目录下只有 Illustrator 2021 与 Adobe Utilities CS6） |
+| Blender | ❌ 未安装 |
+| 现代 Office | ❌ 未安装 |
+| Python | ✅ 3.13.13 —— 上面那条 REPL 就是用它验的 |
+
+**结论**：这三个场景本来就应该在**用户机器**上跑（软件装在那边，也正是"执行世界搬过去"的意义），所以在服务器上找不到它们是正常的，不是配置问题。它们与跨机验证（§3.7）绑定在同一件事上：需要 SUNDA 或用户的工作机。注意 `~/.dsh/skills` 里有 `photoshop-cs6` skill，但**本机并没有 Photoshop** —— 那个 skill 是给有 PS 的机器用的。
+
+**顺带**：`local-staging` 的机制（判定 → 签出 → 处理 → 回写 → 清理）本身不依赖具体软件，可以用任意"重"程序演练；但计划要的是真实软件，所以仍记为未做而不是降级替代。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
+服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
 
-> ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.8）。
+> ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.7）。
 
 ---
 
@@ -487,27 +520,28 @@ typeof pid: number value: 0
 
 顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它的完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
 
-### 3.7 按计划的验收判据逐条核对后，仍缺的项（本轮复核）
+### 3.6 按计划的验收判据逐条核对后，仍缺的项（本轮复核）
 
-拿 `plan-client-world.md` 里**写明的验收判据**逐条对账，而不是凭印象。本轮补掉的是 §4.5 / §4.6、P2 的终止树与 P3 的 crashtest（证据见 §1）。仍然缺的：
+拿 `plan-client-world.md` 里**写明的验收判据**逐条对账，而不是凭印象。已补掉的：§4.5 / §4.6、P2 的终止树、P3 的 crashtest 与 python REPL、P0-2、以及 P5 的三份文档（证据见 §1）。仍然缺的：
 
 | 判据出处 | 判据 | 状态 |
 |---|---|---|
-| P0 验收 | SMB 双向可见 | ✅ **已验证**（本轮，见 §1） |
-| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 未做：需在客户端侧测量 |
-| P3 验收 | **python REPL** 可用（已验的是 PowerShell） | 🟡 未做 |
-| P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失） |
+| P0 验收 | SMB 双向可见 | ✅ **已验证**（见 §1） |
+| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 未做：需在客户端侧测量，且本机无 Office（见 §1） |
+| P3 验收 | **python REPL** 可用 | ✅ **已验证**（见 §1） |
+| P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失，不是链路中断） |
 | P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP |
-| P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需真实软件 |
-| **P5** | **补 `AGENTS.md` / `README.md` / 用户须知**（含"不要在 SMB 上直接双击大文件用 PS 打开"）；`local_run` 降级为逃生口 | ❌ **纯文档，未做** |
+| P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需在**用户机器**上跑（本机三者都没装，见 §1） |
+| **P5** | 补 `AGENTS.md` / `README.md` / 用户须知；`local_run` 降级为逃生口 | ✅ **已完成** |
+| **跨机** | 命令真的在**另一台机器**上执行 | ⛔ 见 §3.7 —— 唯一还缺的那类证据 |
 | §4.8 | 性能基准 | ❌ 未做（计划自己标了"未测，需补"） |
 | §3.3 | `proc.stdin`、spill 文件 | 🟡 已实现未测 |
 
-其中 **P5 的文档那条是唯一完全不依赖外部条件的缺口**，下一轮做。P0-3 的 Office 与"断网"两项都真实需要 P0-2 先落地。
+**剩下的缺口有一个共同前提**：P0-3、真实软件、跨机三项都需要**另一台机器上的动作**（SUNDA 或用户的工作机）。它们不是实现没做完，而是实现只能在目标环境里才验得动。见 §3.7。
 
 ---
 
-## 3.8 跨机验证（唯一还缺的那类证据）
+### 3.7 跨机验证（唯一还缺的那类证据）
 
 **这是本项目至今最大的证据缺口**：所有运行时证据都是**服务器与 executor 同机**（环回）。计划自己警告过这一点 —— "本次 executor 与服务器同机，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题"。同机跑通**不等于**跨机跑通。
 
@@ -526,7 +560,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 **上线前还差的准备**：① 在 3080 那个 home 里建好 `smbtest` 工作区；② 把 `web-client` 的 executor token / relay 密钥换成真实签发的；③ SUNDA 上装 Node、存 SMB 凭据、启动 executor。**防火墙不需要新规则** —— 走的是已经在开的 8443。
 
 
-### 3.6 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
+### 3.8 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
 
 `plan.md` §"会话归属"与 §"git pull 评估"写着：本部署有**源码级本地修改** `packages/api/session-controller` 的 `scopeUser` / `sessionOwnership`。本轮核对：**该修改当前不存在**。
 

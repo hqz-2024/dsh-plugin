@@ -54,4 +54,7 @@
     fixturePort: 38450
     relaySecret: pilot-relay-secret-abcdef0123456789
     executorToken: pilot-executor-token-0123456789
+    # P3 acceptance names a python REPL. A server-absolute path is what a real
+    # shell call passes, so this also exercises the executor's argv[0] rule.
+    pythonPath: 'C:\Users\bestarc\AppData\Local\Programs\Python\Python313\python.exe'
     resultPath: !!js dshHomePath('profiles/pilot/probe-result.jsonl')
