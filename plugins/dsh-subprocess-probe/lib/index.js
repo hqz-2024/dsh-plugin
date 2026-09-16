@@ -289,6 +289,10 @@ export function apply(ctx, config) {
 		for (const [label, url] of [
 			['relay-port-denied', `http://127.0.0.1:${serverPort}/client-relay/${relaySecret}/1234/ping`],
 			['relay-unknown-secret', `http://127.0.0.1:${serverPort}/client-relay/not-a-real-secret/${fixturePort}/ping`],
+			// 3845 is in the allowlist but nothing listens on it. That is the real-world
+			// case for Figma MCP: the desktop app is not running. The requirement is a
+			// definite, explained failure — not a hang and not a bare 502 with no reason.
+			['relay-upstream-dead', `http://127.0.0.1:${serverPort}/client-relay/${relaySecret}/3845/mcp`],
 		]) {
 			try {
 				const denied = await fetch(url)

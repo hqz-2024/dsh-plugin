@@ -710,6 +710,26 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 **顺带一个运维观察**：完整 spill 是**按设计保留**的（调用方负责读走并清理），所以我前面十几轮跑下来，`%TEMP%\dsh-remote-spill\` 里积了 15 个 300KB 文件。这不是缺陷，但值得知道 —— 长期跑大量长输出的会话，这个目录会涨。
 
+### P4 的错误路径：上游服务没在跑（本轮补齐）
+
+计划 P4 的验收是"Figma MCP 工具出现在会话工具表并能取回节点数据"，那需要真的开着 Figma。但**更常见的日常情形是它没开** —— 而这条错误路径此前从没测过。`relayPorts` 里的 3845 是 Figma 的端口，测试机上正好没有任何东西在听，就是"用户没开 Figma"那个情形。
+
+判据是"确定且说明原因"的失败（§4.5 的一贯要求）：**不能挂起，也不能是一个不说理由的 502**。
+
+| 步骤 | 结果 |
+|---|---|
+| `relay-plain` / `relay-post-body`（上游活着） | 200 |
+| `relay-sse` | 200，3 个事件，到达 `411, 813, 1221`，`streamed=true` |
+| `relay-port-denied` | 403 `port 1234 is not in the relay allowlist` |
+| `relay-unknown-secret` | 403 `unknown relay secret` |
+| **`relay-upstream-dead`** | **502 `connect ECONNREFUSED 127.0.0.1:3845`** |
+
+**关键在这条与上面三条 200 出现在同一次运行里** —— 所以它不是"整体都 502"，而是针对那一个上游的、指名道姓的失败：错误文本里带着**确切的端口号**，用户一眼能看出是哪个服务没开。
+
+**跑第一次时我忘了起 fixture**，于是四条 relay 用例全变成 `502 ECONNREFUSED 127.0.0.1:38450`。这反而顺带证明了同一件事的另一半：上游是谁没开，错误里就写谁。但那次运行不能算数（P4 的正常路径没被验），所以起了 fixture 重跑了一遍 —— 上面那张表是重跑的结果。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -821,7 +841,7 @@ typeof pid: number value: 0
 | P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | 🟡 **量具已就绪**（`measure-smb-boundary.ps1`），已有环回初值；**待客户端那一份**（见 §1） |
 | P3 验收 | **python REPL** 可用 | ✅ **已验证**（见 §1） |
 | P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失，不是链路中断） |
-| P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP |
+| P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP。**上游没开时的错误路径已验**（502 + 确切端口，见 §1） |
 | P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需在**用户机器**上跑（本机三者都没装，见 §1） |
 | **P5** | 补 `AGENTS.md` / `README.md` / 用户须知；`local_run` 降级为逃生口 | ✅ **已完成** |
 | **跨机** | 命令真的在**另一台机器**上执行 | ⛔ 见 §3.7 —— 唯一还缺的那类证据 |
@@ -1044,6 +1064,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `crash-binding-active` | **true**（否则它下面那条不成立） |
 | `prompt-section-bound` / `unbound` | 长度 1463 / 0 |
 | `relay-sse` | `streamed` true，三个 `arrivals` 间隔约 400ms |
+| `relay-upstream-dead` | **502**，且错误文本含 `ECONNREFUSED` 与**确切端口**（3845 无人监听），不能是挂起或无理由的 502 |
 
 ### B. 上线组合（`web-client`）
 
