@@ -898,6 +898,43 @@ which runs win32 10.0.19045. ...
 
 
 
+### 真实 agent 用 shell 工具跑的命令落到了客户端（本轮，此前只验过分派层）
+
+P2 的验收原文是"**已绑定工作区的 `bash` 在用户机上跑 PowerShell**"。但此前所有路由验证都是**直接调 `ctx.subprocess.spawn`** —— 也就是绕过了 shell 工具那一层。从 `tool-pwsh` 到 `shellEnv.collect`、再到 `pwsh-local` 的 `spawnSpec`、最后才到 `ctx.subprocess` 这段，**只被读过，没被跑过**。
+
+本轮用真实路径跑了一遍：浏览器里在已绑定 `.dsh`（可见路径 `C:\dsh-executor-root`）的工作区建会话，让 agent 自己决定用什么命令。
+
+**会话日志里的原始证据**：
+
+```
+tool/call    name=pwsh
+             arguments={"command": "Get-Location | Select-Object -ExpandProperty Path; hostname"}
+tool/result  "C:\\dsh-executor-root\r\nDESKTOP-LCLS51R\r\n"   isError=false
+```
+
+`C:\dsh-executor-root` 是**翻译后的可见路径**，而服务器路径是 `C:\Users\bestarc\.dsh`。所以这一条同时证明：**shell 工具真的走过了分派层**、**命令真的在 executor 侧执行**、**cwd 被翻译过**、**结果经 WebSocket 回来了**。
+
+而且 agent 自己的措辞说明提示词段起了作用（它写着："这个 pwd 是用户电脑上的路径（`C:\dsh-executor-root`），不是文件工具看到的 `C:\Users\bestarc\.dsh` —— 同一份文件的两个写法"）。这正是 §2.8.3 那段存在的理由。
+
+### §2.1 的检查**实际能覆盖到谁**：只覆盖 roleMap 映射过的账号（本轮查清）
+
+上面那次运行里还有一条值得记的事：会话账号是 `probe-admin`，而绑定的占用者是 `probe-primary`，两者不同 —— 按 §2.1 本应**拒绝本地执行**，但命令照样跑在了客户端。追下去发现不是缺陷，而是**检查的射程本来就只到这里**：
+
+| 事实 | 位置 |
+|---|---|
+| 会话归属只在 `session.prompt` / `rename` / `attachment` 时写入 | `lib/index.js:1279-1282` |
+| 整段写入逻辑被 `if (mappedWs !== null)` 包着 | `lib/index.js:1252` |
+| `mappedWs` 只对 **roleMap 有工作区映射**的账号非空 | `lib/index.js:1242` |
+| 而 admin **没有** roleMap 映射（fork 的既定设计："Admin never receives scopeUser and stays unfiltered"） | 同处 |
+
+所以：**admin 的会话永远不会被登记归属** → `ownerOf` 返回 null → 我的 `admit()` 按"归属未知"处理、保持绑定 → 命令落在那个占用者的机器上。这与我在代码注释里写的"归属未知就不改绑定"是一致的，但**当时没意识到"admin 会话"正是归属未知的常见情形**。
+
+**后果与判断**：受影响的是"管理员在一个被别的账号绑定的工作区里开会话" —— 管理员的命令会跑在别人的电脑上。计划 §2.1 的字面要求是禁止这种情形。但这个部署的账号模型里，admin 本就在按账号区分的机制之外（能看到全部、能强制解绑、没有工作区授权），所以"该管理员自己绑定的那台机器"并没有定义。**如实记为已知边界，不假装它不存在，也不为它发明一套归属**。管理员遇到这种情况的正确动作是：要么自己绑一次，要么先用强制解绑把占用者释放掉。
+
+**受保护的账号（roleMap 映射过的非 admin）不受影响**：它们的会话在第一次发言时就会写入归属，检查随后生效。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
