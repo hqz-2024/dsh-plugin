@@ -523,6 +523,25 @@ P0-3 要的是"8–10MB 边界文件"与"Office 在 SMB 上的锁文件行为"�
 
 **顺带记一个写脚本时踩的坑**：`[System.IO.File]::Replace($src,$dst,$null)` 从 PowerShell 调用**永远失败** —— `$null` 被编组成空字符串，.NET 报 `The path is empty`。那看起来和文件系统故障一模一样，只数异常次数就会把"我自己传错了参数"误判成"共享不支持原子替换"。第一版脚本就是这么误报的，本地盘上也 20/20 失败才暴露出来。
 
+### 全量回归：最近三个提交没有引入回归（本轮）
+
+在准备上线之前重跑一遍完整回归，因为最近三个提交里有一个改的是 `startProcess` —— 那是**每一次 spawn 都要过**的路径，还有一个改了 `bind.apply`。切换前不确认这两处，出问题只能靠猜。
+
+`pilot-auth`（53 条记录）与 `web-client`（上线组合）两段跑完：
+
+| 段 | 结果 |
+|---|---|
+| `pilot-auth` 完整功能 | 失败项**恰好两条**，都是刻意构造的负例（`argv0-unresolvable`、`crash-offline-spawn`）；**没有任何 `HUNG`** |
+| 关键值逐项对齐 | `cwd=C:\dsh-executor-root`、perm 占用者→client/他人→server、python REPL `sawServerPath=false`、stdin `sawPayload=true exitCode=0`、spill `4096/lossy/300000/complete`、终止 `grandchildAlive=false`、断线 `rejected … 2335ms`、提示词段 `1463/0`、SSE `streamed arrivals=409,814,1220` —— **全部与既有记录一致** |
+| `web-client` 上线组合 | 索引 5 个工作区全 `server`；门禁 403、三个前缀放行（`/client-auth` 401 与 `/client-relay` 403 都带**处理器自己的文本**）；`/executor` 无/错 token **close 4001**；bind → `smbtest=client`，unbind → 翻回 |
+
+**顺带确认了两件事**（不是刻意测的，是跑出来的）：
+
+1. **重连 + 绑定重放是通的**：测试连接把真 executor 顶掉后，它 1 秒后自动重连，并立刻重新持有原绑定（`holding 92328440-… at \\192.168.28.239\ws-smbtest`），心跳按生产的 30 秒节奏走。
+2. **一个坑，已写进 §7**：用**同一个 token** 再连一个 executor 会两个连接互相顶（每账号只保留一条连接），测试连接会以 `1005` 关闭，看起来像认证失败。要测 `/executor` 认证只能用**错 token**那两条。
+
+清单已固化为 §7「上线前的回归清单」—— 三段（完整功能 / 上线组合 / 最后三件事），带期望值，目的是让切换这件事**可机械执行**，而不是每次靠回忆。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -805,3 +824,77 @@ Invoke-WebRequest http://127.0.0.1:3086/api -SkipHttpErrorCheck                 
 Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -SkipHttpErrorCheck                     # 401 我的处理器
 Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -Headers $h -SkipHttpErrorCheck         # 200
 ```
+
+---
+
+## 7. 上线前的回归清单
+
+**为什么要有这一节**：客户端执行世界改的是 `ctx.subprocess` 这个**所有 shell 调用都要过**的服务，还有一个跑在用户机器上的独立程序。切换前必须能一次性确认"没坏"，否则线上出问题只能靠猜。
+
+清单分三段。**只要碰过 `plugins/dsh-subprocess-dispatch/` 或 `plugins/dsh-client-bindings/`，就必须重跑 A 和 B。**
+
+### A. 完整功能（`pilot-auth`，最全的一段）
+
+```powershell
+$p = "$env:USERPROFILE\.dsh\profiles\pilot-auth"
+Remove-Item "$p\dispatch-trace.jsonl","$p\probe-result.jsonl","$p\crash-armed.marker" -ErrorAction SilentlyContinue
+$env:DSH_HOME = "$env:USERPROFILE\.dsh-pilot-auth"
+Set-Location C:\Users\bestarc\Desktop\deepseek-harness
+pnpm dsh --profile pilot-auth --port 3084          # 后台
+# 起 fixture（38450）与 executor（token 见 profile），然后：
+#   轮询 crash-armed.marker 出现 → 杀掉 executor（这是用例要求的动作，不是干扰）
+```
+
+**判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
+
+| 允许失败的两条 | 为什么它们是"对的" |
+|---|---|
+| `argv0-unresolvable` | 刻意构造的负例：程序名在本机找不到时**必须明确报错** |
+| `crash-offline-spawn` | §4.5 要求"已绑定但 executor 掉线 → 明确失败、绝不静默回落"，所以它**本来就该失败** |
+
+关键值（与已验证行为逐项对齐，任一不符即为回归）：
+
+| 步骤 | 期望 |
+|---|---|
+| `client-execution` | `parsed.cwd` = `C:\dsh-executor-root`（翻译后的路径，不是服务器路径） |
+| `perm-occupant-session` / `perm-foreign-session` | `executedOn` 分别为 `client` / `server` |
+| `terminal-python-repl` | `sawBanner`、`sawMarker`、`sawTranslatedPath` 皆 true，`sawServerPath` **false** |
+| `stdin-roundtrip` | `sawPayload` true、`exitCode` 0 |
+| `stdout-spill` | `inMemoryBytes`=4096、`lossy` true、`spillBytes`=300000、`complete` true |
+| `termination` | `settledWithin15s` true、`grandchildAlive` **false** |
+| `crash-inflight-spawn` | `outcome` 以 `rejected:` 开头，`ms` 在几千以内 |
+| `crash-binding-active` | **true**（否则它下面那条不成立） |
+| `prompt-section-bound` / `unbound` | 长度 1463 / 0 |
+| `relay-sse` | `streamed` true，三个 `arrivals` 间隔约 400ms |
+
+### B. 上线组合（`web-client`）
+
+```powershell
+$env:DSH_HOME = "$env:USERPROFILE\.dsh-web-client"
+pnpm dsh --profile web-client --port 3086
+```
+
+| 检查 | 期望 |
+|---|---|
+| 路由索引 | 每个工作区都是 `server`（未绑定基线） |
+| `/api` 无 cookie | **403**（门禁答的，body 里没有我的处理器文本） |
+| `/client-auth/state` 无 token | **401** `a valid executor token is required`（**我的处理器**答的 → 前缀确实放行了） |
+| `/client-auth/state` 带 token | 200 |
+| `/client-relay/<错密钥>/3845/x` | **403** `unknown relay secret`（同上，是处理器答的） |
+| `/executor` 无/错 token | WebSocket **close code 4001** |
+| `/executor` 正确 token | 保持连接 |
+| bind → 索引 | 该工作区由 `server` 翻为 `client` |
+| unbind → 索引 | 翻回 `server` |
+
+> **测试时别用同一个 token 再连一个 executor。** 设计上每个账号只保留一条连接，第二个连接会把真 executor 顶掉，然后真 executor 自动重连又把测试连接顶掉 —— 两边来回抢，测试连接会以 `1005` 关闭，看起来像"认证失败"。要单独测 `/executor` 的认证，就用**错 token**那两条；正确 token 那条看到 `1005` 属于预期。
+
+### C. 上线前的最后三件事
+
+1. `profiles/web-client/cordis.patch.yml` 里的 `tokens` / `relayTokens` 换成**真实签发**的值（现在是测试值）。
+2. 确认待提交文件里搜不到任何真实凭据：
+   ```powershell
+   git grep -n --fixed-strings '<真实 token 的前 12 位>' --
+   ```
+3. 客户端机器：装了 Node、executor 在跑、配置页里填过一次共享凭据。
+
+
