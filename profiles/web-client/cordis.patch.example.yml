@@ -31,6 +31,13 @@
     # → 401 / 前端一直"连接中"。设 false 保留原始 Host，配合启动时的
     # --trusted-host <LAN-IP> 即可通过浏览器信任栅栏。
     trustProxy: false
+    # 客户端机器的一键安装：设置 → 本地插件 那张卡片可下载「启动执行器.cmd」，
+    # 里面写好了服务器地址、TLS 证书与一枚新签发的执行器凭据。
+    #   serverUrl 留空则按"浏览器访问本站用的地址 + :8443"推
+    #   caFile    留空则用 caddy 在 Windows 上的默认位置
+    executorSetup:
+      serverUrl: 'https://<局域网IP>:8443'
+      caFile: 'C:\Users\<用户名>\AppData\Roaming\Caddy\pki\authorities\local\root.crt'
     roleMap:
       Finance-mgr:
         preset: finance-manager
@@ -135,6 +142,12 @@
     relayTokens:
       REPLACE_WITH_RELAY_PATH_SECRET: admin
     authPath: '/client-auth'
+    # 绑定页里「本机可见路径」的**建议值**（只是预填，用户可以改）：目录在 serverRoot
+    # 下时把最后一段拼到 uncPrefix 后面 —— C:\dsh-workspaces\smbtest → \\<主机>\ws-smbtest。
+    # 规则要与 setup-smb.ps1 建共享的方式一致。
+    visiblePathHints:
+      - serverRoot: 'C:\dsh-workspaces'
+        uncPrefix: '\\<局域网IP>\ws-'
 
 # 3. 绑定存储。生产节奏：心跳 30s、宽限 2 分钟（够 executor 重连或短暂休眠而不
 #    掉绑定）、扫描 15s。

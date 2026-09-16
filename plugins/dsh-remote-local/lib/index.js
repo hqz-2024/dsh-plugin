@@ -29,7 +29,7 @@ import z from "@deepseek-ai/schemastery";
 import { Readable } from "node:stream";
 import { createGzip } from "node:zlib";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFileSync, createReadStream, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { dshHomePath } from "@deepseek-ai/dsh-home-paths";
 import QRCode from "qrcode";
@@ -182,6 +182,17 @@ const Config = z.object({
 	// plugin IS that layer. Unauthenticated requests never reach /api (our
 	// gate), so the DNS-rebinding defense is redundant behind the cookie.
 	trustProxy: z.boolean().default(true),
+	// Client-machine onboarding (local fork, 2026-09-16). The settings page can hand
+	// out a launcher script that installs a client executor in one double-click, and
+	// that script has to carry the server's own address plus the certificate authority
+	// its TLS uses — otherwise every new machine repeats the same manual dance: find
+	// the cert on the server, set an environment variable, type the URL, log in.
+	// `serverUrl` defaults to the address the browser reached us on; `caFile` defaults
+	// to where caddy keeps its local authority on Windows.
+	executorSetup: z.object({
+		serverUrl: z.string().default(""),
+		caFile: z.string().default("")
+	}).default({}),
 	mfa: z.object({
 		enabled: z.boolean().default(true),
 		issuer: z.string().default("HQZ-DSH"),
@@ -1950,6 +1961,33 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			connected
 		});
 	};
+	const handleExecutorLauncher = async (req, res) => {
+		if (req.method !== "POST") { denyJson(res, 405, "method not allowed"); return; }
+		const verdict = requireAuth(req);
+		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
+		const username = verdict.user.username;
+		const bindings = ctx.get("clientBindings");
+		if (!bindings || typeof bindings.issueToken !== "function") {
+			denyJson(res, 503, "client execution is not mounted on this deployment");
+			return;
+		}
+		// Minted per download rather than per page view: a token is a credential, and
+		// issuing one every time the settings page renders would fill the store with
+		// credentials nobody ever used. The label is what the admin list shows, so a
+		// row can be traced back to the machine it was installed on.
+		const label = `launcher ${new Date().toISOString().slice(0, 10)}`;
+		const issued = await bindings.issueToken({ username, label });
+		const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
+		const serverUrl = cfg.executorSetup.serverUrl || (host ? `https://${host}:8443` : "");
+		let ca = null;
+		try {
+			const caFile = cfg.executorSetup.caFile
+				|| (process.env.APPDATA ? process.env.APPDATA + "\\Caddy\\pki\\authorities\\local\\root.crt" : "");
+			if (caFile && existsSync(caFile)) ca = readFileSync(caFile, "utf8");
+		} catch { /* the script still works without the certificate: it just asks for it */ }
+		diag(`executor launcher issued for ${username} server=${serverUrl} ca=${ca === null ? "none" : "included"}`);
+		json(res, 200, { ok: true, username, token: issued.token, server: serverUrl, ca });
+	};
 	const handleBootstrap = async (req, res) => {
 		if (req.method !== "POST") {
 			denyJson(res, 405, "method not allowed");
@@ -2452,6 +2490,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/hide", handler: handleHide }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/config-options", handler: handleConfigOptions }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/local-plugins", handler: handleLocalPlugins }));
+		disposers.push(originalRegister({ kind: "exact", path: "/auth/executor-launcher", handler: handleExecutorLauncher }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/login", handler: handleMfaLogin }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/setup", handler: handleMfaSetup }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/verify", handler: handleMfaVerify }));

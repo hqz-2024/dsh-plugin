@@ -116,8 +116,14 @@ if (-not $RelaySecret) {
   Write-Host '  [SKIP] 没有密钥可用（-RelaySecret 没给，patch 里也没读到）' -ForegroundColor Yellow
 } else {
   $d = Invoke-Probe "$base/client-relay/$RelaySecret/3845/x" $skipCert
-  Report '真密钥' '502 no executor is connected for <账号>（密钥被识别）' ("{0} {1}" -f $d.status, $d.body) `
-    ($d.status -eq 502 -and $d.body -match 'no executor is connected')
+  # Two outcomes are both correct and mean different things:
+  #   "no executor is connected for X"     -> no client machine is online yet
+  #   "connect ECONNREFUSED 127.0.0.1:3845" -> a client IS online and the relay reached
+  #        ITS loopback; nothing listens there because the target service (Figma Dev Mode
+  #        MCP) is not running on that machine. This is the stronger evidence, and it is
+  #        the normal state once a client has been installed.
+  $known = ($d.status -eq 502) -and ($d.body -match 'no executor is connected' -or $d.body -match 'ECONNREFUSED')
+  Report '真密钥' '502：要么"还没有客户端在线"，要么"转发到了客户端的 127.0.0.1 但那个服务没开"（后者说明链路真的通到那台机器）' ("{0} {1}" -f $d.status, $d.body) $known
 }
 
 Section '5. /executor 的握手要凭据（无 token 必须被 4001 关掉）'

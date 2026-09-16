@@ -450,6 +450,12 @@ export class ClientTransport {
 		 * grace, and is handed to the executor with every ping.
 		 */
 		this.keepaliveMs = Number.isInteger(config?.keepaliveMs) ? config.keepaliveMs : 3000
+		/**
+		 * Rules that turn a server directory into the share path a client sees, for
+		 * pre-filling the bind form. Each entry: `{ serverRoot, uncPrefix }`, e.g.
+		 * `{ serverRoot: 'C:\dsh-workspaces', uncPrefix: '\\192.168.28.239\ws-' }`.
+		 */
+		this.visiblePathHints = Array.isArray(config?.visiblePathHints) ? config.visiblePathHints : []
 		/** Set by the dispatcher: replay live bindings onto a (re)connected account. */
 		this.onConnect = undefined
 		this.server = undefined
@@ -583,6 +589,11 @@ export class ClientTransport {
 				id: String(workspace.id),
 				title: workspace.title,
 				path: workspace.path,
+				// What the client machine most likely sees this directory as. Nothing
+				// depends on the guess — it is a pre-filled form value the user can
+				// overwrite — but typing a UNC by hand is the step people get wrong, and
+				// the server is the side that knows which directories are shared.
+				suggestedVisiblePath: this.suggestVisiblePath(workspace.path),
 			}))
 		} catch {
 			return []
@@ -590,6 +601,34 @@ export class ClientTransport {
 		if (!Array.isArray(granted) || granted.length === 0) return all
 		const allowed = new Set(granted.map(String))
 		return all.filter((workspace) => allowed.has(workspace.id) || allowed.has(workspace.title))
+	}
+
+	/**
+	 * Translate one server directory into the share path a client likely sees.
+	 *
+	 * Configured rather than derived (`visiblePathHints` on this plugin), because
+	 * the server cannot know how a share was named: `setup-smb.ps1` shares
+	 * `C:\dsh-workspaces\smbtest` as `\\<host>\ws-smbtest`, and that convention
+	 * lives in the deployment, not in the path. The first matching rule wins; the
+	 * last path segment becomes the share name suffix.
+	 * @param serverPath - Absolute directory on this server.
+	 * @returns The suggested client-side path, or undefined when no rule matches.
+	 */
+	suggestVisiblePath(serverPath) {
+		if (typeof serverPath !== 'string' || serverPath.length === 0) return undefined
+		for (const hint of this.visiblePathHints) {
+			const root = String(hint.serverRoot ?? '').replace(/[\\/]+$/, '')
+			if (root.length === 0) continue
+			if (serverPath.toLowerCase() === root.toLowerCase()) return undefined
+			if (!serverPath.toLowerCase().startsWith(`${root.toLowerCase()}\\`)) continue
+			const rest = serverPath.slice(root.length + 1).replace(/\\/g, '/').replace(/\/+$/, '')
+			if (rest.length === 0 || rest.includes('/')) return undefined
+			// `uncPrefix` carries the partial share name too (`\\host\ws-`), so the
+			// result is a concatenation, not a join: inserting a separator here turned
+			// `\ws-` + `smbtest` into `\ws-\\smbtest`.
+			return `${String(hint.uncPrefix ?? '')}${rest}`
+		}
+		return undefined
 	}
 
 	/** Current bindings an account holds, as the client page shows them. */
@@ -836,6 +875,11 @@ export class ClientTransport {
 					heartbeatMs: bindings.heartbeatMs,
 					machine: this.describe(username) ?? null,
 					bindings: this.bindingsFor(username),
+					// A machine enrolled by a launcher script holds a token and never
+					// signs in, so this is the only place its page can learn which
+					// workspaces it may bind. Sending it here rather than requiring the
+					// login round trip is what lets the whole bind step skip a password.
+					workspaces: this.claimableWorkspaces(username, undefined),
 				})
 				return
 			}

@@ -491,6 +491,22 @@ async function callEnrolled(action, body) {
 	}
 }
 
+/**
+ * Escape one value for an HTML attribute in the generated page.
+ *
+ * The page is built by string concatenation, so a path with `&` or a quote would
+ * otherwise end the attribute and corrupt everything after it.
+ * @param value - Raw text, or anything falsy for an empty attribute.
+ * @returns Text safe to place inside double quotes.
+ */
+function attr(value) {
+	return String(value ?? '')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+}
+
 /** The page itself; a thin form over the JSON routes. */
 function configPage() {
 	return `<!doctype html>
@@ -506,14 +522,14 @@ button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;bord
 <h1>DSH 本机执行器</h1>
 <p>这台机器可以替服务器执行命令。先登录，服务器会签发一个只属于本机的凭据。</p>
 <div id="msg"></div>
-<fieldset><legend>1. 登录</legend>
-<label>服务器地址</label><input id="server" placeholder="http://192.168.28.239:3080">
+<fieldset><legend>1. 登录（用启动脚本装好的机器通常不需要）</legend>
+<label>服务器地址</label><input id="server" placeholder="https://192.168.28.239:8443" value="${attr(httpBase(enrollment.server))}">
 <label>账号</label><input id="username" autocomplete="username">
 <label>密码</label><input id="password" type="password" autocomplete="current-password">
 <button onclick="signIn()">登录</button>
 </fieldset>
 <fieldset><legend>2. 绑定工作区</legend>
-<div id="workspaces">登录后显示可绑定的工作区。</div>
+<div id="workspaces">正在读取可绑定的工作区…</div>
 </fieldset>
 <fieldset><legend>3. 工作区共享凭据（可选）</legend>
 <p>工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在绑定工作区时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。留空则不改动本机凭据。</p>
@@ -528,6 +544,11 @@ button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;bord
 const $ = (id) => document.getElementById(id);
 // Interpolated so the page shows the directory this machine will actually use.
 const DEFAULT_STAGING = ${JSON.stringify(defaultStagingDir())};
+// Escapes a value for an HTML attribute. This is the PAGE's own copy: the server has a
+// function of the same purpose, and calling that one from here is a runtime
+// ReferenceError that a syntax check cannot see (it shipped once). No backticks in this
+// script: they would end the template literal that generates the page.
+function esc(v){ return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function show(text, cls){ $('msg').innerHTML = '<p class="'+(cls||'')+'">'+text+'</p>'; }
 async function api(path, body){
   const r = await fetch(path, body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -551,7 +572,7 @@ function renderWorkspaces(list){
   if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
   $('workspaces').innerHTML = list.map((w)=>
     '<div style="margin:.4rem 0"><b>'+w.title+'</b><br><code>'+w.path+'</code><br>'+
-    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="">'+
+    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="'+esc(w.suggestedVisiblePath||'')+'">'+
     '<label>本机暂存目录（留空则用 '+DEFAULT_STAGING+'）</label><input id="sd-'+w.id+'" placeholder="'+DEFAULT_STAGING+'" value="">'+
     '<button onclick="bind(\\''+w.id+'\\')">绑定</button></div>').join('');
 }
@@ -571,7 +592,17 @@ async function refresh(){
     '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\\n')+'</pre>'+
     '</fieldset>').join('');
 }
+// A launcher-installed machine already holds a token, so there is no login step:
+// asking the server for the workspace list directly is what lets the picker appear
+// anyway. When the machine is not enrolled this returns ok:false and the page keeps
+// its "sign in first" text.
+async function loadWorkspaces(){
+  const r = await api('/workspaces');
+  if(r && r.ok){ renderWorkspaces(r.workspaces); }
+  else { $('workspaces').textContent = r && r.error ? ('读取工作区失败：'+r.error) : '登录后显示可绑定的工作区。'; }
+}
 refresh();
+loadWorkspaces();
 </script></body></html>`
 }
 
@@ -652,6 +683,17 @@ function startConfigServer(port) {
 							leftovers: stagingLeftovers(entry.stagingDir),
 						})),
 					})
+				}
+				if (req.method === 'GET' && url.pathname === '/workspaces') {
+					// The picker's data source for a machine that holds a token but never
+					// signed in. Proxied rather than fetched by the page: the token lives
+					// in this process, and the page must never see it.
+					if (!enrollment.token) return send(200, { ok: false, error: 'not enrolled yet' })
+					const state = await callEnrolled('state')
+					if (!state || state.ok === false || state.error) {
+						return send(200, { ok: false, error: String(state?.error ?? 'the server did not answer') })
+					}
+					return send(200, { ok: true, username: state.username ?? '', workspaces: state.workspaces ?? [] })
 				}
 				if (req.method === 'POST' && url.pathname === '/login') {
 					const body = await readJson(req)
@@ -1347,8 +1389,10 @@ nodePtyPath = config.nodePty
 statePath = config.state || join(homedir(), '.dsh-executor', 'state.json')
 
 if (config.token) {
-	// Explicit enrollment on the command line: the shape the verification
-	// harnesses use, and still the way to run without a browser.
+	// Enrolled on the command line — the shape a launcher script uses, and the one the
+	// verification harnesses use. The configuration page still starts (below) because
+	// the machine may hold a token and still have work to do on that page: choosing a
+	// workspace to bind, saving the share credential, seeing why it is not connected.
 	if (!config.server) {
 		console.error('Usage: node executor.mjs --server <url> --token <token> [--label <name>] [--node-pty <path>] [--smb-user <account> --smb-password <password>]')
 		process.exit(2)
@@ -1382,16 +1426,16 @@ if (config.token) {
 		awaitingEnrollment = true
 		console.log('[executor] not enrolled yet — open the configuration page to sign in')
 	}
+}
 
-	// The page stays available after enrollment so a user can bind another
-	// workspace, or see why nothing is connected. A taken port must not stop the
-	// executor: the page is a convenience, the connection is the job.
-	try {
-		const server = startConfigServer(config.configPort)
-		server.on('error', (error) => {
-			console.error(`[executor] configuration page unavailable on port ${config.configPort}: ${String(error?.message ?? error)}`)
-		})
-	} catch (error) {
-		console.error(`[executor] configuration page failed to start: ${String(error?.message ?? error)}`)
-	}
+// The page stays available after enrollment so a user can bind another workspace,
+// or see why nothing is connected. A taken port must not stop the executor: the
+// page is a convenience, the connection is the job.
+try {
+	const server = startConfigServer(config.configPort)
+	server.on('error', (error) => {
+		console.error(`[executor] configuration page unavailable on port ${config.configPort}: ${String(error?.message ?? error)}`)
+	})
+} catch (error) {
+	console.error(`[executor] configuration page failed to start: ${String(error?.message ?? error)}`)
 }

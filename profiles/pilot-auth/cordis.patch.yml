@@ -60,6 +60,11 @@
     relayTokens:
       pilot-auth-relay-secret-abcdef0123456789: probe-primary
     authPath: '/client-auth'
+    # 「可见路径建议」的测试样例：服务器目录 → 客户端看到的共享路径，绑定页拿它预填。
+    # 真实部署的规则在 profiles/web-client/cordis.patch.yml。
+    visiblePathHints:
+      - serverRoot: 'C:\Users\bestarc\Desktop'
+        uncPrefix: '\\192.168.28.239\ws-'
 
 - id: client-bindings
   config:

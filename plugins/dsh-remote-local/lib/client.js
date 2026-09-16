@@ -1370,6 +1370,56 @@ window.__ModuleLoader__.load({
 				? 'set NODE_TLS_REJECT_UNAUTHORIZED=0 && node sidecar.mjs --server wss://' + host + ':8443/sidecar --token ' + lp.token
 				: "";
 
+			// One-click client machine. The script carries everything a new machine
+			// needs except the executor program itself: the server address, its TLS
+			// certificate (written next to the script, so Node can *verify* the proxy
+			// rather than being told to trust nothing) and a freshly minted token, so
+			// the machine never asks for a password.
+			const downloadExecutorCmd = async () => {
+				try {
+					const res = await fetch("/auth/executor-launcher", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+					const bundle = await res.json();
+					if (!bundle || bundle.ok !== true) throw new Error(String((bundle && bundle.error) || ("HTTP " + res.status)));
+					const caLines = (typeof bundle.ca === "string" && bundle.ca.length > 0)
+						? bundle.ca.replace(/\r/g, "").split("\n").filter((line) => line.trim().length > 0)
+							.map((line) => '>> "%~dp0caddy-root.crt" echo ' + line).join("\r\n")
+						: 'echo [i] 服务器没有提供证书文件；若本机报证书错误，请手动设置 NODE_EXTRA_CA_CERTS';
+					const content = "@echo off\r\n"
+						+ "REM dsh 客户端执行器 —— 一键启动脚本（与 executor.mjs 放在同一个文件夹）\r\n"
+						+ "REM 服务器地址、TLS 证书、执行器凭据都已经写在脚本里：双击即可。\r\n"
+						+ "setlocal\r\n"
+						+ "cd /d \"%~dp0\"\r\n"
+						+ "where node >nul 2>nul\r\n"
+						+ "if errorlevel 1 (\r\n"
+						+ "  echo [x] 这台机器没装 Node.js，先装它：winget install OpenJS.NodeJS.LTS\r\n"
+						+ "  pause & exit /b 1\r\n"
+						+ ")\r\n"
+						+ "if not exist \"%~dp0executor.mjs\" (\r\n"
+						+ "  echo [x] 同文件夹里没有 executor.mjs —— 请在同一张卡片里把它一起下载下来。\r\n"
+						+ "  pause & exit /b 1\r\n"
+						+ ")\r\n"
+						+ "if not exist \"%~dp0caddy-root.crt\" (\r\n"
+						+ caLines + "\r\n"
+						+ ")\r\n"
+						+ "set NODE_EXTRA_CA_CERTS=%~dp0caddy-root.crt\r\n"
+						+ "echo [i] 命令要在本机执行，还需要这两个程序（装过就忽略）：\r\n"
+						+ "echo     winget install Microsoft.PowerShell\r\n"
+						+ "echo     winget install BurntSushi.ripgrep.MSVC\r\n"
+						+ "echo.\r\n"
+						+ "echo [i] 本机配置页： http://127.0.0.1:38460\r\n"
+						+ "node \"%~dp0executor.mjs\" --server " + bundle.server + " --token " + bundle.token + "\r\n"
+						+ "pause\r\n";
+					const blob = new Blob([content], { type: "text/plain" });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement("a");
+					a.href = url; a.download = "启动执行器.cmd";
+					document.body.appendChild(a); a.click(); a.remove();
+					URL.revokeObjectURL(url);
+				} catch (error) {
+					setLp((prev) => ({ ...prev, error: String((error && error.message) || error) }));
+				}
+			};
+
 			return h("div", { style: { padding: "4px 0" } }, [
 				h("h3", { style: { margin: "0 0 4px", fontSize: "14px", color: "var(--dsw-alias-label-primary, #e6edf3)" } }, t("localPlugins.title")),
 				h("div", { style: { ...mutedStyle, marginBottom: "10px" } }, t("localPlugins.intro")),
@@ -1386,7 +1436,8 @@ window.__ModuleLoader__.load({
 								]),
 								h("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } }, [
 									h("a", { href: p.downloadUrl, download: p.filename, style: { ...buttonStyle, textDecoration: "none", display: "inline-block", textAlign: "center" } }, t("localPlugins.download")),
-									p.id === "sidecar" ? h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadStartCmd }, t("localPlugins.downloadCmd")) : null
+									p.id === "sidecar" ? h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadStartCmd }, t("localPlugins.downloadCmd")) : null,
+									p.id === "executor" ? h("button", { type: "button", style: { ...ghostButtonStyle, whiteSpace: "nowrap" }, onClick: downloadExecutorCmd }, "下载一键启动脚本") : null
 								])
 							]),
 							(p.id === "sidecar" && lp.token)
@@ -1404,7 +1455,8 @@ window.__ModuleLoader__.load({
 									])
 								])
 								: null
-						]))
+						])),
+				lp.error ? h("div", { key: "error", style: { ...mutedStyle, color: "#f85149", marginTop: "6px" } }, "启动脚本生成失败：" + lp.error) : null
 			]);
 		}
 

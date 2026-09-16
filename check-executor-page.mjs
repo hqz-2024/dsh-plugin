@@ -94,9 +94,61 @@ try {
 		for (const id of ['server', 'username', 'password', 'smbuser', 'smbpass', 'workspaces', 'status', 'msg', 'leftovers']) {
 			check(`元素存在：#${id}`, page.includes(`id="${id}"`), `页面里找不到 id="${id}"`)
 		}
+		// Syntax is not enough: the page's JavaScript is generated TEXT, so it can parse
+		// and still throw on the first call (a server-side helper referenced from browser
+		// code shipped exactly that way). Drive it in a real browser when one is available.
+		const browserCheck = await runBrowserCheck()
+		for (const result of browserCheck.results) check(result.name, result.ok, result.detail)
 	}
 } finally {
 	if (child) child.kill()
+}
+
+/**
+ * Open the page in a real browser and look for runtime errors.
+ *
+ * Playwright is resolved the same way `check-client-ui.mjs` resolves it — from wherever
+ * it happens to live on this machine — and a missing browser is reported as a skip
+ * rather than a failure: the syntax checks above still ran.
+ * @returns `{ results: [{ name, ok, detail }] }`.
+ */
+async function runBrowserCheck() {
+	let chromium
+	try {
+		const { createRequire } = await import('node:module')
+		const require = createRequire('file:///C:/nvm4w/nodejs/node_modules/@playwright/mcp/package.json')
+		;({ chromium } = require('playwright'))
+	} catch (error) {
+		return { results: [{ name: '浏览器可用（跳过）', ok: true, detail: `playwright 不可用：${String(error?.message ?? error)}` }] }
+	}
+	const browser = await chromium.launch()
+	const results = []
+	try {
+		const page = await browser.newPage()
+		const problems = []
+		page.on('pageerror', (error) => problems.push(String(error?.message ?? error)))
+		await page.goto(`http://127.0.0.1:${port}/`)
+		await page.waitForTimeout(1200)
+		results.push({
+			name: '页面加载后没有脚本运行时错误',
+			ok: problems.length === 0,
+			detail: problems.join(' | '),
+		})
+		const workspaces = (await page.textContent('#workspaces')) ?? ''
+		results.push({
+			name: '工作区区块不再停在"正在读取…"（说明 loadWorkspaces() 跑完了）',
+			ok: !workspaces.includes('正在读取'),
+			detail: `#workspaces = ${JSON.stringify(workspaces.slice(0, 120))}`,
+		})
+		results.push({
+			name: '状态区块有内容（refresh() 跑完了）',
+			ok: ((await page.textContent('#status')) ?? '').includes('{'),
+			detail: '',
+		})
+	} finally {
+		await browser.close()
+	}
+	return { results }
 }
 
 console.log(failures === 0

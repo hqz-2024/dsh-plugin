@@ -277,32 +277,25 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **每台客户端机器的一次性准备**（三件事，各做一次）：
 
-1. **让本机的 Node 认服务器的证书。** 服务器只监听本机，局域网机器走的是 caddy 的 `https://<局域网IP>:8443`，而那是 caddy 自签的证书。**Node 不读 Windows 证书库**，所以在浏览器里点过"继续访问"或把证书装进系统都不够，`executor.mjs` 仍然会报证书错误。做法：把服务器上的 `%APPDATA%\Caddy\pki\authorities\local\root.crt`（或从浏览器导出那张证书）复制到客户端机器，然后在**启动执行器之前**设置：
+1. **装三个程序**（一次性的，装完不用再管）：
 
    ```powershell
-   $env:NODE_EXTRA_CA_CERTS = "$env:USERPROFILE\caddy-root.crt"
-   node executor.mjs
+   winget install OpenJS.NodeJS.LTS          # 执行器本体需要 Node
+   winget install Microsoft.PowerShell       # agent 的 shell 工具用它（系统自带的 5.1 不算）
+   winget install BurntSushi.ripgrep.MSVC    # agent 的 glob / grep 用它
    ```
 
-   做开机自启的话，把这个变量写进自启脚本或系统环境变量里。忘了这一步时，配置页会直接告诉你这句话，并给出这个文件在服务器上的路径。
+2. **下载两个文件，双击其中一个。** 在**这台客户端机器**的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「客户端执行器（executor）」那张卡片** → 先点「下载 `executor.mjs`」，再点「**下载一键启动脚本**」。把两个文件放进**同一个文件夹**，双击 `启动执行器.cmd`。
 
-2. **共享凭据。** 工作区文件在服务器上，客户端通过共享访问它。**在 executor 的配置页「3. 工作区共享凭据」里填一次共享账号与密码即可** —— 执行器会在绑定工作区时把它存进本机凭据库，之后 `\\<服务器>\ws-<工作区>` 就像本地盘一样可用。无值守装机可以用 `--smb-user` / `--smb-password`。
+   那个脚本里已经写好了一切，所以**不需要**：手工找证书、设 `NODE_EXTRA_CA_CERTS`、在配置页里输密码、手打服务器地址。它会自己写出 `caddy-root.crt`、带上服务器地址与一枚**新签发的执行器凭据**（可在「设置 → 工作区绑定」里看到并按机器撤销）。
 
-3. **把 agent 要用到的程序装上（这一步不装，绑定之后命令一条都跑不起来）。** 命令是在**这台机器**上执行的，而引擎是在服务器上解析程序的：它把服务器上的**绝对路径**发给执行器，执行器只认两种可能 —— 那个路径本机也有，或者**同名程序在本机 PATH 上**。所以客户端机器必须有：
+   跑起来后打开它给出的本机配置页 `http://127.0.0.1:38460`。
 
-   | 程序 | 谁要用 | 只装一半的后果 |
-   |---|---|---|
-   | **PowerShell 7**（`pwsh`） | shell 工具（`pwsh`） | 每条命令都报 `program not found on this machine: …\pwsh.exe`。⚠️ 系统自带的 Windows PowerShell 5.1（`powershell.exe`）**不算**，两者不是同一个程序 |
-   | **ripgrep**（`rg`） | `glob` / `grep` | 搜索报 `ripgrep launch failed` |
+3. **在配置页里做两件事**：填一次**工作区共享凭据**（共享账号与密码，执行器会存进本机凭据库，之后 `\\<服务器>\ws-<工作区>` 就像本地盘一样可用），然后**点「绑定」**——可见路径已经按服务器那边的共享规则**预填**好了（可改）。不需要登录。
 
-   ```powershell
-   winget install --id Microsoft.PowerShell --source winget
-   winget install --id BurntSushi.ripgrep.MSVC --source winget
-   ```
+   之后通常设成开机自启即可。无值守装机可以用 `--smb-user` / `--smb-password`。
 
-   装完**重启执行器**（本机 PATH 是执行器启动时抓取的）。`read` / `write` / `edit` 是引擎内部调用、不需要这些程序；**只有 shell 与搜索需要** —— 所以典型的症状就是"文件能读写，但命令一条都跑不起来"。
-
-> **服务端升级后，客户端机器要重新下载一次 `executor.mjs`。** 执行器是独立程序，和服务器**成对**工作：服务器靠周期性 ping 判断那条链路还活着，执行器靠"多久没收到服务器的任何消息"判断自己是不是掉网了。旧版执行器不会应答 ping，空闲时会被服务器每约 9 秒判一次掉线并重连（持有工作区时因为还在发心跳，看起来正常——**但它没有那条掉线保护**）。所以升级服务端后，请在每台客户端机器的「设置 → 本地插件」里重新下载一次并替换、重启执行器。**症状**：那台机器的日志里反复出现 `disconnected — retrying in …`。
+> **手动路径仍然可用**（脚本生成不了时的退路）：下载 `executor.mjs`，自己设 `NODE_EXTRA_CA_CERTS` 指向 caddy 的根证书，然后 `node executor.mjs --server https://<服务器>:8443`，在配置页用 `admin` 登录一次再绑定。旧版执行器**不会**应答服务器的 ping，空闲时会被每约 9 秒判一次掉线并重连 —— 所以服务端升级后，客户端也要重新下载一次执行器（**症状**：那台机器的日志里反复出现 `disconnected — retrying in …`）。
 
 > 主机名不用你填：执行器从**绑定带回的可见路径**里推出共享在哪台机器上，所以不会指错。改密码后重新保存即可，会对当前已绑定的工作区重新应用。凭据与 executor token 存在同一个 `state.json`（权限 0600），**不会回显、也不会发往服务器**。
 
