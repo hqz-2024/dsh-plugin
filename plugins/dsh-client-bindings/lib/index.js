@@ -561,17 +561,22 @@ export default class ClientBindings extends Service {
 	}
 
 	/**
-	 * Drop every live binding held by one account. Authorization revocation and
-	 * account disable both land here (plan §2.5), so the caller can send `bind.drop`
-	 * to the executors named in the result.
+	 * Drop live bindings held by one account. Authorization revocation, account
+	 * disable, and account removal all land here (plan §2.5), so the caller can send
+	 * `bind.drop` to the executors named in the result.
 	 * @param username - Account whose bindings must end.
-	 * @param reason - Recorded on each ended record.
+	 * @param options - `reason` is recorded on each ended record; `workspaceIds`
+	 * narrows the drop to specific workspaces, which is what an authorization edit
+	 * that only removes some workspaces needs.
 	 * @returns the dropped bindings, so the caller can notify each machine.
 	 */
-	async revokeForUsername(username, reason = 'authorization-revoked') {
+	async revokeForUsername(username, options = {}) {
+		const reason = typeof options.reason === 'string' ? options.reason : 'authorization-revoked'
+		const only = Array.isArray(options.workspaceIds) ? new Set(options.workspaceIds.map(String)) : undefined
 		return await this.enqueue(async () => {
 			const dropped = []
 			for (const [workspaceId, record] of [...(this.table?.entries() ?? [])]) {
+				if (only !== undefined && !only.has(String(workspaceId))) continue
 				if (!this.isLive(record) || record.username !== String(username)) continue
 				await this.finish(workspaceId, reason)
 				dropped.push({ workspaceId, machine: record.machine })

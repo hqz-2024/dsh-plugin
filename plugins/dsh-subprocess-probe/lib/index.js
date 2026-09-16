@@ -882,6 +882,54 @@ export function apply(ctx, config) {
 			} catch (error) {
 				record({ step: 'occupant-release-after-force', error: String((error && error.message) || error) })
 			}
+
+			// ── §2.5② : taking a workspace away from an account must stop execution ──
+			// The binding store exposed `revokeForUsername` from the start and nothing
+			// ever called it, so an account that lost a workspace kept executing on its
+			// machine. This drives the real admin endpoint, because the gap was in the
+			// wiring rather than in the store.
+			try {
+				const registry = ctx.get('workspaceRegistry')
+				const other = (registry?.list?.() ?? []).find((workspace) => workspace.title !== workspaceTitle)
+				if (other) {
+					const otherId = String(other.id)
+					const otherTitle = String(other.title)
+					// A second account holds it, so this cannot disturb the probe's own binding.
+					await bindings.claim({
+						workspaceId: otherId, workspaceTitle: otherTitle,
+						username: viewerUser, machine: 'probe-viewer-machine',
+						visiblePath: '', stagingDir: '',
+					})
+					const held = bindings.isLive(bindings.get(otherId))
+					const grant = await fetch(`${serverBase}/auth/accounts`, {
+						method: 'POST',
+						headers: { ...jsonHeaders, cookie },
+						body: JSON.stringify({ action: 'upsert', username: viewerUser, workspaces: [otherTitle] }),
+					})
+					// Now take it away by leaving the account with no workspaces at all.
+					const revoke = await fetch(`${serverBase}/auth/accounts`, {
+						method: 'POST',
+						headers: { ...jsonHeaders, cookie },
+						body: JSON.stringify({ action: 'upsert', username: viewerUser, workspaces: [] }),
+					})
+					await sleep(1500)
+					const after = bindings.get(otherId)
+					record({
+						step: 'account-authorization-revokes-binding',
+						workspace: otherTitle,
+						heldBefore: held,
+						grantStatus: grant.status,
+						revokeStatus: revoke.status,
+						stillLiveAfterRevoke: bindings.isLive(after),
+						endedReason: after?.endReason ?? null,
+					})
+					await bindings.release({ workspaceId: otherId, username: viewerUser, force: true })
+				} else {
+					record({ step: 'account-authorization-revokes-binding', skipped: 'no second workspace in the registry' })
+				}
+			} catch (error) {
+				record({ step: 'account-authorization-revokes-binding', error: String((error && error.message) || error) })
+			}
 		} else {
 			// Ungated profile: the endpoint must refuse rather than believe the
 			// `x-dsh-user` header this sends, which is what a naive implementation

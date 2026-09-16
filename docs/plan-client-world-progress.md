@@ -18,7 +18,7 @@
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
 | **P1** | executor 授权与登录链路 + **本地配置页**（§2.5 闭环） | ✅ 已验证（`pilot-auth`，真实门禁下） |
 | **P1** | admin 强制解绑（接口层） | ✅ 已验证；Web UI 入口未做 |
-| **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面 | ❌ 未做 |
+| **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面 | ❌ 未做（**撤销授权→解绑已接通**，见 §1） |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
 | **P2** | **权限一致性**（§2.1：执行机必须是会话账号自己绑定的那台） | ✅ 已验证（本轮，`DSH_SESSION_ID` 归属比对） |
 | **P2** | 终止按进程树、不留孤儿（`tasklist` 可证） | ✅ 已验证（本轮，孙进程用例 + 独立复核） |
@@ -774,6 +774,41 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 
 
+### §2.5②③ 只做到了"有能力"，没做到"接上了"（本轮，已修复并验证）
+
+顺着前两轮"声称已验证但没人在复查"的线索往下查，这次不是表写错了，而是**功能只做了一半**。
+
+绑定存储从第一轮起就有 `revokeForUsername`，它的注释甚至写着 "Authorization revocation and account disable both land here (plan §2.5), so the caller can send `bind.drop`"。但**全仓库搜下来，除了它自己的定义和我加的测试，没有任何地方调用它**。
+
+后果：管理员把一个工作区从某账号的授权里拿掉、或者直接删掉那个账号，**那条绑定照样活着** —— 那台机器继续替那个工作区执行命令。"授权"只停留在界面语义上。§2.5 把②③写成"必须一起处理的点"，而它们一直没被处理。
+
+**修法（两处调用）**：
+
+| 位置 | 行为 |
+|---|---|
+| `/auth/accounts` 的 `upsert` | 在写 roleMap **之前**算出这次被拿掉的标题，只对**消失的那些工作区**解绑 |
+| `/auth/accounts` 的 `remove` | 解绑该账号的**全部**绑定 |
+
+**为什么只对"消失的那些"**：如果任何一次编辑都全量解绑，那么管理员给账号**加**一个工作区也会把已有的绑定打掉。只有缩小授权才该解绑。这也是给存储的 `revokeForUsername` 加一个 `workspaceIds` 过滤的原因。
+
+**一个不得不处理的映射**：roleMap 里存的是工作区**标题**（`registry.list().filter(w => mapping.workspaces.indexOf(w.title) !== -1)`，`lib/index.js:1091`），而绑定是按**工作区 uuid** 存的。所以解绑前要用 `workspaceRegistry.list()` 把标题换成 id。
+
+**未挂载时是空操作**：`ctx.get("clientBindings")` 拿不到就返回 —— 线上 `web` profile 没有客户端世界，所以这行改动不可能弄坏它。
+
+**验证**（`pilot-auth`，真实门禁 + 真实 admin 会话）：
+
+| 观察 | 值 |
+|---|---|
+| 先让 `probe-viewer` 持有另一个工作区的绑定（对照） | `heldBefore: true` |
+| `POST /auth/accounts` 授予该工作区 | 200 |
+| `POST /auth/accounts` 再收回（workspaces 清空） | 200 |
+| **绑定是否还活着** | **`stillLiveAfterRevoke: false`** |
+| 结束原因 | **`authorization-revoked`** |
+
+**顺带纠正我自己一个差点写错的结论**：我先是只看 executor 侧，发现它**没有任何处理心跳应答的分支**、`dropBinding` 只被 `bind.drop` 调用一次，于是准备写下"executor 会一直以为自己还持有"。接着去看服务端才发现：**服务端在收到心跳时主动查存储，拒绝就发 `bind.drop`**（`client-transport.js:1083`，注释写着 "it is told to drop it instead of beating into the void"）。而那条通路的另一半——executor 侧打印 `dropped binding …: not-held`——早在本进度文档 §1 里就有证据了。结论：**通路是完整的，不需要额外的通知调用**；教训是下结论前要把整条链看完，而不是看一半就推断。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1115,6 +1150,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `terminal-signal-after-terminate` | 错误为 `terminal is terminating` |
 | `binding-expiry-keeps-record` | `endedAtSet` true、`endReason=heartbeat-timeout`、`recordStillPresent` true。**`expiredByThisSweep` 通常是 false**（周期扫描先动手，见 `alreadyEndedBeforeMySweep`）—— 那不是失败，别把它当判据 |
 | `binding-semantics` | `revivalRefused` true（`not-held`）、`takeoverAllowed` true、`revocationDropped≥1` |
+| `account-authorization-revokes-binding` | `heldBefore` true（对照）、两个 `/auth/accounts` 调用都 200、**`stillLiveAfterRevoke` false**、`endedReason=authorization-revoked` |
 
 ### B. 上线组合（`web-client`）
 

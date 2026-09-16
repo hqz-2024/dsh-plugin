@@ -2018,6 +2018,48 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		json(res, 200, { ok: true });
 	};
 
+	/**
+	 * End an account's live bindings after its authorization changed (plan §2.5②③).
+	 *
+	 * The binding store has always exposed this and nothing ever called it, so an
+	 * account that lost a workspace -- or was deleted outright -- kept executing on
+	 * its machine until the binding lapsed on its own. Revoking access has to revoke
+	 * execution, or "authorization" is only a UI-level idea.
+	 *
+	 * Absent `workspaceTitles`, every binding the account holds is dropped, which is
+	 * what account removal and disable need. Otherwise only the workspaces whose
+	 * titles disappeared are dropped, so editing an unrelated part of the same
+	 * account does not disturb bindings it still has a right to.
+	 *
+	 * A no-op when the binding store is not mounted (the plain `web` profile has no
+	 * client world), so this cannot break a deployment that does not use it.
+	 *
+	 * @param username - Account whose authorization changed.
+	 * @param reason - Recorded on each ended binding.
+	 * @param workspaceTitles - Titles removed from the account, or absent for all.
+	 * @returns the dropped bindings, or null when there was nothing to do.
+	 */
+	const revokeClientBindings = (username, reason, workspaceTitles = undefined) => {
+		const bindings = ctx.get("clientBindings");
+		if (!bindings || typeof bindings.revokeForUsername !== "function") return null;
+		let workspaceIds;
+		if (Array.isArray(workspaceTitles)) {
+			const wanted = workspaceTitles.map((title) => String(title));
+			workspaceIds = (ctx.get("workspaceRegistry")?.list?.() ?? [])
+				.filter((workspace) => wanted.indexOf(String(workspace.title)) !== -1)
+				.map((workspace) => String(workspace.id));
+			if (workspaceIds.length === 0) return null;
+		}
+		const result = bindings.revokeForUsername(username, { reason, workspaceIds });
+		Promise.resolve(result)
+			.then((settled) => {
+				const dropped = settled?.dropped ?? [];
+				if (dropped.length > 0) diag("client bindings revoked for " + username + ": " + JSON.stringify(dropped));
+			})
+			.catch((error) => diag("client binding revoke failed for " + username + ": " + String(error?.message ?? error)));
+		return result;
+	};
+
 	const handleAccounts = async (req, res) => {
 		if (req.method !== "POST") {
 			denyJson(res, 405, "method not allowed");
@@ -2082,6 +2124,10 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				const rm = dynamicRoleMap();
 				const workspaces = Array.isArray(input.workspaces) ? input.workspaces.map((s) => String(s || "").trim()).filter(Boolean) : [];
 				const preset = typeof input.preset === "string" ? input.preset.trim() : "";
+				// Workspaces this edit takes away, computed before the map is written.
+				const lostTitles = Array.isArray(input.workspaces)
+					? (rm[username]?.workspaces ?? []).filter((title) => workspaces.indexOf(title) === -1)
+					: [];
 				if (workspaces.length > 0 || preset) {
 					rm[username] = { ...(rm[username] ?? {}), ...(workspaces.length > 0 ? { workspaces } : {}), ...(preset ? { preset } : {}) };
 				} else {
@@ -2089,6 +2135,9 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				}
 				saveRoleMap();
 				diag("roleMap upsert " + username + " -> " + JSON.stringify(rm[username] ?? null));
+				// §2.5②: a workspace taken away from the account must stop executing on
+				// the account's machine, not merely disappear from a list.
+				if (lostTitles.length > 0) revokeClientBindings(username, "authorization-revoked", lostTitles);
 			}
 			json(res, 200, { ok: true, account: store.list().find((a) => a.username === username) });
 			return;
@@ -2114,6 +2163,8 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				delete dynamicRoleMap()[username];
 				saveRoleMap();
 				diag("roleMap remove " + username);
+				// §2.5③: a removed account must not keep a machine executing.
+				revokeClientBindings(username, "account-removed");
 			}
 			json(res, 200, { ok: true, removed });
 			return;
