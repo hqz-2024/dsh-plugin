@@ -1126,6 +1126,30 @@ pilot 的绑定时钟是**秒级**的（心跳 1s / 宽限 20s / 扫描 1s），
 
 > 顺带一个观察：这次 smoke 起实例时，客户端**第一次连接正好撞上服务器刚监听、路由还没就绪的窗口**，拿到一个 non-101 网络错误后按既有逻辑重试、第二次连上 —— 所以缩短期限没有改变那条路径（它本来就走 `error`，不走期限）。
 
+### 跨机证据怎么留档：一个会拒绝下结论的工具（本轮）
+
+跨机验证那一枪（§3.7）不能只留在界面上看一眼 —— 需要一份**事后可复核**的记录。两个耐久来源各答一半：
+
+- **会话日志**里有子进程**自己打印的 stdout**，而"命令跑在哪台机器上"只有子进程自己说得清；
+- **分派 trace** 里有 dispatcher 在调用之前做的决定（target / cwd / 工作区）。
+
+`check-cross-machine.mjs` 把两者读出来对齐，并按能否成立给出判定。它在**三种形态**下都验过：
+
+| 形态 | 判定 |
+|---|---|
+| 真实会话（pilot-auth，executor 与服务器同机） | `ran on DESKTOP-LCLS51R (this machine) — transport exercise, NOT cross-machine` —— **明说这不是跨机证据** |
+| 合成的跨机会话（把 `hostname` 的输出改成 `SUNDA` 造一份日志） | `ran on SUNDA — NOT this machine (DESKTOP-LCLS51R)`，结论 `1 条命令报告的主机名不是本机 —— 这就是跨机执行的证据` |
+| 没有 trace 文件 | 照常给会话结论，trace 一段如实说"没有可用记录" |
+
+**两个刻意加进去的保守设计**（否则这类工具比没有更糟）：
+
+1. **命令没问主机名就不下结论。** 输出里出现一个独占一行的词（`README`、`SUNDA` 长得一样）本来是**文件名和主机名分不开**的；只有当命令真的在问机器名（`hostname` / `COMPUTERNAME` / `uname`）时，它才算证据。否则只提示"有像主机名的行，但不能据此判定执行机"。
+2. **trace 与会话可能不是同一次运行**：一个 home 会被多个 profile 用过，trace 按 mtime 取最新；当它比最新的会话日志旧一小时以上时，会提示"很可能不是同一次运行，用 `--trace` 指定"。
+
+**它同时也是一把量具**：切换之后想确认"某条命令到底在哪跑的"，不必再去翻界面 —— 一行命令给结论。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1327,6 +1351,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `measure-smb-boundary.ps1` | P0-3 的边界/性能量具（在**客户端**上跑，也支持对本地盘跑基线） |
 | `link-proxy.mjs` | 静默断链量具：文件开关控制的 TCP 中继。写 `cut` 时**两条连接保持 ESTABLISHED、双向字节丢弃** —— 用来复现"不发 FIN/RST 的掉网"（见 §1 与 §6） |
 | `check-live-client-world.ps1` | 切换 profile 之后的**只读体检**：门禁是否还在、三条客户端前缀是否真被放行、处理器是否各自校验凭据、`/executor` 是否 4001。对 3080（`web`）跑会给 4 项 FAIL，对 3086（`web-client`）跑 exit 0 —— 两种情况都实测过 |
+| `check-cross-machine.mjs` | **跨机证据的留档工具**：从**会话日志**（子进程自报的 stdout）+ **分派 trace** 里读出每条 shell 命令落到了哪台机器，并给出判定。同机时会明说"这不是跨机证据"，命令没问主机名时**拒绝**下结论（见 §1） |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |
 
 ## 6. 怎么重跑
@@ -1577,5 +1602,13 @@ pnpm dsh --profile web-client --port 3086
 3. **在 SUNDA 上装客户端**：装 Node → 设 `NODE_EXTRA_CA_CERTS`（见 README；忘了会得到一条写明补救办法的错误）→ 用浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 下载 `executor.mjs`** → `node executor.mjs` → 打开 `http://127.0.0.1:38460`，在配置页填服务器地址 `https://192.168.28.239:8443`、用 `admin` 登录一次 → 填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
 
 **判据（这一步才是跨机证明）**：在线上 GUI 里开一个会话、cwd 指向 `smbtest`，让 agent 跑 `hostname` 与 `Get-Location` —— **子进程自报 `SUNDA`** 就是跨机证明；同时 `execution:world` 提示词段应当出现（§2.5）。这一条同时把 `argv[0]` 跨机解析、UNC 路径翻译、"真实 shell 工具链而非探针直调 `spawn`"一并验掉。
+
+**把这一枪留档**（别只留在界面上）：
+
+```powershell
+node "$env:USERPROFILE\.dsh\check-cross-machine.mjs" --limit 5
+```
+
+它从会话日志里读子进程自报的 stdout、从分派 trace 里读 dispatch 决定，并给出"这条命令跑在哪台机器上"的判定；跨机成立时会明说 `ran on SUNDA — NOT this machine`，只有 transport 证据时会明说"这不是跨机证据"。
 
 
