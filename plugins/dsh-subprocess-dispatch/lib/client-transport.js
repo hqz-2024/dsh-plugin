@@ -377,6 +377,12 @@ export class ClientTransport {
 		this.relayPath = typeof config?.relayPath === 'string' ? config.relayPath : '/client-relay'
 		/** Mount point for the executor authorization endpoint. */
 		this.authPath = typeof config?.authPath === 'string' ? config.authPath : '/client-auth'
+		/**
+		 * Mount point for the admin surface. Unlike the other two, this one is NOT
+		 * in `publicPrefixes`: it acts on behalf of a person in the web UI, so the
+		 * session gate is exactly the right place to establish who that is.
+		 */
+		this.adminPath = typeof config?.adminPath === 'string' ? config.adminPath : '/client-admin'
 		/** Largest request body the relay will carry; MCP payloads are small JSON. */
 		this.relayBodyLimit = Number.isInteger(config?.relayBodyLimit) ? config.relayBodyLimit : 8 * 1024 * 1024
 		/** Set by the dispatcher: replay live bindings onto a (re)connected account. */
@@ -528,6 +534,107 @@ export class ClientTransport {
 				lastHeartbeat: record.lastHeartbeat,
 				endReason: record.endReason ?? null,
 			}))
+	}
+
+	/**
+	 * Mount the admin surface (plan §2.1's second manual exit).
+	 *
+	 * The occupant's own page covers the common case, but not the one this exists
+	 * for: a machine that is still alive and still holding a workspace while its
+	 * user has walked away. Nothing on that machine can be asked to let go, so
+	 * somebody else has to be able to.
+	 */
+	startAdmin() {
+		this.adminDisposer = this.ctx.webServer.register({
+			kind: 'prefix',
+			path: this.adminPath,
+			handler: (req, res) => { void this.administer(req, res) },
+		})
+		this.ctx.logger?.info?.(`[client-transport] admin surface at ${this.adminPath}/…`)
+		return this.adminDisposer
+	}
+
+	/** Handle one admin request, after establishing that the caller is an admin. */
+	async administer(req, res) {
+		const url = new URL(req.url ?? '/', 'http://localhost')
+		const action = url.pathname.slice(this.adminPath.length).replace(/^\//, '').split('/')[0]
+		const bindings = this.ctx.get('clientBindings')
+		if (!bindings) {
+			this.respond(res, 503, { error: 'the binding store is unavailable' })
+			return
+		}
+		// The gate already proved a session; the role is the part it cannot decide
+		// for this feature, so the answer comes from the same verified source.
+		const resolver = this.ctx.get('clientAuthResolver')
+		if (!resolver || typeof resolver.resolveSession !== 'function') {
+			this.respond(res, 503, { error: 'no authentication service is mounted, so admin actions cannot be authorized' })
+			return
+		}
+		const session = await resolver.resolveSession(req)
+		if (!session) {
+			this.respond(res, 401, { error: 'not signed in' })
+			return
+		}
+		if (session.role !== 'admin') {
+			this.respond(res, 403, { error: 'admin only' })
+			return
+		}
+
+		try {
+			if (action === 'bindings') {
+				this.respond(res, 200, {
+					actor: session.username,
+					bindings: bindings.list().map((record) => ({
+						workspaceId: record.workspaceId,
+						workspaceTitle: record.workspaceTitle,
+						username: record.username,
+						machine: record.machine,
+						machineHost: record.machineHost ?? null,
+						visiblePath: record.visiblePath,
+						stagingDir: record.stagingDir,
+						state: bindings.isLive(record) ? 'active' : 'expired',
+						connected: this.connected(record.username),
+						boundAt: record.boundAt,
+						lastHeartbeat: record.lastHeartbeat,
+						endReason: record.endReason ?? null,
+					})),
+				})
+				return
+			}
+			if (action === 'unbind') {
+				if (req.method !== 'POST') {
+					this.respond(res, 405, { error: 'use POST' })
+					return
+				}
+				const body = await this.readJson(req)
+				const workspaceId = String(body?.workspaceId ?? '')
+				const record = bindings.get(workspaceId)
+				if (!record) {
+					this.respond(res, 404, { error: `workspace '${workspaceId}' has no binding record` })
+					return
+				}
+				const occupant = record.username
+				// `force` is the whole point: the occupant cannot be asked, and an
+				// admin action must not be refused for the occupant's absence.
+				const released = await bindings.release({
+					workspaceId,
+					username: session.username,
+					force: true,
+					reason: `forced-by-admin:${session.username}`,
+				})
+				if (released.ok) {
+					// Tell the machine itself, so it stops heartbeating a workspace it
+					// no longer holds instead of waiting for its grace clock.
+					this.notifyBindDrop(occupant, workspaceId, 'forced-by-admin')
+					this.ctx.logger?.info?.(`[client-transport] ${session.username} force-released ${workspaceId} from ${occupant}`)
+				}
+				this.respond(res, released.ok ? 200 : 409, released)
+				return
+			}
+			this.respond(res, 404, { error: `unknown action '${action}'` })
+		} catch (error) {
+			this.respond(res, 400, { error: String((error && error.message) || error) })
+		}
 	}
 
 	/**
@@ -1068,6 +1175,8 @@ export class ClientTransport {
 	async dispose() {
 		for (const username of [...this.connections.keys()]) this.dropConnection(username, 'transport disposing')
 		try { this.relayDisposer?.() } catch { /* already released */ }
+		try { this.adminDisposer?.() } catch { /* already released */ }
+		try { this.authDisposer?.() } catch { /* already released */ }
 		try { this.disposer?.() } catch { /* already released */ }
 		this.wss?.close()
 	}

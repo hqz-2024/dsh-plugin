@@ -44,5 +44,13 @@
         # plugin and refuses with 503 without one, rather than trusting a
         # caller-supplied account name.
         authPath: '/client-auth'
+        # Admin surface (plan §2.1's second manual exit): list bindings and force
+        # one loose when the holding machine is alive but its user has walked away.
+        # Deliberately NOT in `publicPrefixes` — this one acts for a person in the
+        # web UI, so the session gate is what establishes who is asking, and the
+        # handler then requires the admin role.
+        #   GET  /client-admin/bindings
+        #   POST /client-admin/unbind { workspaceId }
+        adminPath: '/client-admin'
         # Largest request body the relay carries; MCP payloads are small JSON.
         relayBodyLimit: 8388608

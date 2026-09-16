@@ -15,9 +15,20 @@
     enforceRoles: true
     # Provision the first admin at startup: the browser bootstrap endpoint is
     # loopback-only and no browser drives this profile.
-    bootstrap:
-      username: probe-admin
-      password: probe-admin-password
+    # Both accounts are seeded here rather than relying on `bootstrap` for the
+    # admin: dsh-remote applies `accounts` seeds BEFORE `bootstrap`, and
+    # `bootstrap` is skipped as soon as any account exists. Seeding the viewer
+    # therefore suppressed the admin's creation, and the next login failed with
+    # "invalid credentials" rather than anything naming the missing account.
+    accounts:
+      - username: probe-admin
+        password: probe-admin-password
+        role: admin
+      # A non-admin: the admin surface must refuse it, and only an account that
+      # exists can show that.
+      - username: probe-viewer
+        password: probe-viewer-password
+        role: user
     # Every client-execution surface is reached by a program on the user's
     # machine, which holds a token rather than a browser session cookie:
     #   /executor      WebSocket upgrade, authenticated by the executor token
@@ -71,4 +82,6 @@
     # relay bypasses it, and a session yields an executor token.
     loginUser: probe-admin
     loginPassword: probe-admin-password
+    viewerUser: probe-viewer
+    viewerPassword: probe-viewer-password
     resultPath: !!js dshHomePath('profiles/pilot-auth/probe-result.jsonl')

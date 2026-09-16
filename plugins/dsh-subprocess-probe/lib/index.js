@@ -50,6 +50,9 @@ export function apply(ctx, config) {
 	 */
 	const loginUser = String(config?.loginUser ?? '')
 	const loginPassword = String(config?.loginPassword ?? '')
+	/** A non-admin account, used to prove the admin surface refuses it. */
+	const viewerUser = String(config?.viewerUser ?? '')
+	const viewerPassword = String(config?.viewerPassword ?? '')
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -393,6 +396,78 @@ export function apply(ctx, config) {
 				} catch (error) {
 					record({ step: 'gate-issued-token-state', error: String((error && error.message) || error) })
 				}
+			}
+
+			// ── Admin surface: the second manual exit (plan §2.1) ──────────────
+			// It exists for a machine that is alive and holding a workspace while
+			// its user has walked away, so it must act on somebody else's binding
+			// and must not be available to a non-admin.
+			const adminBase = `${serverBase}/client-admin`
+			if (viewerUser) {
+				try {
+					const viewerLogin = await fetch(`${serverBase}/auth/login`, {
+						method: 'POST',
+						headers: jsonHeaders,
+						body: JSON.stringify({ username: viewerUser, password: viewerPassword }),
+					})
+					const viewerCookie = (viewerLogin.headers.get('set-cookie') ?? '').split(';')[0]
+					const refused = await fetch(`${adminBase}/bindings`, { headers: { cookie: viewerCookie } })
+					record({
+						step: 'admin-viewer-refused',
+						loginStatus: viewerLogin.status,
+						status: refused.status,
+						body: await refused.json(),
+					})
+				} catch (error) {
+					record({ step: 'admin-viewer-refused', error: String((error && error.message) || error) })
+				}
+			}
+			try {
+				const listed = await fetch(`${adminBase}/bindings`, { headers: { cookie } })
+				const payload = await listed.json()
+				record({
+					step: 'admin-bindings',
+					status: listed.status,
+					actor: payload.actor ?? null,
+					count: Array.isArray(payload.bindings) ? payload.bindings.length : null,
+					states: Array.isArray(payload.bindings) ? payload.bindings.map((b) => `${b.workspaceTitle}=${b.state}/${b.username}`) : null,
+				})
+			} catch (error) {
+				record({ step: 'admin-bindings', error: String((error && error.message) || error) })
+			}
+			// Re-bind as the executor account, then have the admin force it loose:
+			// releasing an ACTIVE binding is the case the occupant's own page
+			// cannot cover.
+			try {
+				const reBound = await fetch(`${authBase}/bind`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+					body: JSON.stringify({ workspaceId, machine: 'probe-executor', visiblePath, stagingDir: 'C:\\dsh-staging' }),
+				})
+				record({ step: 'admin-prebind', status: reBound.status })
+			} catch (error) {
+				record({ step: 'admin-prebind', error: String((error && error.message) || error) })
+			}
+			try {
+				const forced = await fetch(`${adminBase}/unbind`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, cookie },
+					body: JSON.stringify({ workspaceId }),
+				})
+				record({ step: 'admin-force-unbind', status: forced.status, body: await forced.json() })
+			} catch (error) {
+				record({ step: 'admin-force-unbind', error: String((error && error.message) || error) })
+			}
+			// The occupant's own release must now be refused: the binding is gone.
+			try {
+				const late = await fetch(`${authBase}/unbind`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+					body: JSON.stringify({ workspaceId }),
+				})
+				record({ step: 'occupant-release-after-force', status: late.status })
+			} catch (error) {
+				record({ step: 'occupant-release-after-force', error: String((error && error.message) || error) })
 			}
 		} else {
 			// Ungated profile: the endpoint must refuse rather than believe the

@@ -120,6 +120,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 			}
 			this.transport.start(WebSocketServer)
 			this.transport.startAuth()
+			this.transport.startAdmin()
 			this.transport.startRelay()
 			this.traceEvent({ event: 'client-transport-started', entry: wsEntry })
 		})

@@ -34,10 +34,10 @@
  * command that started them.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
-import { request as httpRequest } from 'node:http'
-import { hostname, platform, release } from 'node:os'
-import { delimiter, extname, isAbsolute, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createServer, request as httpRequest } from 'node:http'
+import { homedir, hostname, platform, release } from 'node:os'
+import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.2.0'
@@ -176,14 +176,273 @@ function resolveProgram(program, env) {
 }
 
 function parseArgs(argv) {
-	const out = { server: '', token: '', label: '', nodePty: '' }
+	const out = { server: '', token: '', label: '', nodePty: '', configPort: 38460, state: '' }
 	for (let i = 0; i < argv.length; i += 1) {
 		if (argv[i] === '--server' && argv[i + 1]) out.server = argv[++i]
 		else if (argv[i] === '--token' && argv[i + 1]) out.token = argv[++i]
 		else if (argv[i] === '--label' && argv[i + 1]) out.label = argv[++i]
 		else if (argv[i] === '--node-pty' && argv[i + 1]) out.nodePty = argv[++i]
+		else if (argv[i] === '--config-port' && argv[i + 1]) out.configPort = Number(argv[++i])
+		else if (argv[i] === '--state' && argv[i + 1]) out.state = argv[++i]
 	}
 	return out
+}
+
+// ── local configuration page (plan §2.5) ─────────────────────────────────────
+//
+// A machine has to be told which server to trust and which account it speaks
+// for, and the plan puts that in a page served from the user's own loopback
+// rather than on the command line: the login is a real `/auth/login` against the
+// server, and the resulting session is exchanged for an executor token. The page
+// is a thin shell over the JSON routes below, so the flow is exercisable without
+// a browser.
+//
+// The token is persisted because the whole point of an executor is to be running
+// when nobody is looking; a restart after a reboot must reconnect without
+// anyone signing in again.
+
+/** Where the enrolled server and token live between restarts. */
+let statePath = ''
+/** The enrollment this process is using. */
+let enrollment = { server: '', token: '', username: '', label: '' }
+/** The most recent answer from `hello`, for the status view. */
+let lastHello = null
+/** Set when the config page is what started this process, so `/status` can say so. */
+let awaitingEnrollment = false
+/** The local config server, once started. */
+let configServer = null
+
+function loadState() {
+	try {
+		const parsed = JSON.parse(readFileSync(statePath, 'utf8'))
+		return typeof parsed?.server === 'string' && typeof parsed?.token === 'string' ? parsed : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function saveState() {
+	try {
+		mkdirSync(dirname(statePath), { recursive: true })
+		writeFileSync(statePath, JSON.stringify(enrollment, null, 2), { mode: 0o600 })
+	} catch (error) {
+		console.error(`[executor] could not persist state to ${statePath}: ${String(error?.message ?? error)}`)
+	}
+}
+
+/**
+ * Sign in and exchange the session for an executor token (plan §2.5 steps 2-3).
+ *
+ * The server issues the token; this side only carries the cookie between the two
+ * calls. Returning the workspace list is what lets the page offer a choice
+ * instead of asking the user to type a workspace id.
+ * @param server - Base URL of the DSH server.
+ * @param username - Account to sign in as.
+ * @param password - Account password.
+ * @returns `{ ok: true, token, username, workspaces, heartbeatMs }` or `{ ok: false, error }`.
+ */
+async function signIn(server, username, password) {
+	const base = server.replace(/\/+$/, '')
+	let response
+	try {
+		response = await fetch(`${base}/auth/login`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ username, password }),
+		})
+	} catch (error) {
+		return { ok: false, error: `无法连接服务器：${String(error?.message ?? error)}` }
+	}
+	if (!response.ok) {
+		const detail = await response.text().catch(() => '')
+		return { ok: false, error: `登录失败 (${response.status}) ${detail.slice(0, 200)}` }
+	}
+	const cookies = typeof response.headers.getSetCookie === 'function'
+		? response.headers.getSetCookie()
+		: [response.headers.get('set-cookie') ?? '']
+	const cookie = (cookies[0] ?? '').split(';')[0]
+
+	let minted
+	try {
+		minted = await fetch(`${base}/client-auth/login`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', cookie },
+			body: JSON.stringify({ label: hostname() }),
+		})
+	} catch (error) {
+		return { ok: false, error: `签发失败：${String(error?.message ?? error)}` }
+	}
+	const payload = await minted.json().catch(() => ({}))
+	if (!minted.ok || typeof payload.token !== 'string') {
+		return { ok: false, error: payload.error ?? `签发失败 (${minted.status})` }
+	}
+	enrollment = { server: base, token: payload.token, username: payload.username, label: hostname() }
+	saveState()
+	awaitingEnrollment = false
+	console.log(`[executor] enrolled as ${enrollment.username}; connecting to ${base}`)
+	connect(base, payload.token, hostname())
+	return { ok: true, ...payload }
+}
+
+/** Call one authenticated endpoint with the enrolled executor token. */
+async function callEnrolled(action, body) {
+	if (!enrollment.token) return { ok: false, error: 'not enrolled yet' }
+	try {
+		const response = await fetch(`${enrollment.server}/client-auth/${action}`, {
+			method: body === undefined ? 'GET' : 'POST',
+			headers: {
+				authorization: `Bearer ${enrollment.token}`,
+				...(body === undefined ? {} : { 'content-type': 'application/json' }),
+			},
+			...(body === undefined ? {} : { body: JSON.stringify(body) }),
+		})
+		const payload = await response.json().catch(() => ({}))
+		return { status: response.status, ...payload }
+	} catch (error) {
+		return { ok: false, error: String(error?.message ?? error) }
+	}
+}
+
+/** The page itself; a thin form over the JSON routes. */
+function configPage() {
+	return `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>DSH 本机执行器</title>
+<style>
+body{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem;color:#222}
+h1{font-size:1.3rem}fieldset{border:1px solid #ddd;border-radius:6px;margin:0 0 1rem;padding:.8rem 1rem}
+legend{font-weight:600;padding:0 .4rem}label{display:block;margin:.4rem 0 .1rem}
+input,button{font:inherit;padding:.35rem .5rem}input{width:100%;box-sizing:border-box}
+button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;border-radius:6px;overflow:auto;font-size:12px}
+.err{color:#b00}.ok{color:#070}
+</style></head><body>
+<h1>DSH 本机执行器</h1>
+<p>这台机器可以替服务器执行命令。先登录，服务器会签发一个只属于本机的凭据。</p>
+<div id="msg"></div>
+<fieldset><legend>1. 登录</legend>
+<label>服务器地址</label><input id="server" placeholder="http://192.168.28.239:3080">
+<label>账号</label><input id="username" autocomplete="username">
+<label>密码</label><input id="password" type="password" autocomplete="current-password">
+<button onclick="signIn()">登录</button>
+</fieldset>
+<fieldset><legend>2. 绑定工作区</legend>
+<div id="workspaces">登录后显示可绑定的工作区。</div>
+</fieldset>
+<fieldset><legend>当前状态</legend><pre id="status">…</pre>
+<button onclick="refresh()">刷新</button></fieldset>
+<script>
+const $ = (id) => document.getElementById(id);
+function show(text, cls){ $('msg').innerHTML = '<p class="'+(cls||'')+'">'+text+'</p>'; }
+async function api(path, body){
+  const r = await fetch(path, body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  return await r.json();
+}
+async function signIn(){
+  show('登录中…');
+  const r = await api('/login',{server:$('server').value,username:$('username').value,password:$('password').value});
+  if(!r.ok){ show(r.error||'登录失败','err'); return; }
+  show('已登录为 '+r.username,'ok'); renderWorkspaces(r.workspaces); refresh();
+}
+function renderWorkspaces(list){
+  if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
+  $('workspaces').innerHTML = list.map((w)=>
+    '<div style="margin:.4rem 0"><b>'+w.title+'</b><br><code>'+w.path+'</code><br>'+
+    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" value="">'+
+    '<label>本机暂存目录</label><input id="sd-'+w.id+'" value="">'+
+    '<button onclick="bind(\\''+w.id+'\\')">绑定</button></div>').join('');
+}
+async function bind(id){
+  const r = await api('/bind',{workspaceId:id,visiblePath:$('vp-'+id).value,stagingDir:$('sd-'+id).value});
+  show(r.ok?'绑定成功':(r.error||'绑定失败'), r.ok?'ok':'err'); refresh();
+}
+async function unbind(id){ await api('/unbind',{workspaceId:id}); refresh(); }
+async function refresh(){ $('status').textContent = JSON.stringify(await api('/status'), null, 2); }
+refresh();
+</script></body></html>`
+}
+
+/** One bounded JSON body from the local page. */
+async function readJson(req, limit = 64 * 1024) {
+	const chunks = []
+	let size = 0
+	for await (const chunk of req) {
+		size += chunk.length
+		if (size > limit) {
+			req.destroy()
+			return {}
+		}
+		chunks.push(chunk)
+	}
+	try {
+		return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+	} catch {
+		return {}
+	}
+}
+
+/**
+ * Serve the enrollment page on this machine's loopback.
+ *
+ * Bound to 127.0.0.1 only: the page handles a password, so nothing else on the
+ * network may reach it.
+ * @param port - Local port, or 0 for an OS-assigned one.
+ * @returns the listening port.
+ */
+function startConfigServer(port) {
+	configServer = createServer((req, res) => {
+		const send = (status, body, type = 'application/json; charset=utf-8') => {
+			const text = typeof body === 'string' ? body : JSON.stringify(body)
+			res.writeHead(status, { 'content-type': type, 'content-length': Buffer.byteLength(text) })
+			res.end(text)
+		}
+		void (async () => {
+			const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+			try {
+				if (req.method === 'GET' && url.pathname === '/') return send(200, configPage(), 'text/html; charset=utf-8')
+				if (req.method === 'GET' && url.pathname === '/status') {
+					return send(200, {
+						enrolled: enrollment.token.length > 0,
+						awaitingEnrollment,
+						server: enrollment.server,
+						username: enrollment.username,
+						label: enrollment.label,
+						connected: !!enrollment.token && connectionsAlive(),
+						hello: lastHello,
+						statePath,
+					})
+				}
+				if (req.method === 'POST' && url.pathname === '/login') {
+					const body = await readJson(req)
+					if (!body.server || !body.username || !body.password) {
+						return send(400, { ok: false, error: '服务器地址、账号、密码都不能为空' })
+					}
+					return send(200, await signIn(String(body.server), String(body.username), String(body.password)))
+				}
+				if (req.method === 'POST' && url.pathname === '/bind') {
+					const body = await readJson(req)
+					const result = await callEnrolled('bind', {
+						workspaceId: String(body.workspaceId ?? ''),
+						visiblePath: String(body.visiblePath ?? ''),
+						stagingDir: String(body.stagingDir ?? ''),
+						machine: hostname(),
+					})
+					return send(result.ok ? 200 : 400, result)
+				}
+				if (req.method === 'POST' && url.pathname === '/unbind') {
+					const body = await readJson(req)
+					const result = await callEnrolled('unbind', { workspaceId: String(body.workspaceId ?? '') })
+					return send(result.ok ? 200 : 400, result)
+				}
+				return send(404, { error: 'no such route' })
+			} catch (error) {
+				return send(500, { error: String(error?.message ?? error) })
+			}
+		})()
+	})
+	configServer.listen(port, '127.0.0.1', () => {
+		const actual = configServer.address()?.port
+		console.log(`[executor] configuration page: http://127.0.0.1:${actual}/`)
+	})
+	return configServer
 }
 
 /**
@@ -527,6 +786,13 @@ function send(socket, message) {
  */
 let reconnectTimer
 let reconnectAttempt = 0
+/** The socket in use, so the status view can report liveness. */
+let activeSocket = null
+
+/** Whether the executor currently holds a live connection to its server. */
+function connectionsAlive() {
+	return activeSocket !== null && activeSocket.readyState === 1
+}
 
 function scheduleReconnect(server, token, label) {
 	if (reconnectTimer) return
@@ -539,13 +805,55 @@ function scheduleReconnect(server, token, label) {
 	}, delay)
 }
 
+/**
+ * The WebSocket URL for one server base URL.
+ *
+ * The config page collects — and the enrollment stores — an HTTP base, because
+ * every other call this process makes (login, token exchange, bind) is HTTP.
+ * Only the connection needs the WS scheme, and a `http://` string handed to
+ * `new WebSocket()` fails the handshake instead of being upgraded.
+ * @param server - An `http:`, `https:`, `ws:`, or `wss:` URL.
+ * @returns the same URL with a WebSocket scheme.
+ */
+function socketUrl(server) {
+	const base = String(server ?? '').trim().replace(/\/+$/, '')
+	if (/^wss?:/i.test(base)) return base
+	return base.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:')
+}
+
+/**
+ * The executor endpoint URL for one server spelling.
+ *
+ * Two spellings reach this function: `--server` on the command line normally
+ * names the endpoint (`ws://host:port/executor`), while the config page collects
+ * a plain base (`http://host:port`). Appending the path only when there is none
+ * keeps both working — a base URL left without it resolves to the site root,
+ * which has no upgrade route, and the handshake fails with a bare "non-101"
+ * rather than anything naming the missing path.
+ * @param server - Server base URL or endpoint URL, HTTP or WS scheme.
+ * @returns the WebSocket URL of the executor endpoint.
+ */
+function executorEndpoint(server) {
+	const socket = socketUrl(server)
+	try {
+		const url = new URL(socket)
+		if (url.pathname === '' || url.pathname === '/') url.pathname = '/executor'
+		return url.toString()
+	} catch {
+		return socket
+	}
+}
+
 function connect(server, token, label) {
-	const url = server + (server.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+	const endpoint = executorEndpoint(server)
+	const url = endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
 	const socket = new WebSocket(url)
+	activeSocket = socket
 	socket.addEventListener('open', () => {
 		reconnectAttempt = 0
 		console.log('[executor] connected to', server)
-		send(socket, { type: 'hello', version: VERSION, label, host: hostname(), platform: platform(), release: release() })
+		lastHello = { version: VERSION, label, host: hostname(), platform: platform(), release: release() }
+		send(socket, { type: 'hello', ...lastHello })
 	})
 	socket.addEventListener('message', (event) => {
 		let message
@@ -640,9 +948,40 @@ function connect(server, token, label) {
 }
 
 const config = parseArgs(process.argv.slice(2))
-if (!config.server || !config.token) {
-	console.error('Usage: node executor.mjs --server ws://<host>:3080/executor --token <token> [--label <name>] [--node-pty <path>]')
-	process.exit(2)
-}
 nodePtyPath = config.nodePty
-connect(config.server, config.token, config.label || hostname())
+statePath = config.state || join(homedir(), '.dsh-executor', 'state.json')
+
+if (config.token) {
+	// Explicit enrollment on the command line: the shape the verification
+	// harnesses use, and still the way to run without a browser.
+	if (!config.server) {
+		console.error('Usage: node executor.mjs --server <url> --token <token> [--label <name>] [--node-pty <path>]')
+		process.exit(2)
+	}
+	enrollment = { server: config.server, token: config.token, username: '', label: config.label || hostname() }
+	connect(config.server, config.token, enrollment.label)
+} else {
+	const saved = loadState()
+	if (saved) {
+		// A machine that has already enrolled reconnects on its own: nobody is
+		// watching a service that starts at boot.
+		enrollment = { ...saved, label: saved.label || hostname() }
+		console.log(`[executor] resuming enrollment as ${saved.username || '(unknown)'} from ${statePath}`)
+		connect(enrollment.server, enrollment.token, enrollment.label)
+	} else {
+		awaitingEnrollment = true
+		console.log('[executor] not enrolled yet — open the configuration page to sign in')
+	}
+
+	// The page stays available after enrollment so a user can bind another
+	// workspace, or see why nothing is connected. A taken port must not stop the
+	// executor: the page is a convenience, the connection is the job.
+	try {
+		const server = startConfigServer(config.configPort)
+		server.on('error', (error) => {
+			console.error(`[executor] configuration page unavailable on port ${config.configPort}: ${String(error?.message ?? error)}`)
+		})
+	} catch (error) {
+		console.error(`[executor] configuration page failed to start: ${String(error?.message ?? error)}`)
+	}
+}
