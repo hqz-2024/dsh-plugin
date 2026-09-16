@@ -2019,17 +2019,20 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	};
 
 	/**
-	 * End an account's live bindings after its authorization changed (plan §2.5②③).
+	 * End an account's access to the client world after its authorization changed
+	 * (plan §2.5②③).
 	 *
 	 * The binding store has always exposed this and nothing ever called it, so an
 	 * account that lost a workspace -- or was deleted outright -- kept executing on
-	 * its machine until the binding lapsed on its own. Revoking access has to revoke
-	 * execution, or "authorization" is only a UI-level idea.
+	 * its machine. Revoking access has to revoke execution, or "authorization" is
+	 * only a UI-level idea.
 	 *
-	 * Absent `workspaceTitles`, every binding the account holds is dropped, which is
-	 * what account removal and disable need. Otherwise only the workspaces whose
-	 * titles disappeared are dropped, so editing an unrelated part of the same
-	 * account does not disturb bindings it still has a right to.
+	 * A full revocation (`workspaceTitles` absent) also revokes the account's executor
+	 * tokens. Dropping the binding alone is not enough there: the token is the
+	 * credential, and a machine that still holds one can simply claim a workspace
+	 * again, because `claim` asks the binding store rather than the account store.
+	 * A partial revocation leaves the token alone -- the account keeps rights it must
+	 * still be able to exercise.
 	 *
 	 * A no-op when the binding store is not mounted (the plain `web` profile has no
 	 * client world), so this cannot break a deployment that does not use it.
@@ -2037,9 +2040,9 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	 * @param username - Account whose authorization changed.
 	 * @param reason - Recorded on each ended binding.
 	 * @param workspaceTitles - Titles removed from the account, or absent for all.
-	 * @returns the dropped bindings, or null when there was nothing to do.
+	 * @returns the dropped bindings, or null when the store is unavailable.
 	 */
-	const revokeClientBindings = (username, reason, workspaceTitles = undefined) => {
+	const revokeClientAccess = (username, reason, workspaceTitles = undefined) => {
 		const bindings = ctx.get("clientBindings");
 		if (!bindings || typeof bindings.revokeForUsername !== "function") return null;
 		let workspaceIds;
@@ -2049,6 +2052,14 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				.filter((workspace) => wanted.indexOf(String(workspace.title)) !== -1)
 				.map((workspace) => String(workspace.id));
 			if (workspaceIds.length === 0) return null;
+		} else if (typeof bindings.revokeTokensForUsername === "function") {
+			// Full revocation: kill the credential too, or the machine re-enrolls itself.
+			Promise.resolve(bindings.revokeTokensForUsername(username))
+				.then((revoked) => {
+					const count = Array.isArray(revoked) ? revoked.length : 0;
+					if (count > 0) diag("executor tokens revoked for " + username + ": " + count);
+				})
+				.catch((error) => diag("executor token revoke failed for " + username + ": " + String(error?.message ?? error)));
 		}
 		const result = bindings.revokeForUsername(username, { reason, workspaceIds });
 		Promise.resolve(result)
@@ -2137,7 +2148,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				diag("roleMap upsert " + username + " -> " + JSON.stringify(rm[username] ?? null));
 				// §2.5②: a workspace taken away from the account must stop executing on
 				// the account's machine, not merely disappear from a list.
-				if (lostTitles.length > 0) revokeClientBindings(username, "authorization-revoked", lostTitles);
+				if (lostTitles.length > 0) revokeClientAccess(username, "authorization-revoked", lostTitles);
 			}
 			json(res, 200, { ok: true, account: store.list().find((a) => a.username === username) });
 			return;
@@ -2164,7 +2175,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				saveRoleMap();
 				diag("roleMap remove " + username);
 				// §2.5③: a removed account must not keep a machine executing.
-				revokeClientBindings(username, "account-removed");
+				revokeClientAccess(username, "account-removed");
 			}
 			json(res, 200, { ok: true, removed });
 			return;

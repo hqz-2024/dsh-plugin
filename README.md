@@ -230,6 +230,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - 状态文件：`~\.dsh\auth\{store,session-owners,hidden-items,role-map}.json`、`~\.dsh\upgrade-state.json`、`~\.dsh\plugins\dsh-remote-local\run-diag.log`。
 - **客户端执行世界**：绑定记录存在部署侧存储域 `client_binding`（**不在**引擎的 `workspace` 域里，两者只靠 id 关联），所以引擎升级不会动它。**服务端重启后所有绑定一律失效**（心跳全部陈旧），重启后需要重新绑定——这是设计如此，不是故障。executor 必须跑在用户的**交互式登录会话**里（映射盘符是按登录会话的），并且优先直接把 UNC 路径交给软件。
 - **回滚（executor 出问题时一键退回纯服务器形态）**：把 `profiles/<name>/cordis.patch.yml` 里的 `subprocess-dispatch` 行改回 `disabled: true`、并去掉 `subprocess` 那一行的 `disabled: true`，重启即恢复成"全部在服务器执行"。**未绑定的工作区本来就是这个行为**，所以回滚只影响已经绑定的工作区；绑定记录留在 `client_binding` 里不会丢，重新启用后仍在（但按上面的规则，跨重启一律不活跃，需要重新绑定）。**这是刻意的设计**：一个改动只碰一个组合文件，回滚不需要动数据。
+- **删除账号 ≠ 撤销完它的执行权（要顺手改配置）**：在设置页删除账号会**同时吊销它的绑定与签发的 executor token**（撤销某个工作区只吊销对应绑定，token 保留）。但 `subprocess-dispatch` 的 `tokens:` 里**配置写死的 token 属于配置层**，不走账号库，删账号不会让它们失效 —— **删账号时记得把配置里对应那一行也删掉**，否则那台机器仍能认证（并且能重新绑定）。
 - 完整迁移/备份：见 `MIGRATION.md`。
 - **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。**
 

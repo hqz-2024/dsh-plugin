@@ -809,6 +809,26 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 
 
+### 账号被删除，它的 executor token 却还活着（本轮，已复现并修复）
+
+把上一轮那把尺子（"有能力 ≠ 接上了"）再用一遍，这次查的是**凭据**那一半。存储里有三个方法**从来没被调用过**：`revokeTokensForUsername`、`revokeToken`、`listTokens`。
+
+**先复现，不下结论**：建一个一次性账号 → 给它签发一个 executor token → 确认 token 能解析 → **删掉那个账号** → 再看 token 还能不能解析。
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 账号存在时解析（对照） | `probe-doomed-token` | `probe-doomed-token` |
+| **账号删除后解析** | **`probe-doomed-token`** | **（空 / undefined）** |
+| `tokenSurvivesAccountRemoval` | **true** | **false** |
+
+**这比上一轮那个绑定问题更严重，而且正好把上一轮的修复绕过去了**：`claim` 问的是绑定存储，**不查账号是否存在**。所以只要 token 还活着，那台机器可以直接**重新绑定**一个工作区。上一轮做的是"撤销时解绑"，可凭据还在，机器自己就能再绑回来。删除账号而保留凭据，等于没有删除。
+
+**修法**：`revokeClientAccess` 在**全量**撤销（账号删除）时连 token 一起吊销；**局部**撤销（只是少了一个工作区）保留 token —— 那个账号还有别的权利要用它。
+
+**如实说明一处没覆盖的**：配置文件里的 token（`subprocess-dispatch` 的 `tokens:` 键值）是**配置层**的，按用户名直接映射，不走账号库，所以删账号不会让它们失效。删了账号还得顺手把配置里那一行去掉 —— 这条已写进运维提示。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。

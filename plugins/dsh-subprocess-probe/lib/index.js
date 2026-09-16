@@ -930,6 +930,41 @@ export function apply(ctx, config) {
 			} catch (error) {
 				record({ step: 'account-authorization-revokes-binding', error: String((error && error.message) || error) })
 			}
+
+			// ── §2.5③ : does deleting an account also kill its executor token? ──
+			// The store exposes `revokeTokensForUsername` for exactly this, and like
+			// `revokeForUsername` it had no caller. A binding that stops routing is one
+			// thing; a token that still authenticates is another, because that machine
+			// can simply bind again.
+			try {
+				const doomed = 'probe-doomed-token'
+				const created = await fetch(`${serverBase}/auth/accounts`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, cookie },
+					body: JSON.stringify({ action: 'upsert', username: doomed, password: 'probe-doomed-pass-2026', role: 'user' }),
+				})
+				const issued = await bindings.issueToken({ username: doomed, label: 'doomed-machine' })
+				const resolvesWhileAccountExists = dispatcher.transport.usernameForToken(issued.token) ?? null
+				const removed = await fetch(`${serverBase}/auth/accounts`, {
+					method: 'POST',
+					headers: { ...jsonHeaders, cookie },
+					body: JSON.stringify({ action: 'remove', username: doomed }),
+				})
+				await sleep(500)
+				const resolvesAfterAccountRemoved = dispatcher.transport.usernameForToken(issued.token) ?? null
+				record({
+					step: 'account-removal-revokes-token',
+					createStatus: created.status,
+					removeStatus: removed.status,
+					resolvesWhileAccountExists,
+					resolvesAfterAccountRemoved,
+					// The gap this checks for: a deleted account's machine still authenticating.
+					tokenSurvivesAccountRemoval: resolvesAfterAccountRemoved !== null,
+				})
+				await bindings.revokeToken(issued.token)
+			} catch (error) {
+				record({ step: 'account-removal-revokes-token', error: String((error && error.message) || error) })
+			}
 		} else {
 			// Ungated profile: the endpoint must refuse rather than believe the
 			// `x-dsh-user` header this sends, which is what a naive implementation
