@@ -753,6 +753,27 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 
 
+### §2 表里那几条"已验证"，此前没有任何用例在复查（本轮补齐）
+
+接上一轮"状态表里有个 ✅ 没有依据"的思路，这轮去核对的是 §2 那张「绑定存储（已验证语义）」表。这几条**当初确实测过**（早期手工核对），但**没有任何用例在复查它们** —— 也就是说，后来任何一次改动都能悄悄弄坏它们而没人知道。对一个决定"用户揣着机器走了以后会发生什么"的规则来说，只测一次是不够的。
+
+现在已经进了常规回归，而且**跑在 profile 真实的宽限期（20 秒）上**，不是缩短的测试值 —— 缩短的窗口测的是一个没人会用的配置。
+
+| 判据（§2.1） | 观察 |
+|---|---|
+| 失效 ≠ 删记录 | `recordStillPresent=true`、`endedAtSet=true`、**`endReason=heartbeat-timeout`** |
+| 原机重连**不自动夺回** | `revivalRefused=true`，`reason=not-held` |
+| 他人可直接接管失效绑定 | `takeoverAllowed=true`，占用者为 `machine-b` |
+| 撤销授权 → 强制解绑 | `revocationDropped=1`，被解绑的机器为 `B` |
+
+**过程里我自己写错了一条断言，值得记下来。** 我先显式调了一次 `sweep()`，期望它返回这条记录的 id，结果 `expiredByThisSweep=false` —— 而记录本身**确实**已经被标结束了（`endedAtSet=true`、`endReason=heartbeat-timeout`）。原因不是缺陷：profile 每秒扫一次，**周期扫描在等待的那 22 秒里早就把它标结束了**，于是显式那次看到 `endedAt` 已有值就跳过了它。
+
+我没有停在"应该是周期扫描干的"这个解释上，而是加了一条 `alreadyEndedBeforeMySweep` 把它**测出来**：值为 `true`，与解释一致。
+
+**教训**：一条断言如果可以被"另一个同样正确的机制"满足，就要把**是哪个机制**也记下来。否则一个完全正常的系统会显示成失败 —— 反过来更危险：把断言放宽到"只要结果是好的就行"，就会掩盖机制真的变了。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -773,6 +794,8 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 | 失效机心跳 | `ok:false, reason:not-held`（**不自动夺回**） |
 | 他人接管失效绑定 | `ok:true` |
 | 撤销授权 | `dropped:[{workspaceId, machine}]` |
+
+> 上表自本轮起由 probe 的 `binding-expiry-keeps-record` 与 `binding-semantics` 两步**每次运行都复查**，且跑在真实的 20 秒宽限期上（此前只在早期手工核对过一次）。
 | 服务端重启 | 记录带 `serverBoot`，跨 boot 一律不活跃（§2.1） |
 
 存储：部署侧 `client_binding` domain（version 1，`single` layout），键为 `workspaceId`。引擎的 `workspace` 域**不被写入**，两者只靠 id 关联。
@@ -1090,6 +1113,8 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `relay-upstream-dead` | **502**，且错误文本含 `ECONNREFUSED` 与**确切端口**（3845 无人监听），不能是挂起或无理由的 502 |
 | `terminal-signals` | `refusedKill`/`refusedHup` 都是 `ok:false`；`sentInt` 是 `ok:true`；**`interruptedTheCommand` 与 `sessionSurvivedAndUsable` 都为 true**（用随机 GUID 判定，别改成字面标记 —— 见 §1） |
 | `terminal-signal-after-terminate` | 错误为 `terminal is terminating` |
+| `binding-expiry-keeps-record` | `endedAtSet` true、`endReason=heartbeat-timeout`、`recordStillPresent` true。**`expiredByThisSweep` 通常是 false**（周期扫描先动手，见 `alreadyEndedBeforeMySweep`）—— 那不是失败，别把它当判据 |
+| `binding-semantics` | `revivalRefused` true（`not-held`）、`takeoverAllowed` true、`revocationDropped≥1` |
 
 ### B. 上线组合（`web-client`）
 

@@ -686,6 +686,68 @@ export function apply(ctx, config) {
 			}
 		}
 
+		// ── 5d. The binding-store semantics §2's table claims (§2.1's rules) ──
+		// These were verified once, by hand, in an early round and then only asserted
+		// in the table -- no step re-checked them, so a later change could break them
+		// silently. They are the rules that decide what happens when a user walks away
+		// with a machine still holding a workspace, so they belong in every run.
+		//
+		// This drives them on the profile's REAL grace window rather than a shortened
+		// test one, so the wait below is as long as the grace period. That is worth the
+		// seconds: a shortened window would test a configuration nothing runs.
+		try {
+			const sid = 'semantics-probe'
+			const fresh = (username, machine) => ({
+				workspaceId: sid, workspaceTitle: 'semantics-probe',
+				username, machine, visiblePath: '', stagingDir: '',
+			})
+			await bindings.claim(fresh('machine-a', 'A'))
+			// Let it lapse without heart-beating it.
+			await sleep(bindings.graceMs + 2000)
+
+			// Plan §2.1: expiry is not deletion -- the record and the reason stay for
+			// diagnosis, and only the "can be taken by someone else" part changes.
+			const lapsedNotLive = !bindings.isLive(bindings.get(sid))
+			const beforeMySweep = bindings.get(sid)
+			const expiredIds = await bindings.sweep()
+			const afterSweep = bindings.get(sid)
+			record({
+				step: 'binding-expiry-keeps-record',
+				lapsedNotLive,
+				// The profile sweeps on a timer, so the periodic sweep normally ends the
+				// record long before this explicit call runs. `alreadyEndedBeforeMySweep`
+				// is what tells the two apart; either way the assertions that matter are
+				// the ones below.
+				alreadyEndedBeforeMySweep: !!beforeMySweep?.endedAt,
+				expiredByThisSweep: Array.isArray(expiredIds) && expiredIds.includes(sid),
+				recordStillPresent: !!afterSweep,
+				endedAtSet: !!afterSweep?.endedAt,
+				endReason: afterSweep?.endReason ?? null,
+			})
+
+			// A machine that lapsed must not get its binding back by heart-beating:
+			// reconnect is not preemption (§2.1).
+			const revived = await bindings.heartbeat({ workspaceId: sid, username: 'machine-a' })
+			// Another machine may take a lapsed binding directly, with no admin involved.
+			const takeover = await bindings.claim(fresh('machine-b', 'B'))
+			// Revoking an account's authorization drops what it holds (§2.5② ).
+			const revoked = await bindings.revokeForUsername('machine-b')
+
+			record({
+				step: 'binding-semantics',
+				graceMs: bindings.graceMs,
+				revivalRefused: revived.ok === false && revived.reason === 'not-held',
+				revivalReason: revived.reason ?? null,
+				takeoverAllowed: takeover.ok === true,
+				takeoverBy: takeover.binding?.username ?? null,
+				revocationDropped: Array.isArray(revoked?.dropped) ? revoked.dropped.length : null,
+				revokedMachines: (revoked?.dropped ?? []).map((entry) => entry.machine),
+			})
+			await bindings.release({ workspaceId: sid, username: 'machine-b' })
+		} catch (error) {
+			record({ step: 'binding-semantics', error: String((error && error.message) || error) })
+		}
+
 		// ── 6. Executor authorization endpoint (plan §2.5) ────────────────────
 		// The page driving this runs on the user's machine, so the endpoint must
 		// take the account from the authentication plugin's verified session. With
