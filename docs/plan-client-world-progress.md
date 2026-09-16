@@ -854,6 +854,48 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 1. **整个 bundle 加载失败**：页面直接显示 `Failed to load plugins — dsh-subprocess-dispatch: cannot get property "slots" without inject`。原因是 `exports.inject = []`。**客户端半边的 `exports.inject` 是运行期注入，和 `package.json` 里 `dsh.client.inject`（加载期）是两回事** —— 用 `ctx.slots` 就必须声明 `slots`，漏了不是"功能降级"，是整个插件加载失败。
 2. **标签语言错了**：改对 inject 之后界面出来了，但它的标签是英文 **"Workspace bindings"**，夹在一排中文（「登录与账号」「本地插件」）中间。原因是我从 `document.documentElement.lang` 猜语言 —— 而这个 shell 把该属性留成英文，界面却是中文。正确做法是用应用的 **`locale` 服务**：`ctx.locale.register(NS, {zh, en})` + `ctx.locale.bind(NS)`（`dsh-remote` 就是这么做的，它因此也支持运行时切换语言）。
 
+### 提示词段**真的到达了会话**：第一次用真实会话验证（本轮）
+
+§2.8.3 的 `execution:world` 段一直被称为"承重"的——没有它 agent 会以为自己在服务器上，把服务器路径写进 shell 命令。但此前对它的验证**只到函数级**：probe 调 `renderExecutionWorld(cwd)` 看返回值，再用 `assemble({})`（**没有 agent**）确认段确实在装配结果里、而渲染长度为 0。
+
+**缺的那一环是**："一个真实会话装配时 `context.agent` 真的有值吗？" 没有它，`text(context) => renderExecutionWorld(context.agent?.session.header.cwd)` 永远返回空串。
+
+**先按源码把链子核对到行**（四环）：
+
+| 环 | 位置 | 事实 |
+|---|---|---|
+| 1 | `agent-loop/src/agent.ts:242` | 每一轮都 `this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))` |
+| 2 | `agent/src/dispatch.ts:174` | `assembleContextFor(agent, signal)` 返回 `{ agent, scope: agent, ... }` —— **agent 必然有值** |
+| 3 | `agent/src/runtime-types.ts:19-24` | `declare module '@deepseek-ai/dsh-system-prompt' { interface AssembleContext { agent?: Agent } }` |
+| 4 | `dsh-client-bindings/lib/index.js` | 段注册为 `text: (context) => this.renderExecutionWorld(context.agent?.session.header.cwd)` |
+
+**然后真跑了一次**，因为本轮前半段的教训就是"读得再准也不等于测过"。
+
+**怎么看的**：段的文本**不存在于任何事件里**（它在装配时从活状态重建），但装配后的完整系统提示词**记录在会话的 `request/header` 事件里**。这使会话日志成为事后检查真实会话提示词的唯一入口。
+
+**一个不做就做不成的发现**：会话日志是**一事件一个 zstd 帧**，不是一条连续流。Node 的 `zstdDecompressSync` 只解第一帧，于是 383 KB 的日志"只有一个事件"。按 zstd magic 切开逐帧解，才拿到全部 262 个事件。
+
+**结果**（用**真实浏览器**在 `pilot-auth` 里建会话、发一条 `hi`、走完真实模型调用）：
+
+| 会话 | cwd | 是否绑定 | `hasExecutionWorld` |
+|---|---|---|---|
+| 既有的真实会话 | `…\宝单科技资料` | 否 | **false** |
+| 新建（绑定 `.dsh` **之前**） | `C:\Users\bestarc\.dsh` | 否 | **false** |
+| 新建（绑定 `.dsh` **之后**） | `C:\Users\bestarc\.dsh` | **是** | **true** |
+
+绑定后那一次的提示词 20032 字符（未绑定时 18579），段列表里出现 `Where your commands run`，正文是：
+
+```
+This session's workspace ".dsh" is bound to the user's own computer (DESKTOP-LCLS51R),
+which runs win32 10.0.19045. ...
+- The file tools ... address this workspace as `C:\Users\bestarc\.dsh`.
+- A shell command's working directory is the SAME directory seen from the user's computer: `C:\dsh-executor-root`.
+```
+
+**两个未绑定的对照排除了"段总会渲染"这个替代解释**：同样的代码、同样的 profile，只是没有绑定，段就不出现。
+
+检查工具存为 `~/.dsh/check-session-prompt.mjs`（逐帧解码；报告段是否存在，`--dump` 直接打印那一段）。
+
 
 
 ### 为什么这条证据是有效的
