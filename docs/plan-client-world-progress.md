@@ -1215,6 +1215,24 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 
 
 
+### 工作区**子目录**当 cwd：翻译算术正确，但探针把它标成了"跑在服务器上"（本轮）
+
+路径翻译的实现是一行前缀算术：`visiblePath + cwd.slice(工作区路径长度)`。**根目录那种情况一直都在测**（`client-execution` 用工作区根），而**比工作区更深的 cwd**（会话开在子文件夹里、`cd` 形状的工作流）才是算术真正被用到的地方 —— 边界差一位就会表现为"子进程在错的目录里跑"。
+
+本轮补上这一步（`pilot` profile，UNC 形态，子目录由客户端自己建、自己删，所以即使工作区是真实文件夹也不会碰到它以外的东西）：
+
+| 行 | 值 |
+|---|---|
+| `client-execution-subdir-verdict` | `expected = \\192.168.28.239\ws-smbtest\probe-subdir`，`actual` 相同，**`translatedSubdir: true`** |
+| `client-execution`（根） | cwd = `\\192.168.28.239\ws-smbtest` ✓ |
+| `prompt-section-bound`（UNC 形态） | `hasShareGuidance=true`、`hasCmdFallbackWarning=true`、`hasStagingGuidance=true` |
+
+**顺带抓到一个"证据工具本身在说谎"的问题**：探针判断"跑在哪台机器上"用的是**等值比较**（`parsed.cwd === visiblePath`）。子目录那一行的 cwd 是 `<可见路径>\probe-subdir`，于是它被标成 **`executedOn: server`** —— 一条**命令其实跑在客户端**、却被记录成跑在服务器的行。改成**带边界的**前缀比较（相等、或 `<可见路径>\` / `/` 开头）之后，两行都是 `client`。这类问题不是产品 bug，但它会污染证据表，而证据表正是这个项目唯一能拿出来的东西。
+
+> 两个 profile 合起来的覆盖：`pilot-auth` = 本地盘可见路径 + 门禁/crash 段；`pilot` = **UNC 可见路径 + 子目录翻译**（本机账号对共享要先 `net use` 一次）。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1588,6 +1606,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | 步骤 | 期望 |
 |---|---|
 | `client-execution` | `parsed.cwd` = `C:\dsh-executor-root`（翻译后的路径，不是服务器路径） |
+| `client-execution-subdir-verdict` | `translatedSubdir` **true**（cwd 比工作区更深时的前缀算术；这一步在 `pilot` 的 UNC 形态下跑） |
 | `perm-occupant-session` / `perm-foreign-session` | `executedOn` 分别为 `client` / `server` |
 | `terminal-python-repl` | `sawBanner`、`sawMarker`、`sawTranslatedPath` 皆 true，`sawServerPath` **false** |
 | `stdin-roundtrip` | `sawPayload` true、`exitCode` 0 |

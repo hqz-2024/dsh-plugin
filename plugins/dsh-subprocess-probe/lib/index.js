@@ -111,6 +111,18 @@ export function apply(ctx, config) {
 			const route = ctx.subprocess.routes?.find((candidate) => cwd.toLowerCase().startsWith(candidate.folded))
 			let parsed
 			try { parsed = JSON.parse(stdout.trim()) } catch { parsed = undefined }
+			// Which machine ran it is read from what the CHILD reported about itself, not
+			// from the routing index: permission consistency can still refuse a binding,
+			// so the index can say `client` while the child ran on the server.
+			//
+			// The comparison is boundary-aware rather than an equality test. A cwd below
+			// the workspace (a session opened in a subfolder, a `cd`-shaped workflow)
+			// reports `<visible>\sub`, which is on the client too -- an equality test
+			// labelled exactly those rows `server`, which reads as a routing failure.
+			const underVisible = typeof parsed?.cwd === 'string' && visiblePath.length > 0
+				&& (parsed.cwd.toLowerCase() === visiblePath.toLowerCase()
+					|| parsed.cwd.toLowerCase().startsWith(`${visiblePath.toLowerCase()}\\`)
+					|| parsed.cwd.toLowerCase().startsWith(`${visiblePath.toLowerCase()}/`))
 			record({
 				step: label,
 				ok: true,
@@ -118,7 +130,7 @@ export function apply(ctx, config) {
 				// still refuse that binding, so the executed machine is read from what
 				// the child itself reported rather than from the index.
 				boundTarget: route?.target ?? 'server',
-				executedOn: parsed?.cwd === undefined ? null : (parsed.cwd === visiblePath ? 'client' : 'server'),
+				executedOn: parsed?.cwd === undefined ? null : (underVisible ? 'client' : 'server'),
 				handlePid: handle.pid,
 				exitCode: outcome.exitCode,
 				parsed,
@@ -317,7 +329,28 @@ export function apply(ctx, config) {
 			serverPathWouldBe: serverCwd,
 		})
 
-		// ── 3a. What routing a command to the client costs per call (plan §4.8) ─
+		// ── 3a. A cwd BELOW the workspace root ────────────────────────────────
+		// The root case above is the easy one. Any cwd deeper than the workspace goes
+		// through the prefix arithmetic instead (`visiblePath + cwd.slice(workspace
+		// path length)`), and that is where an off-by-one at the boundary shows up as
+		// a child running in the wrong directory -- which is exactly what a session
+		// opened in a subfolder, or a `cd`-shaped workflow, would hit. The
+		// subdirectory is created and removed by the client itself, so nothing
+		// outside the workspace is touched even when the workspace is a real folder.
+		const subName = 'probe-subdir'
+		const subCwd = `${serverCwd}\\${subName}`
+		const expectedSubCwd = `${visiblePath}\\${subName}`
+		await attemptSpawn('subdir-setup', serverCwd, [process.execPath, '-e', `require('fs').mkdirSync(${JSON.stringify(subName)},{recursive:true})`])
+		const subdir = await attemptSpawn('client-execution-subdir', subCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+		record({
+			step: 'client-execution-subdir-verdict',
+			expected: expectedSubCwd,
+			actual: subdir.parsed?.cwd ?? null,
+			translatedSubdir: subdir.parsed?.cwd === expectedSubCwd,
+		})
+		await attemptSpawn('subdir-teardown', serverCwd, [process.execPath, '-e', `require('fs').rmSync(${JSON.stringify(subName)},{recursive:true,force:true})`])
+
+		// ── 3b. What routing a command to the client costs per call (plan §4.8) ─
 		// Both paths run the same child on the same machine here, so CPU and disk
 		// cancel out: the difference between the two medians is the dispatcher plus
 		// WebSocket round trip **alone**. A real client machine adds its own LAN
