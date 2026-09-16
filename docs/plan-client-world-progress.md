@@ -483,6 +483,46 @@ REPL 比 `powershell -Command` 是**更严的**测试：它逐行从终端读输
 
 **这条只关掉了 §2.0 的客户端那一半，如实说明**：生产侧还差"一个 DSH 账号一个 SMB 账号" —— `setup-smb.ps1` 目前只建**一个**共享账号，所以计划 §2.1 要求的"ACL 与账号可访问工作区一致"在共享层面**还不成立**（所有账号用同一个 SMB 身份）。本轮让凭据的**建立**自动化了，但**按账号区分**还没做。
 
+### P0-3 边界实测：量具已就绪，并已有两个初值（本轮）
+
+P0-3 要的是"8–10MB 边界文件"与"Office 在 SMB 上的锁文件行为"的数据，用来回答**10MB 阈值要不要下调**。本轮把量具做出来了：`~/.dsh/measure-smb-boundary.ps1`。
+
+**为什么必须在客户端跑**：要测的是"用户在他的电脑上通过共享访问"，在服务器上跑本地路径只能得到磁盘速度。脚本也能对着本地目录跑 —— 那正是计划 §4.8 要的对照基线（"SMB 往返延迟 vs 本机盘"）。
+
+测什么、以及为什么这么测：
+
+| 项 | 为什么是它 |
+|---|---|
+| 顺序吞吐 1/5/8/10/12/25 MB | 写入时强制 `Flush`，否则量到的是本机缓存而不是网络 |
+| **小文件 200 × 4KB 建+删** | Office 打开一个文档会做几十次小操作，**这才是它卡不卡的原因**，不是大文件带宽 |
+| **改名替换（temp → 覆盖目标）** | Office/PS 保存就是这个动作。脚本测**两种机制**：`File.Replace`（Win32 `ReplaceFile`）与改名覆盖（`MoveFileEx(MOVEFILE_REPLACE_EXISTING)`） |
+| 共享冲突语义 | 独占打开时第二个句柄必须被拒 —— 这条不成立就意味着两个进程能同时改同一个文件 |
+| SMB 方言/签名/加密 | 只在 UNC 路径上有意义 |
+
+**两个初值（服务器对自己共享的环回，`net use` 以 `dshtest` 身份）** —— 注意**这不是 P0-3 的答案**，环回没有真正的网络跳：
+
+| 项 | 本地盘（基线） | 经 UNC（环回） |
+|---|---|---|
+| 小文件单次建+删 | 0.5 ms（1,924 次/秒） | **3.0 ms（331 次/秒）** —— 慢 6 倍 |
+| 10MB 写 | 0.01 s | 0.01 s（环回无网络跳，参考价值有限） |
+| `File.Replace` | 20/20 成功 | **0/20 失败：`Access to the path is denied.`** |
+| 改名覆盖 | 20/20 成功 | 20/20 成功 |
+| 独占锁 | 第二个句柄被拒 | 第二个句柄被拒 |
+
+**`File.Replace` 在共享上失败、改名覆盖却成功**，是这轮最值得记的一条。它意味着"能不能在共享上原地保存"**没有统一答案** —— 取决于程序内部用哪一个 Win32 调用，而这一点你没法从一个文件扩展名上看出来。它恰好从实证上支持 §2.6 的做法：不要逐个去试，重软件一律走本机暂存。
+
+**如实说明**：这两个初值来自服务器访问自己的共享（环回），真实客户端还要多一跳网络，小文件延迟只会更差。**真正要拿去调整阈值的是 SUNDA 上那一份**：
+
+```powershell
+# 在客户端机器上跑（把 UNC 换成该机器能访问的共享）
+\\192.168.28.239\ws-smbtest   # 若尚未连过，先 net use 或让 executor 存凭据
+& "$env:USERPROFILE\.dsh\measure-smb-boundary.ps1" -Path '\\192.168.28.239\ws-smbtest'
+```
+
+脚本只在自己的子目录里建文件，跑完自动删除（`-Keep` 可保留复核）。跑到哪一步失败都会打印**具体是哪个机制、什么错误**，而不是只报一个成败。
+
+**顺带记一个写脚本时踩的坑**：`[System.IO.File]::Replace($src,$dst,$null)` 从 PowerShell 调用**永远失败** —— `$null` 被编组成空字符串，.NET 报 `The path is empty`。那看起来和文件系统故障一模一样，只数异常次数就会把"我自己传错了参数"误判成"共享不支持原子替换"。第一版脚本就是这么误报的，本地盘上也 20/20 失败才暴露出来。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -590,7 +630,7 @@ typeof pid: number value: 0
 | 判据出处 | 判据 | 状态 |
 |---|---|---|
 | P0 验收 | SMB 双向可见 | ✅ **已验证**（见 §1） |
-| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 未做：需在客户端侧测量，且本机无 Office（见 §1） |
+| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | 🟡 **量具已就绪**（`measure-smb-boundary.ps1`），已有环回初值；**待客户端那一份**（见 §1） |
 | P3 验收 | **python REPL** 可用 | ✅ **已验证**（见 §1） |
 | P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失，不是链路中断） |
 | P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP |
@@ -672,6 +712,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `~/.dsh-web-client/` | web-client 的隔离 home（junction 复用 plugins/profiles/.agent-presets/skills，独立 auth/sessions/storages） |
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |
 | `setup-smb.ps1` | SMB 共享安装脚本（需管理员运行） |
+| `measure-smb-boundary.ps1` | P0-3 的边界/性能量具（在**客户端**上跑，也支持对本地盘跑基线） |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |
 
 ## 6. 怎么重跑
@@ -702,6 +743,18 @@ P4 转发还需要 fixture 服务（端口与 `relayPorts` 一致）：
 ```powershell
 node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-probe\fixtures\local-service.mjs" 38450
 ```
+
+### P0-3 边界基准（在客户端上跑，量具自动清理）
+
+```powershell
+# 客户端：经共享访问（这才是 P0-3 要的数据）
+& "$env:USERPROFILE\.dsh\measure-smb-boundary.ps1" -Path '\\192.168.28.239\ws-smbtest'
+
+# 服务器：本地盘基线，用来做对照（§4.8 要的"SMB 往返延迟 vs 本机盘"）
+& "$env:USERPROFILE\.dsh\measure-smb-boundary.ps1" -Path 'C:\dsh-workspaces\smbtest'
+```
+
+看四件事：10MB 写读耗时、**小文件单次建+删**、**两种改名替换机制各自成败**、独占锁是否被拒。前两项决定 10MB 阈值，后两项决定用户须知怎么写。
 
 ### 跑 `pilot-auth`（含权限一致性用例）
 
