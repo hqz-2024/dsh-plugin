@@ -17,7 +17,7 @@
  * file, every chunk is also appended there before any truncation, so the
  * complete stream stays recoverable.
  */
-import { createWriteStream, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { createReadStream, createWriteStream, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -437,6 +437,19 @@ export class ClientTransport {
 		/** Where the executor program is downloadable from; gated like the admin surface. */
 		this.downloadPath = typeof config?.downloadPath === 'string' ? config.downloadPath : '/dsh-subprocess-dispatch/executor.mjs'
 		/**
+		 * Where the packaged client distribution is downloadable from. Same gate as
+		 * the program above, and the same reasoning: the caller is a person on the
+		 * settings page, not an anonymous machine.
+		 */
+		this.packPath = typeof config?.packPath === 'string' ? config.packPath : '/dsh-subprocess-dispatch/dsh-executor.zip'
+		/**
+		 * The client distribution: the executable plus the node-pty it needs, as one
+		 * archive a Windows machine unpacks and runs. Built by `build-executor-exe.mjs`,
+		 * so it is reproducible rather than committed — the route reports its absence
+		 * instead of serving a stale copy.
+		 */
+		this.packEntry = fileURLToPath(new URL('../dist/dsh-executor.zip', import.meta.url))
+		/**
 		 * The executor program's own file, resolved from this module rather than from
 		 * the process cwd: the plugin is loaded out of `~/.dsh/plugins/`, and a
 		 * cwd-relative path would break the moment the server started elsewhere.
@@ -687,6 +700,72 @@ export class ClientTransport {
 		})
 		this.ctx.logger?.info?.(`[client-transport] executor download at ${this.downloadPath}`)
 		return this.downloadDisposer
+	}
+
+	/**
+	 * Serve the packaged client distribution.
+	 *
+	 * One request answers the whole install on a Windows client: the archive holds
+	 * `dsh-executor.exe` and a `node-pty` beside it, which is what makes interactive
+	 * terminals work there. That is the point of the package — a client machine never
+	 * runs npm, never builds a native addon, and never passes `--node-pty`.
+	 *
+	 * Streamed rather than read into memory: this is 32 MB, and the settings page may
+	 * be open on several machines at once. Range requests are answered because a
+	 * download this size over a LAN connection that drops is better resumed than
+	 * restarted, and every major browser and download manager asks for one.
+	 */
+	startPackDownload() {
+		this.packDisposer = this.ctx.webServer.register({
+			kind: 'exact',
+			path: this.packPath,
+			handler: (req, res) => {
+				let size
+				try {
+					size = statSync(this.packEntry).size
+				} catch {
+					res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+					res.end('客户端分发包还没有构建：在服务器上运行 node build-executor-exe.mjs，产物是 plugins/dsh-subprocess-dispatch/dist/dsh-executor.zip')
+					return
+				}
+				const headers = {
+					'Content-Type': 'application/zip',
+					'Content-Disposition': 'attachment; filename="dsh-executor.zip"',
+					'Accept-Ranges': 'bytes',
+					'Cache-Control': 'no-store',
+				}
+				const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ''))
+				let start = 0
+				let end = size - 1
+				if (range) {
+					// An unsatisfiable range must be refused with 416: a client that asked
+					// for bytes beyond the file and got the whole thing instead would treat
+					// a complete response as the tail of its own resume.
+					start = range[1] === '' ? Math.max(0, size - Number(range[2])) : Number(range[1])
+					end = range[1] === '' || range[2] === '' ? size - 1 : Math.min(Number(range[2]), size - 1)
+					if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+						res.writeHead(416, { 'Content-Range': `bytes */${size}` })
+						res.end()
+						return
+					}
+					headers['Content-Range'] = `bytes ${start}-${end}/${size}`
+				}
+				headers['Content-Length'] = end - start + 1
+				res.writeHead(range ? 206 : 200, headers)
+				if (req.method === 'HEAD') {
+					res.end()
+					return
+				}
+				const stream = createReadStream(this.packEntry, { start, end })
+				stream.on('error', () => { res.destroy() })
+				// The response owns the file handle, so a client that walks away mid-download
+				// must close the stream rather than leave it reading into a dead socket.
+				res.on('close', () => { stream.destroy() })
+				stream.pipe(res)
+			},
+		})
+		this.ctx.logger?.info?.(`[client-transport] client distribution download at ${this.packPath}`)
+		return this.packDisposer
 	}
 
 	/**
@@ -1401,6 +1480,7 @@ export class ClientTransport {
 		try { this.adminDisposer?.() } catch { /* already released */ }
 		try { this.authDisposer?.() } catch { /* already released */ }
 		try { this.downloadDisposer?.() } catch { /* already released */ }
+		try { this.packDisposer?.() } catch { /* already released */ }
 		try { this.disposer?.() } catch { /* already released */ }
 		this.wss?.close()
 	}

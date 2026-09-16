@@ -44,6 +44,12 @@ start-dsh-lan.cmd
 bin/
 runtimes/
 
+# 客户端执行器分发包（exe + node-pty，80+ MB）：跑 node build-executor-exe.mjs 重建，
+# 服务器上的下载端点直接读这个产物，所以不进 git
+plugins/dsh-subprocess-dispatch/dist/
+# 同一个构建脚本的中间产物（CJS bundle / SEA blob），每次构建都会重建
+.build/
+
 # ---- manifest 校对工具：打包产物 / 内嵌 FFmpeg（可重建）----
 tools/manifest-tool/dist/
 tools/manifest-tool/ffmpeg/

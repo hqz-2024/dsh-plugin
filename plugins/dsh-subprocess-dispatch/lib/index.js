@@ -134,6 +134,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 			this.transport.startAdmin()
 			this.transport.startRelay()
 			this.transport.startDownload()
+			this.transport.startPackDownload()
 			this.traceEvent({ event: 'client-transport-started', entry: wsEntry })
 		})
 		wsMounting.catch((error) => {

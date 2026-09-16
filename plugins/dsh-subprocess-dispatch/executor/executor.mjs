@@ -43,6 +43,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { createServer, request as httpRequest } from 'node:http'
 import { homedir, hostname, platform, release } from 'node:os'
 import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
+import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.3.0'
@@ -203,6 +204,7 @@ function parseArgs(argv) {
 		else if (argv[i] === '--state' && argv[i + 1]) out.state = argv[++i]
 		else if (argv[i] === '--smb-user' && argv[i + 1]) out.smbUser = argv[++i]
 		else if (argv[i] === '--smb-password' && argv[i + 1]) out.smbPassword = argv[++i]
+		else if (argv[i] === '--self-test') out.selfTest = true
 	}
 	return out
 }
@@ -745,12 +747,38 @@ function startConfigServer(port) {
 }
 
 /**
+ * The base `createRequire` needs to resolve modules for this program.
+ *
+ * The two launch modes disagree about what is available, and only one of them works
+ * in each: a plain `.mjs` file has `import.meta.url`; a bundled single executable runs
+ * the entry as CommonJS, where that is undefined and `__filename` holds the real path
+ * of the executable instead. Reading the wrong one raises "The argument 'filename'
+ * must be a file URL object, file URL string, or absolute path string. Received
+ * undefined" — and it does so even when `--node-pty` names an exact path, because
+ * building the `require` fails before the path is ever used.
+ *
+ * This module is ESM, so Node defines `import.meta` everywhere it can run. The
+ * `globalThis` member is what a bundle that renames the object leaves behind: esbuild
+ * emits `var import_meta = {}` for CommonJS, so the member is absent and the path of a
+ * program sitting next to node-pty is the useful fallback.
+ * @returns A file URL string to resolve modules from.
+ */
+function resolveRequireBase() {
+	const url = import.meta?.url
+	if (typeof url === 'string' && url) return url
+	// A packaged program is a file, so its own location is the right base for a
+	// node-pty installed beside it.
+	return pathToFileURL(join(dirname(process.execPath), 'executor.cjs')).href
+}
+
+/**
  * Load node-pty for interactive terminals.
  *
  * Terminal support is the one part of this executor that is not dependency-free:
  * a ConPTY needs a native module. `--node-pty` points at one explicitly, which is
  * how a machine whose layout differs from the server's finds it; otherwise the
- * plain name is tried, which is what `npm i node-pty` next to this file gives.
+ * plain name is tried, which is what `npm i node-pty` next to this file gives, and
+ * failing that a copy unpacked beside the program (see `siblingNodePty`).
  * A machine without it still serves process spawns and reports the gap only when
  * an interactive terminal is actually requested.
  */
@@ -760,24 +788,62 @@ let nodePtyPath = ''
 
 function loadNodePty() {
 	nodePtyPromise ??= (async () => {
-		// A Windows absolute path is not a valid ESM specifier; it has to be a URL.
-		const specifier = nodePtyPath ? pathToFileURL(nodePtyPath).href : 'node-pty'
-		const module = await import(specifier)
-		// node-pty is CommonJS: the named exports Node detects vary by build, so
-		// read through the interop default when the namespace itself has no spawn.
-		const pty = typeof module.spawn === 'function' ? module : (module.default ?? module)
-		if (typeof pty.spawn !== 'function') {
+		// Loaded with `require`, not dynamic `import`, so this program can also run as a
+		// single executable (Node SEA): a packaged binary resolves builtins fine but
+		// refuses to dynamically import a file from disk, and node-pty is exactly that —
+		// a native addon next to the program. `createRequire` accepts both a bare package
+		// name and a Windows absolute path, which the old URL dance was working around.
+		const requireFromHere = createRequire(resolveRequireBase())
+		const module = requireFromHere(nodePtyPath || 'node-pty')
+		// node-pty is CommonJS: the named exports Node detects vary by build, so read
+		// through the interop default when the namespace itself has no spawn.
+		const pty = module && typeof module.spawn === 'function' ? module : (module?.default ?? module)
+		if (typeof pty?.spawn !== 'function') {
 			throw new Error('the resolved node-pty module exposes no spawn()')
 		}
 		return pty
-	})().catch((error) => {
+	})().catch(async (error) => {
 		nodePtyPromise = undefined
+		// A packaged copy cannot `require('node-pty')` by name: nothing is installed
+		// next to a downloaded executable, and the client has no npm. The distribution
+		// therefore unpacks node-pty in a folder beside the program, which is found
+		// here — the whole reason a client can install this by unzipping one archive.
+		const beside = nodePtyPath ? undefined : siblingNodePty()
+		if (beside !== undefined) return loadFrom(beside)
 		throw new Error(
 			`node-pty is unavailable on this machine (${String(error?.message ?? error)});`
 			+ ' interactive terminals need it, process spawns do not',
 		)
 	})
 	return nodePtyPromise
+}
+
+/**
+ * node-pty unpacked next to this program, as the client distribution ships it.
+ *
+ * Two layouts are accepted because both are what a person produces by hand: the
+ * package directory itself, or the `node_modules/node-pty` an `npm i` would leave.
+ * @returns Path to a loadable entry point, or undefined when the file is absent.
+ */
+function siblingNodePty() {
+	const here = dirname(process.execPath)
+	for (const candidate of [
+		join(here, 'node-pty', 'lib', 'index.js'),
+		join(here, 'node_modules', 'node-pty', 'lib', 'index.js'),
+	]) {
+		if (existsSync(candidate)) return candidate
+	}
+	return undefined
+}
+
+/** Require one explicit node-pty entry point and check it can spawn. */
+function loadFrom(entry) {
+	const loaded = createRequire(resolveRequireBase())(entry)
+	const module = loaded && typeof loaded.spawn === 'function' ? loaded : (loaded?.default ?? loaded)
+	if (typeof module?.spawn !== 'function') {
+		throw new Error(`the node-pty at ${entry} exposes no spawn()`)
+	}
+	return module
 }
 
 /** Live children by server-side handle identity. */
@@ -1387,6 +1453,41 @@ function connect(server, token, label) {
 const config = parseArgs(process.argv.slice(2))
 nodePtyPath = config.nodePty
 statePath = config.state || join(homedir(), '.dsh-executor', 'state.json')
+
+if (config.selfTest) {
+	// Terminal support is the one capability that depends on a native addon shipped
+	// separately, and a machine that cannot allocate a ConPTY otherwise shows it only
+	// as a terminal that closes at once. This mode answers the question locally, with
+	// the same loader and the same spawn call the socket path uses.
+	//
+	// Written as a self-invoking async function rather than top-level `await`: SEA runs
+	// the entry as CommonJS, where esbuild rejects top-level await outright.
+	const runSelfTest = async () => {
+		const report = { version: VERSION, nodePtyPath: nodePtyPath || '(bare name node-pty)', loaded: false, spawned: false }
+		try {
+			const pty = await loadNodePty()
+			report.loaded = true
+			const shell = resolveProgram(process.env.ComSpec || 'cmd.exe', process.env)
+			report.shell = shell.path
+			const term = pty.spawn(shell.path, [], { name: 'xterm-256color', cols: 80, rows: 24, cwd: process.cwd(), env: process.env })
+			report.pid = term.pid
+			report.spawned = true
+			let text = ''
+			term.onData((chunk) => { text += chunk })
+			await new Promise((resolve) => setTimeout(resolve, 1200))
+			term.write('echo SELF-TEST-MARKER\r')
+			await new Promise((resolve) => setTimeout(resolve, 1200))
+			report.sawMarker = text.includes('SELF-TEST-MARKER')
+			report.bytes = text.length
+			term.kill()
+		} catch (error) {
+			report.error = String(error?.message ?? error)
+		}
+		console.log(`[self-test] ${JSON.stringify(report)}`)
+		process.exit(report.spawned && report.sawMarker ? 0 : 1)
+	}
+	void runSelfTest()
+}
 
 if (config.token) {
 	// Enrolled on the command line — the shape a launcher script uses, and the one the

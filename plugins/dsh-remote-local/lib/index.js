@@ -1947,9 +1947,9 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			}, {
 				id: "executor",
 				name: "客户端执行器（executor）",
-				description: "让这个工作区里的命令直接在本机执行（客户端执行世界）。下载后在命令行运行 node executor.mjs，再打开它给出的本机配置页登录并绑定工作区 —— 凭据由登录自动签发，文件里不含任何 token。",
-				downloadUrl: "/dsh-subprocess-dispatch/executor.mjs",
-				filename: "executor.mjs"
+				description: "让这个工作区里的命令直接在本机执行（客户端执行世界）。下载 dsh-executor.zip 解开，双击里面的「启动执行器.cmd」即可 —— 这个包自带运行时和终端所需的组件，本机不需要装 Node；凭据由登录自动签发，文件里不含任何 token。",
+				downloadUrl: "/auth/executor-pack",
+				filename: "dsh-executor.zip"
 			}, {
 				id: "manifest-tool",
 				name: "manifest 校对工具",
@@ -1987,6 +1987,44 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		} catch { /* the script still works without the certificate: it just asks for it */ }
 		diag(`executor launcher issued for ${username} server=${serverUrl} ca=${ca === null ? "none" : "included"}`);
 		json(res, 200, { ok: true, username, token: issued.token, server: serverUrl, ca });
+	};
+	/**
+	 * Hand one client machine the whole executor, in one request.
+	 *
+	 * The alternative — a `.mjs` program plus a Node install plus a native addon built
+	 * on that machine — is the thing clients could not get through. This streams the
+	 * archive the dispatch plugin builds (`dsh-executor.zip`: the executable and the
+	 * node-pty beside it), so installation on a fresh Windows machine is "unzip, then
+	 * double-click the launcher" and nothing else.
+	 *
+	 * No credential is in the archive, exactly as with the program itself: the
+	 * launcher carries the token, and a launcher is minted per download.
+	 */
+	const handleExecutorPack = async (req, res) => {
+		if (req.method !== "GET" && req.method !== "HEAD") { denyJson(res, 405, "method not allowed"); return; }
+		const verdict = requireAuth(req);
+		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
+		// Resolved from this deployment's home rather than from this module's own path:
+		// `plugins/` is a junction in the verification homes, and the distribution is a
+		// build output of the dispatch plugin, so the deployment root is the stable name
+		// for it.
+		const pack = join(dshHomePath(), "plugins", "dsh-subprocess-dispatch", "dist", "dsh-executor.zip");
+		let size = 0;
+		try { size = statSync(pack).size; } catch {
+			denyJson(res, 404, "客户端分发包还没有构建：在服务器上运行 node build-executor-exe.mjs");
+			return;
+		}
+		res.writeHead(200, {
+			"Content-Type": "application/zip",
+			"Content-Disposition": 'attachment; filename="dsh-executor.zip"',
+			"Content-Length": size,
+			"Cache-Control": "no-store"
+		});
+		if (req.method === "HEAD") { res.end(); return; }
+		const stream = createReadStream(pack);
+		stream.on("error", () => { res.destroy(); });
+		res.on("close", () => { stream.destroy(); });
+		stream.pipe(res);
 	};
 	const handleBootstrap = async (req, res) => {
 		if (req.method !== "POST") {
@@ -2491,6 +2529,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/config-options", handler: handleConfigOptions }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/local-plugins", handler: handleLocalPlugins }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/executor-launcher", handler: handleExecutorLauncher }));
+		disposers.push(originalRegister({ kind: "exact", path: "/auth/executor-pack", handler: handleExecutorPack }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/login", handler: handleMfaLogin }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/setup", handler: handleMfaSetup }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/verify", handler: handleMfaVerify }));
