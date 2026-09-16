@@ -1934,6 +1934,12 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				downloadUrl: "/dsh-local-bridge/sidecar.mjs",
 				filename: "sidecar.mjs"
 			}, {
+				id: "executor",
+				name: "客户端执行器（executor）",
+				description: "让这个工作区里的命令直接在本机执行（客户端执行世界）。下载后在命令行运行 node executor.mjs，再打开它给出的本机配置页登录并绑定工作区 —— 凭据由登录自动签发，文件里不含任何 token。",
+				downloadUrl: "/dsh-subprocess-dispatch/executor.mjs",
+				filename: "executor.mjs"
+			}, {
 				id: "manifest-tool",
 				name: "manifest 校对工具",
 				description: "本地预览视频 + 人工校对/修正 manifest.json 的桌面工具（需与工作空间共享文件）。",

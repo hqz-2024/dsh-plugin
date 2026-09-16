@@ -221,6 +221,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载、FFmpeg 下载、manifest 校对工具打包）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 - **客户端执行世界（2026-09-16）**：本机桥接之后的更进一步——不再需要 agent 显式选 `local_run`，而是**整个执行面跟着工作区走**。新增两个插件（`dsh-client-bindings` 绑定存储、`dsh-subprocess-dispatch` 按 cwd→工作区→绑定分派）与一个跑在用户机器上的 executor；文件仍是服务器上那一份，客户端通过 SMB 共享（`\\<服务器>\ws-<工作区>`）看到同一份字节。另加全局 skill `local-staging`（>10MB / 工程格式走本机暂存）。实施与验收记录见 `docs/plan-client-world-progress.md`，设计见 `docs/plan-client-world.md`。
 - **executor 自带共享凭据（2026-09-16）**：计划 §2.0 把「绑定工作区（SMB 凭据）」划给 executor，此前靠用户手工 `cmdkey`。现在配置页有「工作区共享凭据」一节，`--smb-user/--smb-password` 供无值守装机；主机名从绑定带回的可见路径推出，改密码可对已绑定工作区重新应用，`/status` 只报账号不回显密码。
+- **executor 分发（2026-09-16）**：新增 `/dsh-subprocess-dispatch/executor.mjs` 下载端点（与 `/dsh-local-bridge/sidecar.mjs` 同形），并加进**设置 → 本地插件**的列表 —— 用户从此有一个受支持的途径把执行器装到本机，而不是靠手工拷贝。端点**刻意不列入 `publicPrefixes`**：下载者是设置页里已登录的浏览器，登录门禁正是该做的检查。文件里**不含 token**，凭据由配置页登录时签发。
 
 ### 11.4 运维提示
 
@@ -228,6 +229,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - 启动：`pnpm dsh --profile web --trusted-host <局域网IP>`（于引擎 checkout 根目录）。
 - 状态文件：`~\.dsh\auth\{store,session-owners,hidden-items,role-map}.json`、`~\.dsh\upgrade-state.json`、`~\.dsh\plugins\dsh-remote-local\run-diag.log`。
 - **客户端执行世界**：绑定记录存在部署侧存储域 `client_binding`（**不在**引擎的 `workspace` 域里，两者只靠 id 关联），所以引擎升级不会动它。**服务端重启后所有绑定一律失效**（心跳全部陈旧），重启后需要重新绑定——这是设计如此，不是故障。executor 必须跑在用户的**交互式登录会话**里（映射盘符是按登录会话的），并且优先直接把 UNC 路径交给软件。
+- **回滚（executor 出问题时一键退回纯服务器形态）**：把 `profiles/<name>/cordis.patch.yml` 里的 `subprocess-dispatch` 行改回 `disabled: true`、并去掉 `subprocess` 那一行的 `disabled: true`，重启即恢复成"全部在服务器执行"。**未绑定的工作区本来就是这个行为**，所以回滚只影响已经绑定的工作区；绑定记录留在 `client_binding` 里不会丢，重新启用后仍在（但按上面的规则，跨重启一律不活跃，需要重新绑定）。**这是刻意的设计**：一个改动只碰一个组合文件，回滚不需要动数据。
 - 完整迁移/备份：见 `MIGRATION.md`。
 - **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。**
 
@@ -258,8 +260,9 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **你需要做的**：
 
-1. 在你的电脑上启动本机助手（executor），并在它的配置页登录一次。助手会记住状态，通常开机自启即可。
-2. 在配置页选择要绑定到这台电脑的工作区。**同一时刻一个工作区只能被一台电脑绑定**；被别人占着时页面会告诉你是谁占用的。
+1. 在**设置 → 本地插件**里下载 `executor.mjs`（和 sidecar 放在同一个地方），在命令行运行 `node executor.mjs`，然后打开它给出的本机配置页（默认 `http://127.0.0.1:38460`）登录一次。凭据由登录自动签发，**下载到的文件里不含任何 token**。之后通常设成开机自启即可。
+2. 在配置页里选择要绑定到这台电脑的工作区。**同一时刻一个工作区只能被一台电脑绑定**；被别人占着时页面会告诉你是谁占用的。
+3. 在配置页的「工作区共享凭据」里填一次共享账号与密码（见下）。
 
 **要知道的四件事**：
 
@@ -273,4 +276,6 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 **每台客户端机器的一次性准备**（SMB 凭据）：工作区文件在服务器上，客户端通过共享访问它。**在 executor 的配置页「3. 工作区共享凭据」里填一次共享账号与密码即可** —— 执行器会在绑定工作区时把它存进本机凭据库，之后 `\\<服务器>\ws-<工作区>` 就像本地盘一样可用。无值守装机可以用 `--smb-user` / `--smb-password`。
 
 > 主机名不用你填：执行器从**绑定带回的可见路径**里推出共享在哪台机器上，所以不会指错。改密码后重新保存即可，会对当前已绑定的工作区重新应用。凭据与 executor token 存在同一个 `state.json`（权限 0600），**不会回显、也不会发往服务器**。
+
+**如果要用 Figma（MCP）**：需要**先在你自己的电脑上打开 Figma 桌面 App，并在 Dev Mode 里手动启用 MCP server**（默认端口 3845）。这一步没有 API 可以代劳，必须人工做一次；启用后 agent 才能通过服务器转发访问它。服务端的转发白名单里已经包含 3845。
 

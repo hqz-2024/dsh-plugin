@@ -17,9 +17,10 @@
  * file, every chunk is also appended there before any truncation, so the
  * complete stream stays recoverable.
  */
-import { createWriteStream, mkdirSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Readable, Writable } from 'node:stream'
 
@@ -383,6 +384,14 @@ export class ClientTransport {
 		 * session gate is exactly the right place to establish who that is.
 		 */
 		this.adminPath = typeof config?.adminPath === 'string' ? config.adminPath : '/client-admin'
+		/** Where the executor program is downloadable from; gated like the admin surface. */
+		this.downloadPath = typeof config?.downloadPath === 'string' ? config.downloadPath : '/dsh-subprocess-dispatch/executor.mjs'
+		/**
+		 * The executor program's own file, resolved from this module rather than from
+		 * the process cwd: the plugin is loaded out of `~/.dsh/plugins/`, and a
+		 * cwd-relative path would break the moment the server started elsewhere.
+		 */
+		this.executorEntry = fileURLToPath(new URL('../executor/executor.mjs', import.meta.url))
 		/** Largest request body the relay will carry; MCP payloads are small JSON. */
 		this.relayBodyLimit = Number.isInteger(config?.relayBodyLimit) ? config.relayBodyLimit : 8 * 1024 * 1024
 		/** Set by the dispatcher: replay live bindings onto a (re)connected account. */
@@ -534,6 +543,44 @@ export class ClientTransport {
 				lastHeartbeat: record.lastHeartbeat,
 				endReason: record.endReason ?? null,
 			}))
+	}
+
+	/**
+	 * Serve the executor program for download (plan §6.2 item 5: "executor 的分发
+	 * 与更新 —— 先复用 `/dsh-local-bridge/sidecar.mjs` 式端点").
+	 *
+	 * This is the same shape as the sidecar's endpoint on purpose: the two programs
+	 * are installed the same way, from the same settings page, by the same people.
+	 * It is deliberately NOT in `publicPrefixes` — the caller is a signed-in browser
+	 * on the settings page, so the login gate is exactly the right check, and the
+	 * gate is not weakened for a file that is not a secret anyway.
+	 *
+	 * No token is baked into the file. The executor enrolls itself: its page logs in
+	 * against `/auth/login` and exchanges the session for a token per account
+	 * (plan §2.5), so a downloaded copy carries no credential to leak.
+	 */
+	startDownload() {
+		this.downloadDisposer = this.ctx.webServer.register({
+			kind: 'exact',
+			path: this.downloadPath,
+			handler: (req, res) => {
+				try {
+					const content = readFileSync(this.executorEntry, 'utf8')
+					res.writeHead(200, {
+						'Content-Type': 'text/javascript; charset=utf-8',
+						'Content-Disposition': 'attachment; filename="executor.mjs"',
+						'Content-Length': Buffer.byteLength(content),
+						'Cache-Control': 'no-store',
+					})
+					res.end(content)
+				} catch {
+					res.writeHead(404)
+					res.end('executor.mjs not found')
+				}
+			},
+		})
+		this.ctx.logger?.info?.(`[client-transport] executor download at ${this.downloadPath}`)
+		return this.downloadDisposer
 	}
 
 	/**
@@ -1182,6 +1229,7 @@ export class ClientTransport {
 		try { this.relayDisposer?.() } catch { /* already released */ }
 		try { this.adminDisposer?.() } catch { /* already released */ }
 		try { this.authDisposer?.() } catch { /* already released */ }
+		try { this.downloadDisposer?.() } catch { /* already released */ }
 		try { this.disposer?.() } catch { /* already released */ }
 		this.wss?.close()
 	}

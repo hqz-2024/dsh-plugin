@@ -542,6 +542,37 @@ P0-3 要的是"8–10MB 边界文件"与"Office 在 SMB 上的锁文件行为"�
 
 清单已固化为 §7「上线前的回归清单」—— 三段（完整功能 / 上线组合 / 最后三件事），带期望值，目的是让切换这件事**可机械执行**，而不是每次靠回忆。
 
+### executor 的分发端点 + §6.2 的三个待定项（本轮）
+
+复核计划的 **§6.2 待定项**时发现一条 P1 的活没人做：第 5 条"**executor 的分发与更新**（复用下载端点）—— 先复用 `/dsh-local-bridge/sidecar.mjs` 式端点"。在此之前，用户**没有任何受支持的途径**把 executor 装到本机 —— 只能靠手工拷贝文件，而 sidecar 早就有下载按钮了。
+
+**已补上**（与 sidecar 端点同形）：
+
+| 项 | 实现 |
+|---|---|
+| 下载端点 | `GET /dsh-subprocess-dispatch/executor.mjs`（在 dispatcher 的传输层注册，与 `/client-admin` 同级） |
+| 设置页 | `/auth/local-plugins` 列表新增 `executor` 条目 → **设置 → 本地插件**里多一张卡片，按钮与 sidecar 一致 |
+| 门禁 | **刻意不列入 `publicPrefixes`**：下载者是设置页里已登录的浏览器，登录门禁正是该做的检查。不为一个本来就公开的文件放松门禁 |
+| 凭据 | **文件里不含 token**。executor 自己完成登记：配置页登录 → `/client-auth/login` 按账号签发 token（§2.5）。这正是它不需要"预填 token 的启动脚本"的原因 |
+
+**验证**（`pilot-auth`，真实门禁下）：
+
+| 检查 | 结果 |
+|---|---|
+| 无会话访问下载 URL | **403** `{"ok":false,"error":"unauthorized"}`（门禁拦下，说明它确实没被列进 `publicPrefixes`） |
+| 登录后访问 | **200**，`Content-Disposition: attachment; filename="executor.mjs"` |
+| **字节是否与源文件一致** | 源 45595 B、发出 45595 B、**内容逐字节相同** |
+| `/auth/local-plugins` | 三条：`sidecar` / **`executor`** / `manifest-tool`，各带 `downloadUrl` |
+| 无会话访问列表 | **401**（不泄露列表） |
+| 每条 `downloadUrl` 是否真的能下 | `sidecar` 200（24888 B）、**`executor` 200（45595 B）**、`manifest-tool` 404 —— **404 是因为 `pilot-auth` 没挂 `dsh-video-studio`**，不是缺陷（线上 `web` 与 `web-client` 都挂了它） |
+
+**顺手闭掉的另外两条 §6.2 待定项**（都是"写进手册"类）：
+
+- 第 6 条 **回滚路径** —— 已写进 README 运维提示：改回 `subprocess-dispatch: disabled` + 恢复 `subprocess` 行 + 重启。要点是**未绑定的工作区本来就是这个行为**，所以回滚只影响已绑定的工作区，且绑定记录不丢（跨重启一律不活跃是既定规则）。一个改动只碰一个组合文件，回滚不需要动数据。
+- 第 9 条 **Figma 的人工前置** —— 已写进 README 用户须知：必须**先在自己电脑上打开 Figma 桌面 App 并在 Dev Mode 手动启用 MCP server**（默认 3845），这一步没有 API 可代劳。转发白名单里已含 3845。
+
+第 7 条（性能基准）上一轮已给了量具与初值。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
