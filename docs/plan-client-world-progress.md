@@ -4,7 +4,7 @@
 >
 > ⚠️ 验证载体是 `pilot` / `pilot-auth` profile。**线上 `web` profile 尚未挂载**对应的两条 bundle，见 §3.5 —— 这是有意的上线前状态，不是遗漏。
 >
-> 全部改动在 `~/.dsh` 内，**引擎 checkout 零改动**。
+> 全部改动在 `~/.dsh` 内，**引擎 checkout 零改动**（checkout 里唯一未提交的改动是 `README.zh.md` 加了一行局域网启动命令，与本方案无关，也不是本次所加）。
 
 ---
 
@@ -354,6 +354,16 @@ typeof pid: number value: 0
 所以 P0–P5 的验证全部发生在 pilot 载体上，**线上 3080 实例的行为一点没变**（本轮全程未重启、未受影响）。这是有意的：`subprocess-dispatch` 会替换掉 `subprocess` 服务，而它的前置条件 P0-2（SMB 共享）还没建 —— 没有 SMB，翻译后的可见路径在用户机器上不存在，客户端执行会立刻失败。**先建共享，再上线。**
 
 顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它有完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
+
+### 3.6 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
+
+`plan.md` §"会话归属"与 §"git pull 评估"写着：本部署有**源码级本地修改** `packages/api/session-controller` 的 `scopeUser` / `sessionOwnership`。本轮核对：**该修改当前不存在**。
+
+- `grep sessionOwnership` 覆盖整个 checkout，只在 `plan.md` 命中；`grep scopeUser` 在 `packages/api/session-controller` 无命中。
+- checkout 的 `git status` 只有一个与认证无关的 `README.zh.md` 一行。
+- 原因也在代码里写着：`dsh-remote-local/lib/index.js:722-741` 的 `armSessionFilter` 直接在服务边界包装 `sessionController.list` 并按 `request.scopeUser` 过滤，注释明说"so the core checkout stays untouched" —— 引擎那处改动是**被这个 fork 侧包装取代并撤掉的**。
+
+**对本次改动的意义**：`sessionOwnership` 目前是"有提供方、无引擎消费者"的服务，所以把 `ownerOf` 加到它上面是纯增量、不改变线上任何行为（线上也没挂 dispatcher）。但 `plan.md` 应当更新，否则下一个人会去找一处并不存在的引擎改动。
 
 ---
 
