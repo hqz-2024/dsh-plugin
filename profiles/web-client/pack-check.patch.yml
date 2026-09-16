@@ -1,0 +1,39 @@
+# Verification-only overlay for `web-client` (port 3086, home `.dsh-web-client`).
+#
+# Purpose: prove that `/auth/executor-pack` is mounted *and* resolves the distribution
+# file in the go-live profile. Both questions need an authenticated caller, and this
+# test home's only account has a password nobody recorded. Rather than write into a
+# running instance's account store — the failure mode already recorded for
+# `storages/workspace.json` — this opens exactly that one route for anonymous callers.
+#
+# A patch REPLACES the row's whole `config`, so the body below restates `- id: remote`
+# from `profiles/web-client/cordis.patch.yml` verbatim and adds one prefix. The three
+# executor prefixes keep their existing entries; nothing else joins them, so every other
+# surface keeps its gate. No credential rides in the download: the archive carries no
+# token, and the launcher that does is minted per download.
+#
+# Use it only on the isolated test instance, never with `profiles/web-client` on a live
+# port. Command:
+#   $env:DSH_HOME="$env:USERPROFILE\.dsh-web-client"
+#   pnpm dsh --profile web-client --patch <this file> --port 3086 --no-open
+- id: remote
+  config:
+    enabled: true
+    adminOnly: false
+    enforceRoles: true
+    trustProxy: false
+    executorSetup:
+      serverUrl: 'https://192.168.28.239:8443'
+      caFile: 'C:\Users\bestarc\AppData\Roaming\Caddy\pki\authorities\local\root.crt'
+    roleMap:
+      Finance-mgr:
+        preset: finance-manager
+        workspace: finance-ws
+      Finance-staff:
+        preset: finance-manager
+        workspace: finance-ws
+    publicPrefixes:
+      - /executor
+      - /client-auth
+      - /client-relay
+      - /auth/executor-pack

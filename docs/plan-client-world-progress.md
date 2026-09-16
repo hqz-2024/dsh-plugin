@@ -1988,4 +1988,28 @@ node "$env:USERPROFILE\.dsh\check-executor-enroll.mjs" --port 38479 --workspace 
 
 > `.dsh` 那一行**预填是空的**，因为服务器没有给它共享建议（它不在 `visiblePathHints` 的规则里，也不该被绑 —— 那是 dsh 自己的配置目录）。这不是 bug，但**操作者会看到一行空白输入框**；真要绑它，得手填一个本机绝对路径。
 
+#### D-3. 上线组合（`web-client`）也带这两个面
+
+结论：**不用改 profile**。`/dsh-subprocess-dispatch/dsh-executor.zip` 由 `subprocess-dispatch` 提供（该行在 `web-client` 里已是 `disabled: false`），`/auth/executor-pack` 由 `remote` 行提供（一直都在）。`packPath` 有默认值，所以没有任何配置项需要新增。
+
+**怎么在不知道本机密码的情况下证明这一点**：那个测试 home（`.dsh-web-client`）只有一个 `admin` 账号，密码没人记下来；往**正在运行的实例**的账号库里塞一个账号是**已经在 `storages/workspace.json` 上踩过的坑**（内存里的副本会把我写进去的内容覆盖掉）。所以改用一份**只给这一条路由开门**的覆盖层 `profiles/web-client/pack-check.patch.yml`：
+
+```powershell
+$env:DSH_HOME="$env:USERPROFILE\.dsh-web-client"
+Set-Location C:\Users\bestarc\Desktop\deepseek-harness
+pnpm dsh --profile web-client --patch "$env:USERPROFILE\.dsh\profiles\web-client\pack-check.patch.yml" --port 3086 --no-open
+```
+
+> 那份覆盖层**完整重述了 `- id: remote` 的 `config`**（补丁替换整行 config，不是合并），只在 `publicPrefixes` 里多了一条 `/auth/executor-pack`。**只能在隔离实例上用，绝不能配到线上端口。**
+
+判据（本轮实测，3086）：
+
+| 请求 | 结果 | 说明 |
+|---|---|---|
+| `/api` | **403** | 门禁照旧 |
+| `/auth/executor-pack`（无 cookie） | **401** + body `{"ok":false,"error":"unauthorized"}` | **处理器答的**（JSON），不是门禁 —— 说明路由**已挂载**；否则会看到 403 或前端兜底 HTML |
+| `/dsh-subprocess-dispatch/dsh-executor.zip`（无 cookie） | **403** | 该端点**刻意**不在 `publicPrefixes` 里，只有设置页里已登录的浏览器能下 |
+
+至于"这个路径确实解析到那个 zip"：同一段处理逻辑在 `pilot-auth` 上已用真会话验过（`HEAD` 200 + `Content-Length=34006216`、`Range` 206、越界 416），而 `dshHomePath()` 在两个 profile 下都指向同一个部署根 —— 两个 home 的 `plugins` 本来就是指向同一个目录的 junction。
+
 
