@@ -1,0 +1,13 @@
+{
+  "name": "dsh-subprocess-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "P0 spike probe for plan-client-world: publishes a fake clientBindings service and runs a few subprocess spawns at known cwds, so the cwd -> workspace -> target routing chain is observable without a model turn.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

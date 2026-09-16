@@ -61,3 +61,7 @@ plugins/*/.git/
 
 # ---- 误生成的 0 字节杂项文件 ----
 /3080
+
+# P4/P5 verification harness output (pilot profile)
+profiles/pilot/dispatch-trace.jsonl
+profiles/pilot/probe-result.jsonl

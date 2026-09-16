@@ -1,0 +1,43 @@
+# dsh-subprocess-dispatch bundle patch: mounts the dispatching subprocess provider.
+#
+# The dispatcher is inserted DISABLED. Exactly one row may own `ctx.subprocess`,
+# so a profile opts in by disabling the base provider row and enabling this one:
+#
+#   - id: subprocess            # base bundle's provider row (NOT `subprocess-local`)
+#     disabled: true
+#   - id: subprocess-dispatch
+#     disabled: false
+#
+# The base row's id is `subprocess` (packages/bundle/base/cordis.patch.yml).
+- insert:
+    - id: subprocess-dispatch
+      name: 'dsh-subprocess-dispatch'
+      disabled: true
+      config:
+        # Provider used whenever the routing decision lands on the server:
+        # unbound workspaces, and any cwd outside every workspace.
+        serverRuntime: '@deepseek-ai/dsh-subprocess-local'
+        # How often the synchronous routing index is rebuilt from the workspace
+        # registry and the binding store. `spawn` never awaits; it reads this index.
+        refreshMs: 5000
+        # executor token -> DSH account username (exact case-sensitive match),
+        # the same shape dsh-local-bridge uses. P1 replaces this with the
+        # login-issued executor token described in plan §2.5.
+        tokens: {}
+        # Client-loopback relay (plan P4): the only ports the server may reach on
+        # a bound machine's 127.0.0.1. EMPTY DISABLES THE ENDPOINT, which is the
+        # safe default — a non-empty list without a matching policy would be an
+        # open proxy into every bound machine's local services.
+        relayPorts: []
+        # Mount point. The path carries the account and target port:
+        #   /client-relay/<account>/<port>/<path>
+        relayPath: '/client-relay'
+        # Executor authorization endpoint (plan §2.5):
+        #   POST /client-auth/login | GET /client-auth/state
+        #   POST /client-auth/bind | POST /client-auth/unbind
+        # `login` needs a `clientAuthResolver` service from the authentication
+        # plugin and refuses with 503 without one, rather than trusting a
+        # caller-supplied account name.
+        authPath: '/client-auth'
+        # Largest request body the relay carries; MCP payloads are small JSON.
+        relayBodyLimit: 8388608

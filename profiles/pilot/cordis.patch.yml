@@ -1,0 +1,53 @@
+# pilot profile patch — verification harness for ~/.dsh/docs/plan-client-world.md
+#
+# Swaps the single `ctx.subprocess` provider for the dispatching one and mounts
+# the real binding store, so the `cwd -> workspace -> binding` chain runs end to
+# end without touching the live `web` profile.
+#
+# The base bundle declares its provider row as `id: subprocess`
+# (packages/bundle/base/cordis.patch.yml) — NOT `subprocess-local`.
+
+# 1. Release the `subprocess` service name from the base provider.
+- id: subprocess
+  disabled: true
+
+# 2. Enable the dispatcher (its own bundle patch inserts it disabled). A patch
+#    replaces the row's whole `config`, so the complete value is restated here.
+- id: subprocess-dispatch
+  disabled: false
+  config:
+    serverRuntime: '@deepseek-ai/dsh-subprocess-local'
+    refreshMs: 1000
+    tracePath: !!js dshHomePath('profiles/pilot/dispatch-trace.jsonl')
+    tokens:
+      pilot-executor-token-0123456789: probe-primary
+    # Client-loopback relay (plan P4). 38450 is the probe's fixture service;
+    # 3845 is Figma's Dev Mode MCP port, kept here so the real endpoint needs no
+    # composition change once someone has Figma running.
+    relayPorts: [3845, 38450]
+
+# 3. The binding store, on a deliberately short clock: the pilot proves expiry
+#    in seconds instead of the production two minutes. Production values live in
+#    the bundle patch's own defaults.
+- id: client-bindings
+  config:
+    heartbeatMs: 1000
+    # Long enough that the executor's own heartbeat is what keeps the binding
+    # alive during the scenario, rather than the scenario finishing in time.
+    graceMs: 20000
+    sweepMs: 1000
+
+# 4. The harness: drives the real store and the real dispatcher, and starts a
+#    client execution whose child prints facts only the executing machine knows.
+- id: subprocess-probe
+  config:
+    workspaceTitle: 宝单科技资料
+    username: probe-primary
+    # Deliberately different from the server path: the child's reported cwd
+    # proves the translation ran, not just that a process started.
+    visiblePath: 'C:\dsh-executor-root'
+    reindexMs: 2500
+    executorWaitMs: 40000
+    serverPort: 3082
+    fixturePort: 38450
+    resultPath: !!js dshHomePath('profiles/pilot/probe-result.jsonl')

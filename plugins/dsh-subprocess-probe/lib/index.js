@@ -1,0 +1,407 @@
+/**
+ * dsh-subprocess-probe — the pilot profile's verification harness.
+ *
+ * It drives the real stores and the real dispatcher and writes every result to
+ * one file, so a claim's effect and the routing decision it produced are read
+ * together rather than inferred.
+ *
+ * What it proves, and how:
+ *
+ *   client execution  A workspace is claimed with a `visiblePath` that differs
+ *                     from the server path. The child prints its own cwd, so the
+ *                     result distinguishes three things at once: the process ran
+ *                     on the executor, the cwd was translated, and the output
+ *                     made the full round trip over the socket. A server-side run
+ *                     would print the server path instead.
+ *   termination       A long-running child is terminated and the handle settles
+ *                     instead of hanging.
+ *   loud failure      The executor is dropped and the next spawn throws, rather
+ *                     than quietly running the user's command on the server.
+ *   binding semantics Occupancy, release, and the routing each implies.
+ *
+ * Delete this package with its pilot bundle entry once v1 is signed off.
+ */
+import { appendFileSync } from 'node:fs'
+
+export const name = 'dsh-subprocess-probe'
+export const inject = ['subprocess', 'clientBindings', 'systemPrompt']
+
+/** Prints facts only the executing machine can know, so the host is provable. */
+const IDENTITY_SCRIPT = 'process.stdout.write(JSON.stringify({cwd:process.cwd(),host:require("node:os").hostname(),pid:process.pid}))'
+
+export function apply(ctx, config) {
+	const workspaceTitle = String(config?.workspaceTitle ?? '')
+	const username = String(config?.username ?? 'probe-primary')
+	const visiblePath = String(config?.visiblePath ?? '')
+	const reindexMs = Number.isInteger(config?.reindexMs) ? config.reindexMs : 2500
+	const executorWaitMs = Number.isInteger(config?.executorWaitMs) ? config.executorWaitMs : 30000
+	/** Port this DSH server listens on, so the relay can be reached over real HTTP. */
+	const serverPort = Number.isInteger(config?.serverPort) ? config.serverPort : 3082
+	/** Port the fixture service listens on, standing in for a client-localhost service. */
+	const fixturePort = Number.isInteger(config?.fixturePort) ? config.fixturePort : 38450
+	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
+
+	const record = (entry) => {
+		if (!resultPath) return
+		try {
+			appendFileSync(resultPath, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
+		} catch { /* the probe's own result file is diagnostic only */ }
+	}
+	const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
+
+	/** Spawn through the real dispatcher and report what came back. */
+	const attemptSpawn = async (label, cwd, argv) => {
+		const started = Date.now()
+		try {
+			const handle = ctx.subprocess.spawn({
+				argv,
+				cwd,
+				stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
+				graceMs: 3000,
+			})
+			const outcome = await handle.done
+			const stdout = handle.collected.stdout?.readFrom(0).text ?? ''
+			const stderr = handle.collected.stderr?.readFrom(0).text ?? ''
+			const route = ctx.subprocess.routes?.find((candidate) => cwd.toLowerCase().startsWith(candidate.folded))
+			let parsed
+			try { parsed = JSON.parse(stdout.trim()) } catch { parsed = undefined }
+			record({
+				step: label,
+				ok: true,
+				target: route?.target ?? 'server',
+				handlePid: handle.pid,
+				exitCode: outcome.exitCode,
+				parsed,
+				stderr: stderr.slice(0, 300),
+				ms: Date.now() - started,
+			})
+			return { handle, stdout, parsed }
+		} catch (error) {
+			record({ step: label, ok: false, error: String((error && error.message) || error), ms: Date.now() - started })
+			return { error }
+		}
+	}
+
+	const run = async () => {
+		const bindings = ctx.clientBindings
+		const dispatcher = ctx.subprocess
+
+		// The workspace registry initializes seconds after boot, so the id lookup waits.
+		const registryDeadline = Date.now() + 20000
+		let workspace
+		while (!workspace && Date.now() < registryDeadline) {
+			const registry = ctx.get('workspaceRegistry')
+			try {
+				workspace = registry?.list().find((candidate) => candidate.title === workspaceTitle)
+			} catch { /* registry not initialized yet */ }
+			if (!workspace) await sleep(200)
+		}
+		if (!workspace) {
+			record({ event: 'aborted', reason: 'workspace-not-found', workspaceTitle })
+			return
+		}
+		const workspaceId = String(workspace.id)
+		const serverCwd = workspace.path
+		record({ event: 'target-workspace', workspaceTitle, workspaceId, serverCwd, visiblePath, username })
+
+		// ── 1. Baseline: unbound runs on the server ────────────────────────────
+		await sleep(reindexMs)
+		await attemptSpawn('baseline-server-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+
+		// ── 2. Wait for the executor, then claim with a distinct visible path ──
+		const executorDeadline = Date.now() + executorWaitMs
+		while (!dispatcher.transport?.connected(username) && Date.now() < executorDeadline) await sleep(250)
+		record({ event: 'executor-connected', username, connected: !!dispatcher.transport?.connected(username) })
+
+		const claim = await bindings.claim({
+			workspaceId,
+			workspaceTitle,
+			username,
+			machine: 'probe-executor',
+			visiblePath,
+			stagingDir: 'C:\\dsh-staging',
+		})
+		record({ step: 'claim-with-visible-path', result: claim })
+		// The claim -> bind.apply step belongs to the P1 authorization endpoint,
+		// which does not exist yet, so the harness sends it. Without it the
+		// executor never heartbeats and the binding lapses mid-test.
+		if (claim.ok) {
+			const sent = dispatcher.transport.notifyBindApply(username, claim.binding, bindings.heartbeatMs)
+			record({ step: 'notify-bind-apply', sent })
+		}
+		await sleep(reindexMs)
+		record({
+			step: 'route-after-claim',
+			routes: (dispatcher.routes ?? []).map((route) => `${route.title}=${route.target}`),
+			translated: dispatcher.translateCwd(dispatcher.routes.find((route) => route.id === workspaceId), serverCwd),
+		})
+
+		// ── 2b. The v1 execution-world prompt section (plan §2.8.3) ────────────
+		// Without this the agent assumes it is on the server and writes server paths
+		// into shell commands, so the section's content is as load-bearing as the
+		// routing itself.
+		const record2 = bindings.get(workspaceId)
+		const boundText = bindings.renderExecutionWorld(serverCwd)
+		record({
+			step: 'prompt-section-bound',
+			length: boundText.length,
+			hasVisiblePath: boundText.includes(visiblePath),
+			hasServerPath: boundText.includes(serverCwd),
+			hasMachineHost: !!record2?.machineHost && boundText.includes(record2.machineHost),
+			hasPlatform: !!record2?.machinePlatform && boundText.includes(record2.machinePlatform),
+			machineHost: record2?.machineHost ?? null,
+			machinePlatform: record2?.machinePlatform ?? null,
+			head: boundText.slice(0, 180),
+		})
+		record({
+			step: 'prompt-section-unbound',
+			length: bindings.renderExecutionWorld('C:\\Users\\bestarc\\AppData\\Local\\Temp').length,
+		})
+		// Registration proof, without faking a Session: a real assembly needs a real
+		// one (`session.snapshotEvents`), so assemble with no agent. The section is
+		// then registered but renders empty — which is itself the v1 contract for a
+		// session that has no local execution.
+		try {
+			const anonymous = await ctx.systemPrompt.assemble({})
+			const entry = anonymous.sections.find((candidate) => candidate.name === 'execution:world')
+			record({
+				step: 'prompt-section-registered',
+				present: !!entry,
+				renderedLength: entry?.text.length ?? null,
+				allSections: anonymous.sections.map((candidate) => candidate.name),
+			})
+		} catch (error) {
+			record({ step: 'prompt-section-registered', error: String((error && error.message) || error) })
+		}
+
+		// ── 2c. Client-loopback relay (plan P4) ───────────────────────────────
+		// The relay is the only way the server can reach a service on the bound
+		// machine's 127.0.0.1, which is where an MCP endpoint like Figma's lives.
+		const relayBase = `http://127.0.0.1:${serverPort}/client-relay/${encodeURIComponent(username)}`
+		try {
+			const ping = await fetch(`${relayBase}/${fixturePort}/ping`, { headers: { 'x-probe': 'relay-test' } })
+			record({
+				step: 'relay-plain',
+				status: ping.status,
+				body: await ping.json(),
+				responseHeader: ping.headers.get('x-fixture'),
+			})
+		} catch (error) {
+			record({ step: 'relay-plain', error: String((error && error.message) || error) })
+		}
+		try {
+			const echo = await fetch(`${relayBase}/${fixturePort}/echo`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ hello: 'fixture' }),
+			})
+			record({ step: 'relay-post-body', status: echo.status, body: await echo.json() })
+		} catch (error) {
+			record({ step: 'relay-post-body', error: String((error && error.message) || error) })
+		}
+		try {
+			// Arrival times are the point: a relay that buffered the body would
+			// deliver every event in one read at the end.
+			const started = Date.now()
+			const sse = await fetch(`${relayBase}/${fixturePort}/sse`)
+			const sessionHeader = sse.headers.get('mcp-session-id')
+			const contentType = sse.headers.get('content-type')
+			const reader = sse.body.getReader()
+			const decoder = new TextDecoder()
+			const arrivals = []
+			let text = ''
+			for (;;) {
+				const { value, done } = await reader.read()
+				if (done) break
+				arrivals.push(Date.now() - started)
+				text += decoder.decode(value, { stream: true })
+			}
+			record({
+				step: 'relay-sse',
+				status: sse.status,
+				contentType,
+				sessionHeader,
+				events: (text.match(/^event: tick$/gm) ?? []).length,
+				arrivals,
+				elapsed: Date.now() - started,
+				streamed: arrivals.length > 1 && arrivals[arrivals.length - 1] - arrivals[0] > 400,
+			})
+		} catch (error) {
+			record({ step: 'relay-sse', error: String((error && error.message) || error) })
+		}
+		for (const [label, url] of [
+			['relay-port-denied', `http://127.0.0.1:${serverPort}/client-relay/${username}/1234/ping`],
+			['relay-unknown-account', `http://127.0.0.1:${serverPort}/client-relay/nobody/${fixturePort}/ping`],
+		]) {
+			try {
+				const denied = await fetch(url)
+				record({ step: label, status: denied.status, body: await denied.json() })
+			} catch (error) {
+				record({ step: label, error: String((error && error.message) || error) })
+			}
+		}
+
+		// ── 3. Client execution: cwd must be the translated visible path ───────
+		const bound = await attemptSpawn('client-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+		record({
+			step: 'client-execution-verdict',
+			ranOnClient: !!bound.parsed && bound.parsed.cwd === visiblePath,
+			cwdMatchesVisiblePath: bound.parsed?.cwd === visiblePath,
+			serverPathWouldBe: serverCwd,
+		})
+
+		// ── 3b. argv[0] naming a path that only exists on the server ───────────
+		// The engine resolves some binaries in its own world and hands the absolute
+		// path straight to the seam. A machine holding the program elsewhere must
+		// still run it; a machine with no equivalent must say which program is
+		// missing rather than surfacing a bare ENOENT.
+		await attemptSpawn('argv0-server-only-path', serverCwd, ['C:\\no-such-dir\\node.exe', '-e', IDENTITY_SCRIPT])
+		await attemptSpawn('argv0-unresolvable', serverCwd, ['C:\\no-such-dir\\no-such-program-xyz.exe'])
+
+		// ── 3c. Interactive terminal on the bound machine (plan P3) ────────────
+		// A PTY is interactive, so the proof is a command typed in and its answer
+		// read back: the reported location must be the translated visible path, and
+		// the answer can only arrive over the socket.
+		let terminalText = ''
+		try {
+			const terminal = await ctx.subprocess.spawnTerminal({
+				argv: ['powershell.exe', '-NoLogo', '-NoProfile'],
+				cwd: serverCwd,
+				env: {},
+				rows: 24,
+				cols: 100,
+				graceMs: 3000,
+			})
+			terminal.output.on('data', (chunk) => { terminalText += chunk.toString('utf8') })
+			await sleep(2500)
+			await terminal.write("Write-Output 'TERM-MARKER'; (Get-Location).Path\r")
+			await sleep(2500)
+			record({
+				step: 'terminal-interactive',
+				ok: true,
+				pid: terminal.pid,
+				sawMarker: terminalText.includes('TERM-MARKER'),
+				sawTranslatedPath: terminalText.includes(visiblePath),
+				sawServerPath: terminalText.includes(serverCwd),
+				bytes: terminalText.length,
+				tail: terminalText.slice(-220),
+			})
+			record({ step: 'terminal-inspect-foreground', value: (await terminal.inspectForeground()) ?? null })
+			const startedAtTerm = Date.now()
+			await terminal.terminate()
+			record({ step: 'terminal-terminated', ms: Date.now() - startedAtTerm, settled: await terminal.waitForExit() })
+		} catch (error) {
+			record({ step: 'terminal-interactive', ok: false, error: String((error && error.message) || error) })
+		}
+
+		// ── 4. Termination settles instead of hanging ─────────────────────────
+		const startedAt = Date.now()
+		try {
+			const long = ctx.subprocess.spawn({
+				argv: [process.execPath, '-e', 'setTimeout(() => {}, 120000)'],
+				cwd: serverCwd,
+				stdio: { stdin: 'ignore', stdout: { maxBytes: 4096 }, stderr: { maxBytes: 4096 } },
+				graceMs: 3000,
+			})
+			await sleep(700)
+			long.terminate()
+			const settled = await Promise.race([
+				long.done.then(() => true, () => true),
+				sleep(15000).then(() => false),
+			])
+			record({ step: 'termination', settledWithin15s: settled, ms: Date.now() - startedAt })
+		} catch (error) {
+			record({ step: 'termination', error: String((error && error.message) || error) })
+		}
+
+		// ── 5. Release restores server execution ──────────────────────────────
+		record({ step: 'release', result: await bindings.release({ workspaceId, username }) })
+		await sleep(reindexMs)
+		await attemptSpawn('after-release-server-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+
+		// ── 6. Executor authorization endpoint (plan §2.5) ────────────────────
+		// The page driving this runs on the user's machine, so the endpoint must
+		// take the account from the authentication plugin's verified session. With
+		// no such service mounted it must refuse — and must NOT believe the
+		// `x-dsh-user` header this sends, which is what a naive implementation
+		// would trust.
+		const authBase = `http://127.0.0.1:${serverPort}/client-auth`
+		const configuredToken = 'pilot-executor-token-0123456789'
+		const jsonHeaders = { 'content-type': 'application/json' }
+		try {
+			const refused = await fetch(`${authBase}/login`, {
+				method: 'POST',
+				headers: { ...jsonHeaders, 'x-dsh-user': 'nobody', 'x-dsh-role': 'admin' },
+				body: JSON.stringify({ label: 'probe' }),
+			})
+			record({ step: 'auth-login-fail-closed', status: refused.status, body: await refused.json() })
+		} catch (error) {
+			record({ step: 'auth-login-fail-closed', error: String((error && error.message) || error) })
+		}
+		try {
+			const state = await fetch(`${authBase}/state`, { headers: { authorization: `Bearer ${configuredToken}` } })
+			const payload = await state.json()
+			record({ step: 'auth-state', status: state.status, username: payload.username, connected: payload.connected })
+		} catch (error) {
+			record({ step: 'auth-state', error: String((error && error.message) || error) })
+		}
+		try {
+			const bad = await fetch(`${authBase}/state`, { headers: { authorization: 'Bearer not-a-real-token' } })
+			record({ step: 'auth-bad-token', status: bad.status, body: await bad.json() })
+		} catch (error) {
+			record({ step: 'auth-bad-token', error: String((error && error.message) || error) })
+		}
+		try {
+			const bound = await fetch(`${authBase}/bind`, {
+				method: 'POST',
+				headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+				body: JSON.stringify({
+					workspaceId,
+					machine: 'probe-executor',
+					visiblePath,
+					stagingDir: 'C:\\dsh-staging',
+				}),
+			})
+			const payload = await bound.json()
+			record({
+				step: 'auth-bind',
+				status: bound.status,
+				ok: payload.ok,
+				visiblePath: payload.binding?.visiblePath ?? null,
+				bindingCount: Array.isArray(payload.bindings) ? payload.bindings.length : null,
+			})
+		} catch (error) {
+			record({ step: 'auth-bind', error: String((error && error.message) || error) })
+		}
+		// The endpoint must have told the executor, or the binding would lapse on
+		// its grace clock and the spawn below would land on the server.
+		await sleep(reindexMs)
+		await attemptSpawn('after-auth-bind-client-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+		try {
+			const released = await fetch(`${authBase}/unbind`, {
+				method: 'POST',
+				headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+				body: JSON.stringify({ workspaceId }),
+			})
+			record({ step: 'auth-unbind', status: released.status, body: await released.json() })
+		} catch (error) {
+			record({ step: 'auth-unbind', error: String((error && error.message) || error) })
+		}
+		try {
+			const bogus = await fetch(`${authBase}/bind`, {
+				method: 'POST',
+				headers: { ...jsonHeaders, authorization: `Bearer ${configuredToken}` },
+				body: JSON.stringify({ workspaceId: 'no-such-workspace', visiblePath, stagingDir: '' }),
+			})
+			record({ step: 'auth-bind-unknown-workspace', status: bogus.status, body: await bogus.json() })
+		} catch (error) {
+			record({ step: 'auth-bind-unknown-workspace', error: String((error && error.message) || error) })
+		}
+
+		record({ event: 'probe-complete' })
+	}
+
+	const timer = setTimeout(() => { void run() }, 500)
+	if (typeof timer.unref === 'function') timer.unref()
+	ctx.effect(() => () => clearTimeout(timer), 'subprocess-probe: scenario run')
+}

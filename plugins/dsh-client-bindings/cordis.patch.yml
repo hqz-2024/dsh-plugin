@@ -1,0 +1,17 @@
+# dsh-client-bindings bundle patch: mounts the workspace-binding store.
+#
+# The three timing values are deployment-varying choices, so they are config
+# fields rather than constants (plan-client-world §4.2). A patch replaces the
+# row's whole `config`, so an override restates all of it.
+- insert:
+    - id: client-bindings
+      name: 'dsh-client-bindings'
+      config:
+        # Interval the executor is expected to heartbeat at.
+        heartbeatMs: 15000
+        # Silence after which a binding stops counting as an active occupation.
+        # This is the knob trading takeover latency against tolerance for a
+        # laptop lid closing or a network blip.
+        graceMs: 120000
+        # How often the store expires stale bindings.
+        sweepMs: 15000

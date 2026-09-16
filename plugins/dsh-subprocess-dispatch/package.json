@@ -1,0 +1,13 @@
+{
+  "name": "dsh-subprocess-dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Subprocess dispatcher for DeepSeek Harness: owns the single ctx.subprocess registration and routes each spawn to the server or to the executor bound to the workspace owning spec.cwd, leaving ctx.fs on the server.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

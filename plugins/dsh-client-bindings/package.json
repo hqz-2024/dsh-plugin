@@ -1,0 +1,13 @@
+{
+  "name": "dsh-client-bindings",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workspace-to-executor binding store for DeepSeek Harness: owns the deployment-side client_binding storage domain and publishes the clientBindings service the subprocess dispatcher routes on.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

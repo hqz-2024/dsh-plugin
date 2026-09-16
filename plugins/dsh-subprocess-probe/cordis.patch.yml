@@ -1,0 +1,17 @@
+# dsh-subprocess-probe bundle patch — P0 spike only (plan-client-world §3).
+#
+# Mounts the probe: it publishes a fake `clientBindings` service so the
+# dispatcher's bound branch is exercised before P1 builds the real store, then
+# spawns once per configured cwd and leaves the routing decisions in the
+# dispatcher's trace file.
+- insert:
+    - id: subprocess-probe
+      name: 'dsh-subprocess-probe'
+      config:
+        # Workspaces (by title) reported as actively bound to an executor.
+        fakeBindingTitles: []
+        # Milliseconds to wait before spawning, so the dispatcher's periodic
+        # routing-index refresh has picked up the fake bindings.
+        settleMs: 2500
+        # One spawn per entry. `label` is only for the log line.
+        probes: []

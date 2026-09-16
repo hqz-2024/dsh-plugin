@@ -36,7 +36,7 @@ done
 PROFILE_DIR="$ROOT/profiles/web"
 PLUGINS=(dsh-remote-local folder-tree-sh-local dsh-usage-panel-local dsh-local-bridge dsh-video-studio-local)
 PRESETS=(finance-manager art-design business-sales procurement production hr-management rd-development)
-SKILLS=(sidecar dsh-development dsh-video-studio firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
+SKILLS=(sidecar dsh-development dsh-video-studio local-staging firecrawl adobe-illustrator-scripting defuddle json-canvas obsidian-cli obsidian-markdown obsidian-bases)
 
 step() { echo; echo "==> $1"; }
 ok()   { echo "    [ok] $1"; }
