@@ -584,7 +584,10 @@ async function callEnrolled(action, body) {
  * and a wrong-looking button is worse than a plain one.
  * @returns A URL to open, or `''` when this machine is not enrolled.
  */
+let webEntryResolved = false
+
 async function webEntryUrl() {
+	webEntryResolved = false
 	if (!enrollment.token) return ''
 	// Bounded, because the status page asks for this on every refresh: an unreachable
 	// server must leave the page responsive with the plain address rather than hanging
@@ -593,7 +596,10 @@ async function webEntryUrl() {
 		callEnrolled('web-entry', {}),
 		new Promise((resolve) => { const timer = setTimeout(() => resolve(undefined), 5000); if (typeof timer.unref === 'function') timer.unref() }),
 	])
-	if (answer?.ok === true && typeof answer.url === 'string' && answer.url !== '') return answer.url
+	if (answer?.ok === true && typeof answer.url === 'string' && answer.url !== '') {
+		webEntryResolved = true
+		return answer.url
+	}
 	if (answer?.error) console.error(`[executor] could not resolve a browser entry URL: ${String(answer.error)}`)
 	return httpBase(enrollment.server)
 }
@@ -745,10 +751,19 @@ async function refresh(){
     : '连不上服务器时，命令不会静默改到服务器上执行，而是明确报错。';
   $('openWeb').disabled = !s.webUrl;
   // The button carries a long one-shot URL (it includes the shell's launch token), so the
-  // hint shows the plain server origin a person recognises instead of that whole string.
+  // hint shows the plain server origin a person recognises instead of that whole string —
+  // and says whether this address can actually get in, which is the difference between a
+  // working button and "dsh web authentication required".
   let origin = s.webUrl || '';
   try { origin = new URL(s.webUrl).origin; } catch (e) { /* keep whatever it was */ }
-  $('webHint').textContent = s.webUrl ? ('将在浏览器打开：'+origin) : '配置完成后，用这个按钮打开工作界面。';
+  if (!s.webUrl) {
+    $('webHint').textContent = '配置完成后，用这个按钮打开工作界面。';
+  } else if (s.webEntryResolved) {
+    $('webHint').textContent = '将在浏览器打开：' + origin + '（已带上登录凭据，首次会让你登录一次账号）';
+  } else {
+    $('webHint').textContent = '将在浏览器打开：' + origin + '（只拿到服务器地址，没拿到登录凭据 —— 浏览器可能报「dsh web authentication required」。'
+      + '说明这台执行器比服务器旧，或服务器没应答；重新下载一次执行器分发包即可）';
+  }
   $('connectSummary').textContent = s.enrolled
     ? ('已配置：'+(s.username||'(未知账号)')+' @ '+(s.server||'-')+' —— 点这里可换服务器或重新登录')
     : '用账号登录这台服务器';
@@ -850,6 +865,10 @@ function startConfigServer(port) {
 						// that token belongs to one server process and a cached one goes stale
 						// the moment the server restarts.
 						webUrl: await webEntryUrl(),
+						// Whether that URL carries the shell's launch token. The page says so
+						// outright, because the difference is invisible in the address itself and
+						// otherwise shows up only as a refusal in the browser.
+						webEntryResolved,
 						// Computed on demand rather than cached at bind time, so the page
 						// reflects the directory as it is right now.
 						staging: [...held.entries()].map(([workspaceId, entry]) => ({
