@@ -1401,6 +1401,45 @@ and this machine has no equivalent
 
 
 
+### P5 三个真实软件端到端：现成的测试脚本（等你在客户端机器上跑）
+
+这三个场景要的是**客户端机器上真装着的软件**，我这边没有那台机器，所以把它们写成"你到机器前粘一次就能跑"的形式。每个都给出**该看到什么**（判据），而判据都落在"子进程自报的事实"上，不是界面上的一句话。
+
+前提：工作区（比如 `smbtest`）已绑定到那台机器，会话的工作目录在那个工作区里，提示词里能看到 `execution:world` 段。
+
+**① Blender —— 无头渲染/导出（`-b -P`）**
+
+```powershell
+# 让 agent 跑（它会先按 local-staging 把工程签出到本机暂存目录）：
+#   "在 smbtest 里用 Blender 无头模式把 scene.blend 导出成 OBJ，导出到工作区。"
+# 手工等效命令（把 <暂存> 换成配置页里那个暂存目录）：
+& "C:\Program Files\Blender Foundation\Blender 4.x\blender.exe" -b "<暂存>\scene.blend" --python-expr "import bpy;bpy.ops.wm.obj_export(filepath=r'<可见路径>\out.obj')"
+```
+**判据**：`out.obj` 出现在**服务器侧**的 `C:\dsh-workspaces\smbtest\`（用 `read` 工具能看到），且命令的 cwd 是 UNC 路径、`blender.exe` 是本机装的（不是服务器路径）。
+
+**② Photoshop（COM / ExtendScript）**
+
+```powershell
+$ps = New-Object -ComObject Photoshop.Application
+$doc = $ps.Open("<暂存>\工作.psd")          # 必须先在本地暂存目录，不要在共享上直接开
+$doc.ResizeImage(1920, 1080); $doc.Save(); $doc.Close()
+```
+**判据**：改过的 `.psd` **回写**到工作区（服务器侧文件大小/修改时间变了），暂存目录随后被清理；过程里**没有**对共享路径调用 `Open()` —— 这正是 `local-staging` skill 与 AGENTS.md 里那条"不要在资源管理器里双击共享上的大文件"要防的事。
+
+**③ Figma（Dev Mode MCP，走 `/client-relay`）**
+
+在客户端机器上：打开 Figma 桌面 App → 菜单里启用 **Dev Mode MCP server**（默认 `127.0.0.1:3845`）。然后在**服务器**这边验证转发：
+
+```powershell
+# 在服务器上（密钥在 profiles/web-client/cordis.patch.yml 的 relayTokens 里）
+Invoke-WebRequest "http://127.0.0.1:3080/client-relay/<密钥>/3845/mcp" -TimeoutSec 10
+```
+**判据**：返回 **200**（或 MCP 的协议响应），而不是 `502 connect ECONNREFUSED 127.0.0.1:3845` —— 后者正是"Figma 没开 MCP"时的样子，也是我们现在这条通道的常态（见 §1 跨机首跑）。
+
+> 三条的共同点：**判据都在"另一台机器上真的发生了什么"**，而不是"界面说了什么"。跑完把命令与结果贴回来，我按 §1 的方式留档。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
