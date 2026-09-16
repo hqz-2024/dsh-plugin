@@ -1094,6 +1094,23 @@ Compare-Object (Get-Content $env:TEMP\dump-web.txt) (Get-Content $env:TEMP\dump-
 
 
 
+### 客户端执行每次调用贵多少（§4.8 的执行路径那一半，本轮）
+
+计划 §4.8 要"一份基准，作为哪些负载适合 SMB 直用的判据"。其中 **SMB vs 本机盘** 那一半仍要客户端侧的数据（见 §3.6），但**执行路径的开销**这一半可以在这台机器上量出来，而且量法是干净的：
+
+探针新增 `spawn-latency`：在**同一个工作区**上跑同一段 `node -e` 子进程 8 次（绑定状态 → 走客户端），再到一个**未绑定**工作区上跑 8 次（走服务器本地 provider）。**两条路径的子进程跑在同一台机器上**，所以 CPU、磁盘、进程启动成本互相抵消 —— 差值就是**分派器 + WebSocket 往返本身**。
+
+| 路径 | min | **中位** | max | n |
+|---|---|---|---|---|
+| 客户端（经 dispatcher + WS） | 68 ms | **72 ms** | 78 ms | 8 |
+| 服务器（本地 provider） | 67 ms | **70 ms** | 75 ms | 8 |
+
+**结论：每次调用约 +2 ms**，而绝对值由子进程自己的启动时间主导（这段 `node -e` 就要 ~70 ms）。跨机时再加上一段 LAN 往返（有线网络亚毫秒级），所以"把命令发到用户电脑上跑"在延迟上不构成问题 —— **真正的成本在文件那一侧**（SMB 直用 vs 本机暂存，见 AGENTS.md 的 10MB 规则）。
+
+> 判读注意：这是**下界**，不是客户端机器上的实测；同机跑意味着它测的是传输开销，不含真实网络的 RTT、不含客户端机器更慢的 CPU、也不含 SMB 的文件 I/O。这三项要等 SUNDA 上的数据（§3.7 / P0-3）。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1212,7 +1229,7 @@ typeof pid: number value: 0
 | P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需在**用户机器**上跑（本机三者都没装，见 §1） |
 | **P5** | 补 `AGENTS.md` / `README.md` / 用户须知；`local_run` 降级为逃生口 | ✅ **已完成** |
 | **跨机** | 命令真的在**另一台机器**上执行 | ⛔ 见 §3.7 —— 唯一还缺的那类证据 |
-| §4.8 | 性能基准 | ❌ 未做（计划自己标了"未测，需补"） |
+| §4.8 | 性能基准 | 🟡 **一半已测**：客户端执行路径的每次调用开销（同机对照，中位 +2ms，见 §1）；**SMB 往返 vs 本机盘**那半仍要客户端侧数据（量具已就绪） |
 | §3.3 | `proc.stdin`、spill 文件 | ✅ **已验证**（stdin 曾因传输层丢字段 + executor 不关管道而挂死，已修；见 §1） |
 
 **剩下的缺口有一个共同前提**：P0-3、真实软件、跨机三项都需要**另一台机器上的动作**（SUNDA 或用户的工作机）。它们不是实现没做完，而是实现只能在目标环境里才验得动。见 §3.7。
@@ -1452,7 +1469,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 
 **判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
 
-> **最近一次（本轮，链路静默修复之后、fixture 已启动）**：62 行、`probe-complete`、`HUNG` 计数 **0**、失败项恰好是下面两条，关键值与下表逐项一致（`relay-sse` 200 + 三段到达 409/818/1228ms；`crash-inflight-spawn` 以 `rejected:` 开头）。同一份代码的**静默断链**变体也跑了两次，同样 62 行、同样两条失败。
+> **最近一次（本轮，加了 `spawn-latency` 之后、fixture 已启动）**：**63 行**（= 原来的 62 + `spawn-latency` 一行）、`probe-complete`、`HUNG` 计数 **0**、失败项仍然恰好是下面那两条，关键值与下表逐项一致。`spawn-latency` 只是**信息行**（它不设 `ok`），所以"恰好两条失败"这条判据不受它影响 —— 数值见 §1。
 
 | 允许失败的两条 | 为什么它们是"对的" |
 |---|---|
@@ -1471,6 +1488,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `termination` | `settledWithin15s` true、`grandchildAlive` **false** |
 | `crash-inflight-spawn` | `outcome` 以 `rejected:` 开头，`ms` 在几千以内 |
 | `crash-binding-active` | **true**（否则它下面那条不成立） |
+| `spawn-latency` | 信息行：客户端/服务器两条路径的中位数应当接近（同机对照下差几 ms，见 §1） |
 | `prompt-section-bound` / `unbound` | 长度 1463 / 0 |
 | `relay-sse` | `streamed` true，三个 `arrivals` 间隔约 400ms |
 | `relay-upstream-dead` | **502**，且错误文本含 `ECONNREFUSED` 与**确切端口**（3845 无人监听），不能是挂起或无理由的 502 |

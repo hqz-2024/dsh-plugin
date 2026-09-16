@@ -311,6 +311,45 @@ export function apply(ctx, config) {
 			serverPathWouldBe: serverCwd,
 		})
 
+		// ── 3a. What routing a command to the client costs per call (plan §4.8) ─
+		// Both paths run the same child on the same machine here, so CPU and disk
+		// cancel out: the difference between the two medians is the dispatcher plus
+		// WebSocket round trip **alone**. A real client machine adds its own LAN
+		// round trip (well under a millisecond on a wired LAN), so this is a lower
+		// bound, and it is the number to quote for "does the client world make my
+		// commands slower".
+		const timeSpawn = async (cwd) => {
+			const started = Date.now()
+			await ctx.subprocess.spawn({
+				argv: [process.execPath, '-e', IDENTITY_SCRIPT],
+				cwd,
+				stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
+				graceMs: 3000,
+			}).done
+			return Date.now() - started
+		}
+		const stats = (runs) => {
+			const sorted = [...runs].sort((a, b) => a - b)
+			return { samples: sorted.length, min: sorted[0], median: sorted[Math.floor(sorted.length / 2)], max: sorted[sorted.length - 1] }
+		}
+		try {
+			const unbound = ctx.get('workspaceRegistry')?.list().find((candidate) => candidate.title !== workspaceTitle)
+			const clientRuns = []
+			for (let index = 0; index < 8; index += 1) clientRuns.push(await timeSpawn(serverCwd))
+			const serverRuns = []
+			for (let index = 0; unbound !== undefined && index < 8; index += 1) serverRuns.push(await timeSpawn(unbound.path))
+			record({
+				step: 'spawn-latency',
+				note: 'same machine on both paths, so the gap is the client transport itself',
+				clientPath: serverCwd,
+				serverPath: unbound?.path ?? null,
+				client: stats(clientRuns),
+				server: serverRuns.length > 0 ? stats(serverRuns) : null,
+			})
+		} catch (error) {
+			record({ step: 'spawn-latency', error: String((error && error.message) || error) })
+		}
+
 		// ── 3b. argv[0] naming a path that only exists on the server ───────────
 		// The engine resolves some binaries in its own world and hands the absolute
 		// path straight to the seam. A machine holding the program elsewhere must
