@@ -20,8 +20,12 @@
 | **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面 | ❌ 未做 |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
 | **P2** | **权限一致性**（§2.1：执行机必须是会话账号自己绑定的那台） | ✅ 已验证（本轮，`DSH_SESSION_ID` 归属比对） |
+| **P2** | 终止按进程树、不留孤儿（`tasklist` 可证） | ✅ 已验证（本轮，孙进程用例 + 独立复核） |
+| **P2** | 断线语义（§4.6：在跑的调用有确定结局、不挂起） | ✅ 已验证（本轮，1964 ms 失败收场） |
+| **P2** | §4.5 executor 掉线时后续 spawn **明确失败**、绝不静默回落服务器 | ✅ 已验证（本轮，错误文本自己声明未回落） |
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；stdin / spill 未验证 | 🟡 部分 |
 | **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证 |
+| **P3** | crashtest：关 executor 时终端不挂死 | ✅ 已验证（本轮） |
 | **P5** | 暂存工作流：v1 提示词段 + 全局 skill | ✅ 机制已验证；三个真实软件端到端未做 |
 | **P4** | 本机 localhost 转发（`/client-relay`） | ✅ 已验证（含 SSE 流式与端口白名单）；Figma 端到端待真实环境 |
 
@@ -301,6 +305,38 @@ subprocess/src/index.ts:114     SubprocessSpawnSpec.env
 
 **交付形态与冒烟形态的差别（如实说明）**：冒烟用的临时组合额外带了 ① `subprocess-probe` harness、② 一个已知密码的 `admin` 账号播种、③ fixture 端口 38450。**这三样都没有进入交付的 `web-client`**（账号播种尤其不能上线）。交付形态是**单独验证**的：启动无错、索引 4 个工作区、绑定→路由翻转、以及上表五条门禁/认证判据全部复测通过。完整冒烟的可重跑载体仍是 `pilot-auth`。
 
+### 断线语义与终止树（§4.5 / §4.6，P2 与 P3 的验收项，本轮）
+
+复核计划时发现有三条**写明了的验收判据一直没有对应的实测**：P2 的"超时终止不留孤儿进程（`tasklist` 可证）"、P3 的"终端会话 crashtest（关 executor、断网）不挂死"、以及 §4.6 的断线语义。机制在代码里（executor 的 socket `close` 会杀掉本连接拥有的全部子进程与终端），但没验过。
+
+**终止树（P2）**：旧的终止用例只杀**直接子进程**，那区分不了"杀了子进程"和"杀了整棵树"。改成本身会再 spawn 一个**孙进程**并把自己的 pid 打到 stdout 的载荷，断言落在孙进程 pid 上：
+
+| 观察 | 值 |
+|---|---|
+| 载荷 | 子进程 spawn 孙进程（`setTimeout 600000`）并打印孙进程 pid |
+| 终止后 | `settledWithin15s: true`，**6179 ms** |
+| 孙进程 pid | 27904 |
+| 探针自查 | `grandchildAlive: false` |
+| **独立复核（`tasklist`）** | pid 27904 **不存在** |
+
+两处独立取值一致，才说明终止是**按进程树**做的（executor 用 `taskkill /PID /T /F`）。只杀直接子进程的话，孙进程会活着而"settled"照样为真。
+
+**断线（§4.5 / §4.6）**：harness 在一个子进程与一个 ConPTY 终端都活着时杀掉 executor。
+
+| 观察 | 值 |
+|---|---|
+| 武装时刻的路径 | `宝单科技资料=client` |
+| 在跑的 spawn | `rejected: remote process proc-… lost its executor connection before exit`，**1964 ms** |
+| 开着的终端 `terminate()` | `terminated`，**0 ms** |
+| 后续 spawn 时的绑定状态 | **`active: true`** |
+| 后续 spawn | **`ok:false`** — `client-transport: no executor is connected for 'probe-primary'; local execution is unavailable and the command was not run on the server instead` |
+
+在跑的调用以**确定结局**收场（失败，不是挂起），终端不挂死 —— 这两条各自对应 §4.6 与 P3 的 crashtest。
+
+**`crash-binding-active: true` 是让最后两行成立的对照项**：绑定当时仍然活着，所以"改到服务器执行"是一个真实存在的诱惑，而代码拒绝了它。错误文本自己把拒绝说出来了（`was not run on the server instead`）—— 这正是 §4.5 要的：如果静默回落到服务器，agent 会以为命令跑在用户电脑上。
+
+**方法上的一个坑（值得记）**：我起初想证"executor 死了也不留孤儿"，两次都得到**假通过** —— 第一次 `job_kill` 把整个后台作业树一起收了；第二次只按 pid 杀 executor，母进程（pwsh 包装）退出时又把树带走了。两次都不是 executor 自己的清理在起作用。回头重读判据才发现：P2 说的是**超时终止**（executor 还活着时的终止阶梯），不是 executor 之死。改按孙进程测，才既打中真正的判据、又能被独立复核。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -400,6 +436,24 @@ typeof pid: number value: 0
 
 顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它的完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
 
+### 3.7 按计划的验收判据逐条核对后，仍缺的项（本轮复核）
+
+拿 `plan-client-world.md` 里**写明的验收判据**逐条对账，而不是凭印象。本轮补掉的是 §4.5 / §4.6、P2 的终止树与 P3 的 crashtest（证据见 §1）。仍然缺的：
+
+| 判据出处 | 判据 | 状态 |
+|---|---|---|
+| P0 验收 | SMB 双向可见 | ⛔ 阻塞（需管理员 + 第二台设备） |
+| P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | ⛔ 阻塞（依赖 SMB） |
+| P3 验收 | **python REPL** 可用（已验的是 PowerShell） | 🟡 未做 |
+| P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失） |
+| P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP |
+| P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需真实软件 |
+| **P5** | **补 `AGENTS.md` / `README.md` / 用户须知**（含"不要在 SMB 上直接双击大文件用 PS 打开"）；`local_run` 降级为逃生口 | ❌ **纯文档，未做** |
+| §4.8 | 性能基准 | ❌ 未做（计划自己标了"未测，需补"） |
+| §3.3 | `proc.stdin`、spill 文件 | 🟡 已实现未测 |
+
+其中 **P5 的文档那条是唯一完全不依赖外部条件的缺口**，下一轮做。P0-3 的 Office 与"断网"两项都真实需要 P0-2 先落地。
+
 ### 3.6 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
 
 `plan.md` §"会话归属"与 §"git pull 评估"写着：本部署有**源码级本地修改** `packages/api/session-controller` 的 `scopeUser` / `sessionOwnership`。本轮核对：**该修改当前不存在**。
@@ -490,6 +544,21 @@ node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-probe\fixtures\local-service.
 ```
 
 读结果时看 `perm-*` 四步的 `executedOn`（client/server）与 `parsed.cwd`，以及 `dispatch-trace.jsonl` 里的 `foreign-session-fallback`。
+
+### 断线 / 终止树用例（同一 profile，需要外部在正确的时刻动手）
+
+`pilot-auth` 的 probe 末尾有一段由 `crashMarker` 打开的断线场景：它先武装一个客户端长子进程 + 一个 ConPTY 终端，然后**写出 marker 文件**，等外部把 executor 杀掉。marker 文件是必需的 —— 这一刀必须从进程外砍。
+
+```powershell
+# 起 pilot-auth + executor 之后，轮询 marker，一出现就杀 executor
+$m = "$env:USERPROFILE\.dsh\profiles\pilot-auth\crash-armed.marker"
+while (-not (Test-Path $m)) { Start-Sleep -Milliseconds 400 }
+# 此时杀 executor（job_kill，或按 pid Stop-Process），然后等同一次运行跑完
+```
+
+看 `crash-inflight-spawn`（应为 `rejected: … lost its executor connection`，毫秒级）、`crash-terminal-terminate`（应为 `terminated`）、**`crash-binding-active`（必须为 `true`，否则下面那条不成立）**、`crash-offline-spawn`（应为 `ok:false` 且错误里含 `was not run on the server instead`）。
+
+终止树用例在**第 4 步**（不需要杀 executor）：看 `termination` 的 `grandchildPid` 与 `grandchildAlive`，再用 `Get-CimInstance Win32_Process -Filter "ProcessId = <pid>"` 独立复核一次。
 
 ### 跑 `web-client`（上线组合复测，不需要 probe）
 

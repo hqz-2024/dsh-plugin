@@ -21,7 +21,7 @@
  *
  * Delete this package with its pilot bundle entry once v1 is signed off.
  */
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync } from 'node:fs'
 
 export const name = 'dsh-subprocess-probe'
 export const inject = ['subprocess', 'clientBindings', 'systemPrompt']
@@ -61,6 +61,13 @@ export function apply(ctx, config) {
 	 */
 	const ownSession = String(config?.ownSession ?? '')
 	const foreignSession = String(config?.foreignSession ?? '')
+	/**
+	 * When set, the probe ends with the plan §4.5 / §4.6 disconnect scenario: it
+	 * arms an in-flight child and an open terminal, writes this marker file, and
+	 * then waits for an external harness to kill the executor. A marker file is
+	 * used because the kill must come from outside this process.
+	 */
+	const crashMarker = typeof config?.crashMarker === 'string' ? config.crashMarker : ''
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -323,22 +330,42 @@ export function apply(ctx, config) {
 			record({ step: 'terminal-interactive', ok: false, error: String((error && error.message) || error) })
 		}
 
-		// ── 4. Termination settles instead of hanging ─────────────────────────
+		// ── 4. Termination settles instead of hanging (plan P2 acceptance) ────
+		// P2 requires that timeout termination leave no orphan processes, provable
+		// with `tasklist`. Killing only the direct child would leave the child's own
+		// child running and still look "settled", so the payload spawns a GRANDCHILD
+		// and prints its pid: the pid is what the assertion actually tests.
 		const startedAt = Date.now()
 		try {
+			const payload = 'const {spawn}=require("node:child_process");'
+				+ 'const g=spawn(process.execPath,["-e","setTimeout(()=>{},600000)"],{stdio:"ignore"});'
+				+ 'process.stdout.write(String(g.pid));'
+				+ 'setTimeout(()=>{},600000)'
 			const long = ctx.subprocess.spawn({
-				argv: [process.execPath, '-e', 'setTimeout(() => {}, 120000)'],
+				argv: [process.execPath, '-e', payload],
 				cwd: serverCwd,
 				stdio: { stdin: 'ignore', stdout: { maxBytes: 4096 }, stderr: { maxBytes: 4096 } },
 				graceMs: 3000,
 			})
-			await sleep(700)
+			await sleep(1500)
+			const grandchildPid = Number((long.collected.stdout?.readFrom(0).text ?? '').trim())
 			long.terminate()
 			const settled = await Promise.race([
 				long.done.then(() => true, () => true),
 				sleep(15000).then(() => false),
 			])
-			record({ step: 'termination', settledWithin15s: settled, ms: Date.now() - startedAt })
+			await sleep(1500)
+			let grandchildAlive = null
+			if (Number.isInteger(grandchildPid) && grandchildPid > 0) {
+				try { process.kill(grandchildPid, 0); grandchildAlive = true } catch { grandchildAlive = false }
+			}
+			record({
+				step: 'termination',
+				settledWithin15s: settled,
+				ms: Date.now() - startedAt,
+				grandchildPid: Number.isInteger(grandchildPid) ? grandchildPid : null,
+				grandchildAlive,
+			})
 		} catch (error) {
 			record({ step: 'termination', error: String((error && error.message) || error) })
 		}
@@ -568,6 +595,83 @@ export function apply(ctx, config) {
 			record({ step: 'auth-bind-unknown-workspace', status: bogus.status, body: await bogus.json() })
 		} catch (error) {
 			record({ step: 'auth-bind-unknown-workspace', error: String((error && error.message) || error) })
+		}
+
+		// ── 7. Disconnect semantics (plan §4.5 / §4.6, and the P3 crashtest) ──
+		// The executor is killed from outside while a child and a terminal are live.
+		// §4.6 requires the in-flight call to reach a definite end (failure, not a
+		// hang) and §4.5 requires a later call on a still-bound workspace to FAIL
+		// LOUDLY rather than quietly run on the server -- a silent fallback would
+		// tell the agent its command ran on the user's machine when it did not.
+		if (crashMarker) {
+			const crashClaim = await bindings.claim({
+				workspaceId,
+				workspaceTitle,
+				username,
+				machine: 'probe-executor',
+				visiblePath,
+				stagingDir: 'C:\\dsh-staging',
+			})
+			if (crashClaim.ok) {
+				dispatcher.transport.notifyBindApply(username, crashClaim.binding, bindings.heartbeatMs)
+			}
+			await sleep(reindexMs)
+
+			let long
+			try {
+				long = ctx.subprocess.spawn({
+					argv: [process.execPath, '-e', 'setTimeout(() => {}, 120000)'],
+					cwd: serverCwd,
+					stdio: { stdin: 'ignore', stdout: { maxBytes: 4096 }, stderr: { maxBytes: 4096 } },
+					graceMs: 3000,
+				})
+			} catch (error) {
+				record({ step: 'crash-long-spawn', error: String((error && error.message) || error) })
+			}
+
+			let terminal
+			try {
+				terminal = await ctx.subprocess.spawnTerminal({
+					argv: ['powershell.exe', '-NoLogo', '-NoProfile'],
+					cwd: serverCwd,
+					rows: 30,
+					cols: 100,
+					graceMs: 5000,
+				})
+			} catch (error) {
+				record({ step: 'crash-terminal-spawn', error: String((error && error.message) || error) })
+			}
+
+			record({
+				step: 'crash-armed',
+				hasChild: long !== undefined,
+				hasTerminal: terminal !== undefined,
+				routes: (dispatcher.routes ?? []).map((route) => `${route.title}=${route.target}`),
+			})
+			try { writeFileSync(crashMarker, String(Date.now())) } catch { /* harness may poll it */ }
+
+			if (long) {
+				const startedAt = Date.now()
+				const outcome = await Promise.race([
+					long.done.then(() => 'settled', (error) => 'rejected: ' + String(error?.message ?? error)),
+					sleep(30000).then(() => 'HUNG'),
+				])
+				record({ step: 'crash-inflight-spawn', outcome, ms: Date.now() - startedAt })
+			}
+
+			if (terminal) {
+				const startedAt = Date.now()
+				const outcome = await Promise.race([
+					terminal.terminate().then(() => 'terminated', (error) => 'rejected: ' + String(error?.message ?? error)),
+					sleep(15000).then(() => 'HUNG'),
+				])
+				record({ step: 'crash-terminal-terminate', outcome, ms: Date.now() - startedAt })
+			}
+
+			// The binding must still be live here, or the next spawn would legitimately
+			// run on the server and the check below would prove nothing.
+			record({ step: 'crash-binding-active', active: !!bindings.activeFor(workspaceId) })
+			await attemptSpawn('crash-offline-spawn', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
 		}
 
 		record({ event: 'probe-complete' })

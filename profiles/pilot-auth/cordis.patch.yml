@@ -89,4 +89,7 @@
     # that file once, so it must exist by then.
     ownSession: sess-occupant-fixture
     foreignSession: sess-foreign-fixture
+    # Plan §4.5/§4.6 disconnect scenario: the probe arms a live child + terminal,
+    # writes this marker, and the harness then kills the executor.
+    crashMarker: !!js dshHomePath('profiles/pilot-auth/crash-armed.marker')
     resultPath: !!js dshHomePath('profiles/pilot-auth/probe-result.jsonl')
