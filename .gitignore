@@ -69,5 +69,8 @@ plugins/*/.git/
 profiles/pilot*/dispatch-trace.jsonl
 profiles/pilot*/probe-result.jsonl
 profiles/pilot*/crash-armed.marker
+# executor state文件含测试 token，链路中继的开关文件是运行时状态
+profiles/pilot*/executor-state*.json
+profiles/pilot*/link-state.txt
 profiles/web-client/dispatch-trace.jsonl
 profiles/web-client/probe-result.jsonl

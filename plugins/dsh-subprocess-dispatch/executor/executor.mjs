@@ -46,6 +46,8 @@ import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.2.0'
+/** How long a WebSocket handshake may stay unanswered before this side retries. */
+const HANDSHAKE_MS = 15000
 const DSH_ENV_PREFIX = 'DSH_'
 const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
 
@@ -736,6 +738,50 @@ const held = new Map()
 
 let heartbeatTimer
 
+/**
+ * When the server last said anything on the current connection, and how long it
+ * may stay quiet before this side gives up.
+ *
+ * A link that stops delivering — cable pulled, Wi-Fi dropped, VPN renegotiating
+ * — sends no FIN and no RST, so `close` never fires and an open socket proves
+ * nothing. The only liveness signal that survives that is message-level: the
+ * server pings, and this side treats a gap longer than the budget it was told
+ * as a dead link. The budget comes from the server (`ping.silenceMs`), which
+ * derives it from its own binding grace, so the machine that would otherwise
+ * keep a workspace it no longer owns stops first.
+ */
+let lastContactAt = 0
+let silenceBudgetMs = 30000
+let silenceTimer
+
+/**
+ * End everything the current connection owned.
+ *
+ * Two paths reach here: the socket closed, or the server stopped answering.
+ * Plan §4.6 — every process this connection owned is unreachable once the link
+ * is gone, so no orphan may outlive it. Bindings go too: this machine must stop
+ * claiming to hold what it can no longer serve, because the server may already
+ * have handed that workspace to another machine, and two writers on one share
+ * is the failure the whole client world exists to avoid.
+ */
+function teardownConnection() {
+	for (const [procId, entry] of running) killTree(procId, entry.child.pid, true)
+	running.clear()
+	for (const [, entry] of terminals) {
+		try { entry.term.kill() } catch { /* already gone */ }
+	}
+	terminals.clear()
+	for (const upstream of httpRequests.values()) {
+		try { upstream.destroy() } catch { /* already settled */ }
+	}
+	httpRequests.clear()
+	held.clear()
+	if (heartbeatTimer) clearInterval(heartbeatTimer)
+	heartbeatTimer = undefined
+	if (silenceTimer) clearInterval(silenceTimer)
+	silenceTimer = undefined
+}
+
 function sendHeartbeats(socket) {
 	for (const workspaceId of held.keys()) {
 		send(socket, { type: 'bind.heartbeat', workspaceId })
@@ -1016,16 +1062,72 @@ function connect(server, token, label) {
 	const url = endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
 	const socket = new WebSocket(url)
 	activeSocket = socket
+
+	/**
+	 * Sever this link and reconnect, without waiting for a `close` that a silent
+	 * link never delivers. Everything it owned stops first, so nothing this
+	 * machine was running outlives its connection to the server.
+	 */
+	const abandon = (reason) => {
+		if (activeSocket !== socket) return
+		activeSocket = null
+		clearTimeout(handshakeTimer)
+		teardownConnection()
+		console.log(`[executor] ${reason}`)
+		try { socket.close() } catch { /* already closing */ }
+		scheduleReconnect(server, token, label)
+	}
+
+	/**
+	 * A handshake the peer accepts but never answers — a proxy holding the
+	 * connection open, a captive portal, a NAT that swallows the upgrade —
+	 * delivers neither `open` nor `error`, so the retry loop would stall on a
+	 * socket that is neither working nor failing, and nothing would be logged.
+	 * The platform does eventually give up, but the bound is its own and opaque;
+	 * this deadline is one this program states.
+	 */
+	const handshakeTimer = setTimeout(() => {
+		if (activeSocket !== socket || socket.readyState === 1) return
+		abandon(`handshake with ${server} did not complete within ${HANDSHAKE_MS}ms`)
+	}, HANDSHAKE_MS)
+
 	socket.addEventListener('open', () => {
+		if (activeSocket !== socket) {
+			// A socket this side already gave up on must not register itself: the
+			// server treats a new connection as this account's current one and
+			// would retire the link that is actually working.
+			try { socket.close() } catch { /* already closing */ }
+			return
+		}
+		clearTimeout(handshakeTimer)
 		reconnectAttempt = 0
+		lastContactAt = Date.now()
 		console.log('[executor] connected to', server)
 		lastHello = { version: VERSION, label, host: hostname(), platform: platform(), release: release() }
 		send(socket, { type: 'hello', ...lastHello })
+		// One second is finer than any budget the server hands out (its pings are
+		// seconds apart), so a gap this observes is never the timer's granularity.
+		if (!silenceTimer) {
+			silenceTimer = setInterval(() => {
+				if (activeSocket !== socket) return
+				const silentFor = Date.now() - lastContactAt
+				if (silentFor <= silenceBudgetMs) return
+				abandon(`no word from ${server} for ${silentFor}ms (budget ${silenceBudgetMs}ms) — the link is dead; stopped everything it owned`)
+			}, 1000)
+		}
 	})
 	socket.addEventListener('message', (event) => {
+		lastContactAt = Date.now()
 		let message
 		try { message = JSON.parse(String(event.data)) } catch { return }
 		switch (message?.type) {
+			case 'ping': {
+				// The server's keepalive, and the only place this side learns how
+				// long it may stay quiet before the machine counts as gone.
+				if (Number.isInteger(message.silenceMs) && message.silenceMs > 0) silenceBudgetMs = message.silenceMs
+				send(socket, { type: 'pong', at: message.at ?? null })
+				break
+			}
 			case 'bind.apply': {
 				const intervalMs = Number.isInteger(message.heartbeatMs) ? message.heartbeatMs : 15000
 				held.set(String(message.workspaceId), { visiblePath: message.visiblePath, stagingDir: message.stagingDir })
@@ -1107,32 +1209,20 @@ function connect(server, token, label) {
 		}
 	})
 	socket.addEventListener('close', () => {
-		// Every child this connection owned is now unreachable; end them so no
-		// orphan survives a disconnect (plan §4.6). Bindings go with it: the
-		// server expires them on the heartbeat clock, and this side stops
-		// claiming to hold what it can no longer serve.
-		for (const [procId, entry] of running) killTree(procId, entry.child.pid, true)
-		running.clear()
-		for (const [procId, entry] of terminals) {
-			try { entry.term.kill() } catch { /* already gone */ }
-		}
-		terminals.clear()
-		for (const [requestId, upstream] of httpRequests) {
-			try { upstream.destroy() } catch { /* already settled */ }
-			void requestId
-		}
-		httpRequests.clear()
-		held.clear()
-		if (heartbeatTimer) {
-			clearInterval(heartbeatTimer)
-			heartbeatTimer = undefined
-		}
+		// A socket that a newer connection already replaced must not tear the
+		// live one down: after a link loss this side reconnects while the old
+		// socket is still open, and its `close` arrives later — if at all.
+		if (activeSocket !== socket) return
+		activeSocket = null
+		teardownConnection()
 		console.log('[executor] disconnected')
 		scheduleReconnect(server, token, label)
 	})
 	socket.addEventListener('error', (error) => {
 		console.error('[executor] error:', String(error?.message ?? error))
 		// A failed handshake may deliver only this event, so it schedules too.
+		if (activeSocket !== socket) return
+		clearTimeout(handshakeTimer)
 		scheduleReconnect(server, token, label)
 	})
 }

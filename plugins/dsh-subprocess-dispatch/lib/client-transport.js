@@ -419,6 +419,12 @@ export class ClientTransport {
 		this.executorEntry = fileURLToPath(new URL('../executor/executor.mjs', import.meta.url))
 		/** Largest request body the relay will carry; MCP payloads are small JSON. */
 		this.relayBodyLimit = Number.isInteger(config?.relayBodyLimit) ? config.relayBodyLimit : 8 * 1024 * 1024
+		/**
+		 * How often this side tells a connected executor it is still here. The
+		 * gap that counts as a dead link is derived from it and from the binding
+		 * grace, and is handed to the executor with every ping.
+		 */
+		this.keepaliveMs = Number.isInteger(config?.keepaliveMs) ? config.keepaliveMs : 3000
 		/** Set by the dispatcher: replay live bindings onto a (re)connected account. */
 		this.onConnect = undefined
 		this.server = undefined
@@ -443,19 +449,30 @@ export class ClientTransport {
 			// One executor per account: a second connection supersedes the first,
 			// and the superseded connection's processes are settled as failed.
 			if (previous) this.dropConnection(username, 'superseded by a newer connection')
-			this.connections.set(username, { socket, host: null, platform: null })
+			const connection = { socket, host: null, platform: null, lastMessageAt: Date.now(), lastPingAt: 0 }
+			this.connections.set(username, connection)
 			this.ctx.logger?.info?.(`[client-transport] executor connected for ${username}`)
 			// A reconnecting machine must be told which bindings it still holds:
 			// the binding outlives the socket, and without this it would sit idle
 			// while the server kept routing work to it.
 			void this.onConnect?.(username)
-			socket.on('message', (raw) => this.onMessage(username, raw))
+			socket.on('message', (raw) => {
+				// Every frame counts as a sign of life, whatever it carries: the
+				// keepalive deadline is only meaningful if ordinary traffic
+				// refreshes it too.
+				connection.lastMessageAt = Date.now()
+				this.onMessage(username, raw)
+			})
 			socket.on('close', () => {
 				if (this.connections.get(username)?.socket === socket) this.dropConnection(username, 'socket closed')
 			})
 			socket.on('error', () => { /* the close event owns cleanup */ })
 		})
 		this.wss = wss
+		// A short tick, not the ping period: the period follows the binding grace,
+		// so a deployment that shortens its grace gets faster pings without a
+		// restart, and one that lengthens it does not get a longer blind spot.
+		this.keepaliveTimer = setInterval(() => this.keepalive(), 250)
 		this.disposer = this.ctx.webServer.registerUpgrade({
 			kind: 'exact',
 			path: '/executor',
@@ -1001,6 +1018,42 @@ export class ClientTransport {
 		}
 	}
 
+	/**
+	 * One keepalive round: tell every connected executor this server is still
+	 * here, and retire the ones that have stopped answering.
+	 *
+	 * `close` is not a liveness signal. A link that stops delivering — cable
+	 * pulled, Wi-Fi dropped, VPN renegotiating — sends no FIN and no RST, so the
+	 * socket stays open at both ends indefinitely. Without a message-level
+	 * deadline the server keeps waiting on children it can no longer reach (plan
+	 * §4.6 requires every call to reach a definite end), while the binding it has
+	 * already expired is handed to another machine whose client is still running
+	 * the previous commands against the same share.
+	 *
+	 * The deadline sits below the binding grace on purpose: the machine that
+	 * would otherwise keep a workspace it no longer owns gives up first, so its
+	 * processes stop before anyone else can be given that workspace.
+	 */
+	keepalive() {
+		const now = Date.now()
+		const graceMs = this.ctx.get('clientBindings')?.graceMs
+		const budget = Number.isInteger(graceMs) && graceMs > 0 ? graceMs : this.keepaliveMs * 3
+		const silenceMs = Math.max(1000, Math.min(this.keepaliveMs * 3, Math.floor(budget / 2)))
+		const pingMs = Math.max(250, Math.min(this.keepaliveMs, Math.floor(silenceMs / 3)))
+		for (const [username, connection] of [...this.connections]) {
+			const silentFor = now - connection.lastMessageAt
+			if (silentFor > silenceMs) {
+				this.dropConnection(username, `executor went silent for ${silentFor}ms (budget ${silenceMs}ms)`)
+				continue
+			}
+			if (now - connection.lastPingAt < pingMs) continue
+			connection.lastPingAt = now
+			try {
+				connection.socket.send(JSON.stringify({ type: 'ping', at: now, silenceMs }))
+			} catch { /* the close event owns cleanup */ }
+		}
+	}
+
 	/** End one account's connection and settle every process it still owned. */
 	dropConnection(username, reason) {
 		const connection = this.connections.get(username)
@@ -1250,6 +1303,8 @@ export class ClientTransport {
 
 	/** Terminate every remote process, then release the endpoint. */
 	async dispose() {
+		if (this.keepaliveTimer) clearInterval(this.keepaliveTimer)
+		this.keepaliveTimer = undefined
 		for (const username of [...this.connections.keys()]) this.dropConnection(username, 'transport disposing')
 		try { this.relayDisposer?.() } catch { /* already released */ }
 		try { this.adminDisposer?.() } catch { /* already released */ }

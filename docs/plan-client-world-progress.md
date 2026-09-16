@@ -24,6 +24,7 @@
 | **P2** | 终止按进程树、不留孤儿（`tasklist` 可证） | ✅ 已验证（本轮，孙进程用例 + 独立复核） |
 | **P2** | 断线语义（§4.6：在跑的调用有确定结局、不挂起） | ✅ 已验证（本轮，1964 ms 失败收场） |
 | **P2** | §4.5 executor 掉线时后续 spawn **明确失败**、绝不静默回落服务器 | ✅ 已验证（本轮，错误文本自己声明未回落） |
+| **P2/P3** | **静默断链**（不发 FIN/RST 的掉网，而非杀进程）：在飞调用有确定结局、客户端停掉自己的进程、不留下"两边都以为在工作区里" | ✅ 已复现三种失败并修复（本轮，见 §1） |
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；初始 stdin 与 spill **本轮已验证**（stdin 曾是真 bug，见 §1） | ✅ 该组已清 |
 | **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证（**Ctrl-C 与信号拒绝是后来才真测的**，见 §1） |
 | **P3** | crashtest：关 executor 时终端不挂死 | ✅ 已验证（本轮） |
@@ -935,6 +936,80 @@ tool/result  "C:\\dsh-executor-root\r\nDESKTOP-LCLS51R\r\n"   isError=false
 
 
 
+### 链路静默中断：三种"进程没死，但机器已经联系不上"的失败（本轮，已复现并修复）
+
+**此前的全部断线证据都是"杀掉 executor 进程"**。杀进程会关掉 TCP 连接，两端都能从 `close` 得知。但计划 §4.5/§4.6 说的"掉线"包含另一种情形：**链路自己不送字节了**（拔网线、Wi-Fi 掉、VPN 重协商）——不发 FIN 也不发 RST，两个 socket 都停在 ESTABLISHED，于是**任何挂在 `close` 事件上的存活性判断都是聋的**。§3.6 里"P3 验收：'断网'（不只是关 executor）"此前正是缺这一条。
+
+量具：`~/.dsh/link-proxy.mjs` —— 一个文件控制开关的 TCP 中继。控制文件写 `cut` 时，**两条连接保持 ESTABLISHED，双向字节全部丢弃**。这就是静默形态，且能在一台机器上复现。
+
+**复现（修复前）**：服务器 `pilot-auth`(3084)，executor 走中继连上来，探针的 crash 段照常武装一个活子进程 + 一个终端，然后**切断链路**（而不是杀 executor）：
+
+| 观察 | 值 | 含义 |
+|---|---|---|
+| `crash-inflight-spawn` | `HUNG`，ms=**30010** | §4.6 被违反：这次调用**始终没有到达确定结局** |
+| `crash-binding-active`（客户端仍在跑） | **false** | 服务器已按 20s 宽限期把绑定判死 |
+| 客户端子进程 pid 26048 / 终端 pid 7276 | +34s **仍活着** | 那台机器还在为一个它已经不再持有的工作区执行命令 |
+| `crash-offline-spawn` | `boundTarget: server`，cwd `C:\Users\bestarc\Desktop\宝单科技资料` | 同一个工作区**同时**被"服务器"和"一台还没察觉的客户端"占用 |
+| 恢复链路后 | `bind.drop … not-held` | 客户端要等链路回来才知道真相，**而且知道了也没停自己的子进程** |
+
+**根因**：`close` 不是存活性信号。客户端唯一的断线处理挂在 `close` 上，服务器的 `dropConnection` 也挂在 socket 的 `close` 上；而绑定存储自己的心跳钟（宽限 20s）**照常**把绑定判死 —— 于是两端对"这个工作区归谁"给出了不同答案，其中一个还在写同一份文件。
+
+**修法（两端对称，都落在各自的组合里）**：
+
+- **服务器** `lib/client-transport.js`：给每条连接加 keepalive —— 每 `keepaliveMs`（配置项，默认 3000）发 `{type:'ping', at, silenceMs}`，其中 `silenceMs = min(keepaliveMs*3, graceMs/2)`，`graceMs` 读自 `clientBindings`。**它永远小于宽限期**，所以"否则会继续占着工作区的那台机器"先停手。任何入站帧刷新 `lastMessageAt`；静默超过预算的连接走既有的 `dropConnection`，它会结算该账号所有在飞句柄。
+- **客户端** `executor/executor.mjs`：收到 `ping` 回 `pong`，并**采纳 ping 带来的 `silenceMs`**（不自己假设数字），连接期间跑 1s 看门狗；超预算即主动切断：杀子进程/终端/转发请求、清空 held 绑定、关 socket、重连。
+- 两端共用同一段清理（客户端抽成 `teardownConnection()`），并且**都加了"过期 socket 不得拆掉在用的那条连接"的守卫**（`if (activeSocket !== socket) return`）—— 这条守卫是必需的，因为客户端现在会在旧 socket 仍然开着的时候就重连。
+
+**验证（同一把刀，同一段探针）**：
+
+| 观察 | 修复前 | 修复后 |
+|---|---|---|
+| 静默链路上的在飞调用 | `HUNG` 30010ms | `rejected: … lost its executor connection before exit`，**9386ms** |
+| 客户端子进程 / 终端 | +34s 仍活着 | +14s 已经没了 |
+| 客户端对绑定的看法 | 一直held（直到链路恢复） | `heldShares: ''`，在 **9872ms** 主动放手，日志写明用的是服务器给的预算（`budget 9000ms`） |
+| 窗口期内新起的进程 | 静默落到服务器执行 | `ok:false` —— "no executor is connected … was not run on the server instead"（§4.5） |
+| 恢复 | 重连成功 | 重连成功，`connected=True`、`held=''`（没有把陈旧绑定带回来） |
+
+> 判读要点：`no word from ws://… for 9872ms (budget 9000ms)` 这行日志**同时**证明了耦合关系本身 —— 预算不是客户端猜的，是服务器在 ping 里给的。
+
+**但上面那个数字证明不了它来自 `graceMs`**：`keepaliveMs*3` 与 `min(…, graceMs/2)` 在默认值下**都是 9000**，两条路径给出同一个数，观察不出差别。所以另外做了一次**能把两条路径分开**的实验：把 `pilot-auth` 的 `graceMs` 临时改成 `8000`（ping 周期随之降为 ~1333ms），重启后同样切断链路，客户端日志变成：
+
+```
+[executor] no word from ws://127.0.0.1:3092/executor for 4337ms (budget 4000ms) — the link is dead
+```
+
+**4000 = floor(8000/2)**，只可能来自 `graceMs` 那条路径（回落值是 9000）。改完已把 profile 复原（`graceMs: 20000`，`git status` 里该文件无改动）。这条实验的价值在于：**它证伪了"数字只是巧合"这个解释**。
+
+**同一族的第二个发现：握手被接受、却永远不被回答。** 断链期间客户端的重连尝试被中继在 TCP 层**接受**了，然后就没有下文 —— 既没有 `open` 也没有 `error`。重试循环于是**静默停在那里**，直到平台自己那个不透明的超时把它踹掉（本次实测恢复用了约 45s，等待期间一行日志都没有）。这条路径在真实网络里并不罕见（代理/门户/NAT 接受了连接却不转发升级请求）。已加一个**我们自己声明的**期限 `HANDSHAKE_MS = 15000`：超时即放弃本次尝试并继续重试，并留下日志：
+
+```
+[executor] handshake with ws://127.0.0.1:3092/executor did not complete within 15000ms
+[executor] disconnected — retrying in 2000ms (attempt 2)
+[executor] connected to ws://127.0.0.1:3092/executor
+```
+
+顺带补一条：`open` 处理里现在会拒绝登记**自己已经放弃过**的 socket —— 否则服务器会把这条迟到的连接当成该账号的当前连接，从而**把真正在工作的那条顶掉**（每账号一条连接的设计）。
+
+**没有做成配置项的部分**：`silenceMs` 是服务器从 `graceMs` 推导后**随每次 ping 发下去**的，客户端不假设任何数字；tick 固定 250ms、ping 周期每轮现算，所以部署改了宽限期不需要重启，两端预算也不会各自漂移。
+
+**回归**：见 §7 A 段（本轮用修复后的代码重跑，判据与关键值全部不变，且 `HUNG` 为 0）。
+
+### 一条我差点写进文档的"计划修正"：`--host <局域网 IP>` 其实也不行（本轮，实测否掉）
+
+读 `packages/bundle/web-app/src/startup.ts:74` 时看到，`--host` 的拒绝是**字面量比较**：`if (options.host === '0.0.0.0')`。于是我先得出"只有 `0.0.0.0` 被拒，填具体局域网地址就能让旁路服务器监听在网卡上，跨机验证不必碰 3080"。**实测否掉了**：
+
+```powershell
+pnpm dsh --profile pilot-auth --port 3085 --host 192.168.28.239
+# → dsh: plugin tree failed to load: … invalid config:
+#     $.host expected "127.0.0.1" | "0.0.0.0" but got "192.168.28.239" (at host)
+```
+
+**机制**：命令行那一层确实放行，但 `@deepseek-ai/dsh-host-webserver` 自己的配置 schema 是 `host: '127.0.0.1' | '0.0.0.0'` —— 它在装载期大声报错。所以 §3.7 的约束 ① **成立，而且理由更硬**：webserver 接受的**唯一**非回环值就是 `0.0.0.0`，而那个值被命令行刻意拒绝。
+
+**结论不变、路径收窄**：让服务器直接监听局域网**只有两条路** —— 改引擎，或在某个 profile 里把 `webserver` 那一行的 `config.host` 直接写成 `0.0.0.0`。后者是**绕过一道刻意设置的安全闸门**（那道闸门的原话就是要避免把远程代码执行暴露到网络），所以**本方案不做**；受支持的路只有已然在跑的反向代理（caddy 8443 → 3080），跨机验证因此必须落在真实拓扑上（即上线）。
+
+> 记这条的目的是**把一次差点发生的错误修正钉住**：只读命令行校验就下结论是不够的，插件的配置 schema 是第二道、而且更严的门。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -990,6 +1065,7 @@ tool/result  "C:\\dsh-executor-root\r\nDESKTOP-LCLS51R\r\n"   isError=false
 ### 3.3 其他未验证 / 未做
 
 - ~~`proc.stdin`（已实现，未测）~~ → **本轮测了，而且是坏的**：初始 stdin 在客户端路径上既不送达也不关闭，读 EOF 的子进程会挂死。已修并验证，见 §1
+- ~~静默断链（不发 FIN/RST 的"掉网"）~~ → **本轮已复现并修复**：此前所有断线证据都是"杀进程"，而链路静默时两端都不知道；结果是服务器把绑定判死、客户端还在跑同一个工作区的子进程、在飞调用挂满 30s、窗口期内的新调用静默落到服务器。已加服务器 keepalive + 客户端看门狗（含握手期限），见 §1
 - ~~spill 文件（已实现，未测）~~ → **本轮已验证**（300 KB 完整落盘），见 §1
 - **P5 的三个真实软件端到端未做**：Blender（`-b -P`）、Photoshop（COM/ExtendScript）、Figma（MCP）。前两个需要目标机装好对应软件，第三个依赖 P4
 - **P4 的 Figma 端到端未做**：需要目标机开着 Figma 桌面 App 并在 Dev Mode 启用 MCP server。转发机制本身已验证，最后一段是配置与实测
@@ -1047,7 +1123,7 @@ typeof pid: number value: 0
 | P0 验收 | SMB 双向可见 | ✅ **已验证**（见 §1） |
 | P0-3 | 8–10MB 边界文件与 **Office 在 SMB 上的锁文件行为**有数据 | 🟡 **量具已就绪**（`measure-smb-boundary.ps1`），已有环回初值；**待客户端那一份**（见 §1） |
 | P3 验收 | **python REPL** 可用 | ✅ **已验证**（见 §1） |
-| P3 验收 | "断网"（不只是关 executor） | 🟡 未做（已验的是进程消失，不是链路中断） |
+| P3 验收 | "断网"（不只是关 executor） | ✅ **已验证**（本轮：用链路中继制造"不发 FIN 也不发 RST"的静默中断，复现出三种失败并修掉；见 §1） |
 | P4 验收 | Figma MCP 工具出现在会话工具表并能取回节点数据 | ⛔ 需 Figma 桌面 App + Dev Mode MCP。**上游没开时的错误路径已验**（502 + 确切端口，见 §1） |
 | P5 | 三个真实软件端到端（Blender `-b -P`、Photoshop COM/ExtendScript、Figma MCP） | ⛔ 需在**用户机器**上跑（本机三者都没装，见 §1） |
 | **P5** | 补 `AGENTS.md` / `README.md` / 用户须知；`local_run` 降级为逃生口 | ✅ **已完成** |
@@ -1067,7 +1143,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 
 | # | 约束 | 后果 |
 |---|---|---|
-| ① | dsh **按设计拒绝** `--host 0.0.0.0` | executor 无法直连 dsh 端口，只能走 caddy。而 caddy 指向 3080，所以跨机验证必须落在**真实拓扑**上（= 上线），没法用旁路服务器糊过去 |
+| ① | dsh **按设计拒绝** `--host 0.0.0.0`；而 webserver 只接受 `127.0.0.1 \| 0.0.0.0` 两个值，所以**填具体局域网地址也不行**（本轮实测，见 §1） | executor 无法直连 dsh 端口，只能走 caddy。而 caddy 指向 3080，所以跨机验证必须落在**真实拓扑**上（= 上线），没法用旁路服务器糊过去 |
 | ② | ~~executor **不建立 SMB 凭据**~~ | ✅ **已修**（见 §1「executor 自带 SMB 凭据」）：凭据由 executor 在 `bind.apply` 时自动应用，主机名从绑定的 `visiblePath` 推出，不再需要用户手工 `cmdkey` |
 | ③ | 手改 `storages/workspace.json` 破坏域不变量 | 工作区要通过 Web UI 建，别手改存储 |
 
@@ -1129,6 +1205,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |
 | `setup-smb.ps1` | SMB 共享安装脚本（需管理员运行） |
 | `measure-smb-boundary.ps1` | P0-3 的边界/性能量具（在**客户端**上跑，也支持对本地盘跑基线） |
+| `link-proxy.mjs` | 静默断链量具：文件开关控制的 TCP 中继。写 `cut` 时**两条连接保持 ESTABLISHED、双向字节丢弃** —— 用来复现"不发 FIN/RST 的掉网"（见 §1 与 §6） |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |
 
 ## 6. 怎么重跑
@@ -1159,6 +1236,38 @@ P4 转发还需要 fixture 服务（端口与 `relayPorts` 一致）：
 ```powershell
 node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-probe\fixtures\local-service.mjs" 38450
 ```
+
+### 跑静默断链用例（`pilot-auth`，与本轮 §1 同形）
+
+和其它用例的唯一区别：executor **不直连**服务器，而是经过 `link-proxy.mjs`；探针的 crash 段武装之后，**不杀 executor**，改成把控制文件写成 `cut`。
+
+```powershell
+$p = "$env:USERPROFILE\.dsh\profiles\pilot-auth"
+Remove-Item "$p\probe-result.jsonl","$p\dispatch-trace.jsonl","$p\crash-armed.marker" -ErrorAction SilentlyContinue
+Set-Content "$p\link-state.txt" 'open' -NoNewline      # 开关的初值，缺文件也等于 open
+
+# 1) 服务器与 fixture（和 A 段一样），2) 中继：
+node "$env:USERPROFILE\.dsh\link-proxy.mjs" --listen 3092 --target 3084 --control "$p\link-state.txt"
+
+# 3) executor 指向中继（profile 里的 token 不变）：
+node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-dispatch\executor\executor.mjs" `
+  --server ws://127.0.0.1:3092/executor --token pilot-auth-executor-token-0123456789 `
+  --label probe-executor --node-pty "<node-pty 路径>"
+
+# 4) 等 crash-armed.marker 出现，然后【切断】而不是杀进程：
+Set-Content "$p\link-state.txt" 'cut' -NoNewline
+# 5) 等约 15s 观察：客户端子进程/终端应当已经消失
+# 6) 恢复：Set-Content "$p\link-state.txt" 'open' -NoNewline，再等约 20s 看重连
+```
+
+**判据**（与"杀进程"那种形态**不同**，别照抄 §7 A 的期望值）：
+
+| 观察 | 期望（修复后） |
+|---|---|
+| `crash-inflight-spawn` | `rejected:` 开头，`ms` ≈ 服务器给的静默预算（约 9s），**不能是 `HUNG`** |
+| executor 日志 | 一行 `no word from … for <N>ms (budget <M>ms)`，且 **N 略大于 M** |
+| 客户端子进程 / PTY | 切断后 ~15s 内消失 |
+| 恢复链路 | `connected=True`、`held=''`（不带回陈旧绑定） |
 
 ### P0-3 边界基准（在客户端上跑，量具自动清理）
 
@@ -1242,6 +1351,8 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 #   轮询 crash-armed.marker 出现 → 杀掉 executor（这是用例要求的动作，不是干扰）
 ```
 
+> 上面这一段是**杀进程**形态（socket 会关，两端都从 `close` 得知）。**静默断链**是另一种形态，判据也不同，命令见 §6「跑静默断链用例」。两种都要跑：前者验的是"进程没了"，后者验的是"链路没了但进程还在"。
+
 > **`pilot`（3082）现在是 UNC 形态**（`visiblePath` 是真实共享），因为它覆盖生产配置，而 `pilot-auth` 用本地路径 —— 两者合起来把两种形态都覆盖。跑 `pilot` 之前要在同一个登录会话里先建一次共享凭据，否则客户端子进程进不去那个目录：
 >
 > ```powershell
@@ -1252,6 +1363,8 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 > 判据里多两条：`prompt-section-bound` 的 `hasShareGuidance` 与 `hasCmdFallbackWarning` 都应为 **true**（只在 UNC 绑定时出现；`pilot-auth` 的本地路径形态下它们应为 false）。
 
 **判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
+
+> **最近一次（本轮，链路静默修复之后、fixture 已启动）**：62 行、`probe-complete`、`HUNG` 计数 **0**、失败项恰好是下面两条，关键值与下表逐项一致（`relay-sse` 200 + 三段到达 409/818/1228ms；`crash-inflight-spawn` 以 `rejected:` 开头）。同一份代码的**静默断链**变体也跑了两次，同样 62 行、同样两条失败。
 
 | 允许失败的两条 | 为什么它们是"对的" |
 |---|---|
