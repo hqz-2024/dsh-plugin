@@ -1006,6 +1006,20 @@ export class ClientTransport {
 				return
 			}
 
+			// A URL that puts a browser inside the Web UI for this account. The shell's
+			// own door wants the process launch token, which only the authentication
+			// plugin can mint, so the answer comes from the service it publishes; without
+			// that service the client page keeps its plain-server-address behaviour.
+			if (action === 'web-entry') {
+				const entry = this.ctx.get('clientBrowserEntry')
+				if (!entry || typeof entry.entryUrl !== 'function') {
+					this.respond(res, 503, { error: 'this deployment has no browser entry point' })
+					return
+				}
+				this.respond(res, 200, { ok: true, url: entry.entryUrl(req) })
+				return
+			}
+
 			this.respond(res, 404, { error: `unknown action '${action}'` })
 		} catch (error) {
 			this.ctx.logger?.warn?.(`[client-transport] authorization failed: ${String(error?.message ?? error)}`)

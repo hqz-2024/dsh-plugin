@@ -2083,5 +2083,42 @@ pnpm dsh --profile web-client --patch "$env:USERPROFILE\.dsh\profiles\web-client
 
 > **这套改动需要重启线上实例才生效**：`executor.mjs`、插件 `lib/` 都是 host 侧代码（这个部署没有 `patchReload: live`）。重启代价与步骤见 §7-C-2。
 
+#### D-6. 「打开 Web UI」曾经打不开（用户实测反馈，本轮修掉）
+
+**用户的原话**：「点『打开 Web UI』，web 打不开，显示：dsh web authentication required; reopen the URL printed by dsh web.」
+
+**根因**：**Web UI 有两道不同的门，我之前只过了一道。**
+
+| 门 | 认什么 | 谁签发 |
+|---|---|---|
+| 账号门（`/auth/login`） | `dsh_session` cookie | 账号密码 |
+| **shell 门**（引擎 `browser-auth`） | **本进程的 launch token**（`dsh web` 启动时打印的那个 URL 里的），或它换来的 `dsh-auth-<authority>` cookie | 只有**进程内的 `connection` 服务**能签 |
+
+执行器 token 在第二道门上一文不值 —— 所以「打开 Web UI」把**裸服务器地址**交给浏览器时，引擎直接回 `dsh web authentication required`。这段文本来自 `packages/client/connection/src/browser-auth.ts` 的 `writeUnauthorized`。
+
+**修法**：新增服务 `clientBrowserEntry`（由 `dsh-remote-local` 发布，它是唯一持有 `connection` 的一方），执行器经 `/client-auth/web-entry` 拿地址：
+
+```
+执行器 --(executor token)--> /client-auth/web-entry --(connection.authenticatedUrl)--> <origin>/?token=<launch token>
+```
+
+页面上的「打开 Web UI」用这个地址。`/status` 每次请求都重新取一遍，因为 **launch token 属于某个服务端进程**，缓存下来的会在服务端重启后失效；取不到就回落到裸地址（带着已有 cookie 的浏览器仍然能用，比一个坏按钮好）。
+
+**中途走过的弯路（记下来，因为这是这套代码里最容易再犯的错）**：第一版把浏览器的第一站设成 `/auth/login?next=<带 token 的根>`，结果永远出不来页面 —— **这个部署的 `/auth/login` 只接受 POST，登录页是从"未认证 GET 的兜底路由"渲染的**（`renderLoginPage` 只被 `wrapFallback` 调用）。正确做法是**直接进引擎的 token 交换入口**：它一次性做完两件事 —— 给这个 authority 铸 shell cookie，然后 303 到干净的 `/`，兜底路由此时看到有效会话就渲染应用而不是登录页。**登录页自己会把带 token 的 `next` 嵌进它的 JS**，所以「先登录再交换」这条顺序本来就成立。
+
+**实测（`check-web-entry.mjs`，真浏览器 + 全新会话）——9/9**：
+
+```
+入口(带 token) → 200 登录页 → 填账号密码提交 → 303 交换 → 干净地址 /
+   cookie: dsh_session + dsh-auth-mUsPUgYOT7xUx7RvpgwupNj-Awh8AZM0jaoUtm3YwHQ
+   落点：app shell true，页面 352011 字节，标题 "HQZ-DSH"，无门禁文本
+```
+
+**判读经验**：
+
+- **两道门要分开看。** 「账号已登录」**不等于**「shell 能打开」；反过来，带着 shell cookie 的浏览器访问裸地址是好的。所以"能不能打开"必须在**没有 cookie 的全新浏览器**里验。
+- **登录页停在「Verifying…」不代表登录失败。** 那是页面自己没清掉的文案 —— 判据应当是**最终地址是否干净、cookie 里有没有 `dsh-auth-`、页面里有没有 `__DSH_BOOT__`**，而不是页面上那行字。我一开始就因为拿这行字当判据，误判了一次。
+
+
 
 

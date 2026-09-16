@@ -573,6 +573,32 @@ async function callEnrolled(action, body) {
 }
 
 /**
+ * The URL that gets a browser into the Web UI, or the plain server address.
+ *
+ * The shell serves its index only to a browser holding the server process's launch
+ * token, so opening the bare address lands on "dsh web authentication required; reopen
+ * the URL printed by dsh web" — which is exactly what a person sees if this page hands
+ * them the address it was enrolled with. The server knows how to mint that entry and
+ * says so through `/client-auth/web-entry`; the plain address stays as the fallback for
+ * a deployment that does not answer, since a browser with an existing cookie works there
+ * and a wrong-looking button is worse than a plain one.
+ * @returns A URL to open, or `''` when this machine is not enrolled.
+ */
+async function webEntryUrl() {
+	if (!enrollment.token) return ''
+	// Bounded, because the status page asks for this on every refresh: an unreachable
+	// server must leave the page responsive with the plain address rather than hanging
+	// the whole panel on a fetch that will never answer.
+	const answer = await Promise.race([
+		callEnrolled('web-entry', {}),
+		new Promise((resolve) => { const timer = setTimeout(() => resolve(undefined), 5000); if (typeof timer.unref === 'function') timer.unref() }),
+	])
+	if (answer?.ok === true && typeof answer.url === 'string' && answer.url !== '') return answer.url
+	if (answer?.error) console.error(`[executor] could not resolve a browser entry URL: ${String(answer.error)}`)
+	return httpBase(enrollment.server)
+}
+
+/**
  * Escape one value for an HTML attribute in the generated page.
  *
  * The page is built by string concatenation, so a path with `&` or a quote would
@@ -718,7 +744,11 @@ async function refresh(){
     ? (heldCount > 0 ? ('本机正在执行 '+heldCount+' 个工作区') : '已连接，但还没有绑定工作区：请在下面绑定一个')
     : '连不上服务器时，命令不会静默改到服务器上执行，而是明确报错。';
   $('openWeb').disabled = !s.webUrl;
-  $('webHint').textContent = s.webUrl ? ('浏览器打开：'+s.webUrl) : '配置完成后，用这个按钮打开工作界面。';
+  // The button carries a long one-shot URL (it includes the shell's launch token), so the
+  // hint shows the plain server origin a person recognises instead of that whole string.
+  let origin = s.webUrl || '';
+  try { origin = new URL(s.webUrl).origin; } catch (e) { /* keep whatever it was */ }
+  $('webHint').textContent = s.webUrl ? ('将在浏览器打开：'+origin) : '配置完成后，用这个按钮打开工作界面。';
   $('connectSummary').textContent = s.enrolled
     ? ('已配置：'+(s.username||'(未知账号)')+' @ '+(s.server||'-')+' —— 点这里可换服务器或重新登录')
     : '用账号登录这台服务器';
@@ -814,10 +844,12 @@ function startConfigServer(port) {
 							username: enrollment.smb?.username ?? '',
 						},
 						heldShares: [...held.values()].map((entry) => entry.visiblePath),
-						// The page's "open the web UI" action targets the same server this
-						// machine is enrolled against, so the operator never types that address
-						// twice. A base URL is what the browser needs; the enrollment stores one.
-						webUrl: enrollment.server ? httpBase(enrollment.server) : '',
+						// The page's "open the web UI" action needs a URL that gets a browser
+						// *in*, not just the server address: the shell refuses to serve its own
+						// index without the process launch token. Resolved per request, because
+						// that token belongs to one server process and a cached one goes stale
+						// the moment the server restarts.
+						webUrl: await webEntryUrl(),
 						// Computed on demand rather than cached at bind time, so the page
 						// reflects the directory as it is right now.
 						staging: [...held.entries()].map(([workspaceId, entry]) => ({

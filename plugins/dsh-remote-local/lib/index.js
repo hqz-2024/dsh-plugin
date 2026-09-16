@@ -1009,6 +1009,39 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	});
 	ctx.effect(() => () => { disposeAuthResolver(); }, "remote: clientAuthResolver");
 
+	// ── Browser entry for the client executor's page (plan-client-world §2.5) ────
+	//
+	// The Web UI's shell has its own door: its index is served only to a browser holding
+	// this process's launch token (the one `dsh web` prints) or the cookie that token
+	// mints, and everything else gets "dsh web authentication required; reopen the URL
+	// printed by dsh web". An executor credential opens nothing there — it is a different
+	// gate — so the client's "open the web UI" action has to come back through this
+	// service for a URL that carries the launch token.
+	//
+	// The URL points straight at the shell root with the token, NOT through
+	// `/auth/login`: that route answers POST only, and this deployment renders its login
+	// page from the unauthenticated GET fallback. The root token exchange is what does
+	// the work, and it does both halves at once — it mints the shell cookie for this
+	// authority, then answers 303 to clean `/`, where the fallback then finds a valid
+	// app session and serves the app rather than the login page.
+	const disposeBrowserEntry = ctx.provide("clientBrowserEntry", {
+		/**
+		 * @param req - The client's own request, for Host and forwarded protocol.
+		 * @returns absolute URL that lands an authenticated browser in the Web UI.
+		 */
+		entryUrl: (req) => {
+			const connection = ctx.get("connection");
+			if (connection === undefined || typeof connection.authenticatedUrl !== "function") {
+				throw new Error("the browser entry point is unavailable on this deployment");
+			}
+			const host = String(req?.headers?.host ?? "");
+			if (host.length === 0) throw new Error("missing Host header");
+			const proto = String(req?.headers?.["x-forwarded-proto"] ?? "http").split(",")[0].trim() || "http";
+			return connection.authenticatedUrl(proto + "://" + host);
+		}
+	});
+	ctx.effect(() => () => { disposeBrowserEntry(); }, "remote: clientBrowserEntry");
+
 	// ── MFA challenge tokens (second login step) ────────────────────────────────
 	// A signed, short-lived, single-use token proving the password step already
 	// passed; replay is prevented with an in-memory consumed-nonce set. The
