@@ -222,6 +222,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **客户端执行世界（2026-09-16）**：本机桥接之后的更进一步——不再需要 agent 显式选 `local_run`，而是**整个执行面跟着工作区走**。新增两个插件（`dsh-client-bindings` 绑定存储、`dsh-subprocess-dispatch` 按 cwd→工作区→绑定分派）与一个跑在用户机器上的 executor；文件仍是服务器上那一份，客户端通过 SMB 共享（`\\<服务器>\ws-<工作区>`）看到同一份字节。另加全局 skill `local-staging`（>10MB / 工程格式走本机暂存）。实施与验收记录见 `docs/plan-client-world-progress.md`，设计见 `docs/plan-client-world.md`。
 - **executor 自带共享凭据（2026-09-16）**：计划 §2.0 把「绑定工作区（SMB 凭据）」划给 executor，此前靠用户手工 `cmdkey`。现在配置页有「工作区共享凭据」一节，`--smb-user/--smb-password` 供无值守装机；主机名从绑定带回的可见路径推出，改密码可对已绑定工作区重新应用，`/status` 只报账号不回显密码。
 - **executor 分发（2026-09-16）**：新增 `/dsh-subprocess-dispatch/executor.mjs` 下载端点（与 `/dsh-local-bridge/sidecar.mjs` 同形），并加进**设置 → 本地插件**的列表 —— 用户从此有一个受支持的途径把执行器装到本机，而不是靠手工拷贝。端点**刻意不列入 `publicPrefixes`**：下载者是设置页里已登录的浏览器，登录门禁正是该做的检查。文件里**不含 token**，凭据由配置页登录时签发。
+- **executor 打包成单文件 exe（2026-09-16）**：装机成本从「三个 winget + 命令行 + 参数」降到「解压 + 双击」。`build-executor-exe.mjs` 把执行器打成 Node SEA 单文件 `dsh-executor.exe`（约 83 MB），再和**裁剪过的 `node-pty`**（1.6 MB，去掉 `.pdb` 与其它平台预编译）一起压成 `dsh-executor.zip`（约 32 MB），由 `/dsh-subprocess-dispatch/dsh-executor.zip` 分发（流式 + 支持 Range 续传，卡片上是 `/auth/executor-pack`）。exe **不需要客户端装 Node**；原生模块进不了 exe，就解包在它旁边，执行器自己会找（`siblingNodePty`）。**这一条修掉的是一个真 bug**：SEA 下入口按 CommonJS 跑，`import.meta.url` 是 `undefined`，于是 `createRequire` 建不出来 —— 连显式 `--node-pty` 都到不了，症状是终端一开就关（`remote terminal is closed`），而进程执行一切正常。现在 `resolveRequireBase()` 会回退到程序自身目录，并新增 `dsh-executor.exe --self-test` 让客户端机器自己能回答「我能不能开终端」。构建产物在 `plugins/dsh-subprocess-dispatch/dist/`（已 gitignore，可重建）。
 
 ### 11.4 运维提示
 
@@ -275,27 +276,32 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **和"本机软件调用"（`local_run`）的关系**：`local_run` 现在退居**逃生口**——跑一次不常用的 exe、应急排查用。处理工作区里的文件请用客户端执行世界，因为文件本来就在工作区里，不需要在模型上下文里来回搬运。
 
-**每台客户端机器的一次性准备**（三件事，各做一次）：
+**每台客户端机器的一次性准备**（两件事，各做一次）：
 
-1. **装三个程序**（一次性的，装完不用再管）：
+1. **解包，双击。** 在**这台客户端机器**的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「客户端执行器（executor）」那张卡片** → 点「下载」拿到 `dsh-executor.zip`（约 32 MB），再点「**下载一键启动脚本**」。把 zip **解压**（Windows 右键「全部解压缩」即可），把 `启动执行器.cmd` 放进解压出来的那个文件夹，双击它。
+
+   这个包里已经**自带运行时**（`dsh-executor.exe`）和**终端所需的组件**（`node-pty`），所以这台机器**不需要装 Node.js**，也不需要 `npm install`、不需要编译器、不需要 `--node-pty` 参数。脚本里还写好了服务器地址、TLS 证书与一枚**新签发的执行器凭据**（可在「设置 → 工作区绑定」里看到并按机器撤销），所以**不需要**手工找证书、设 `NODE_EXTRA_CA_CERTS`、或在配置页里输密码。
+
+   跑起来后打开它给出的本机配置页 `http://127.0.0.1:38460`。
+
+2. **再装两个程序**（agent 的工具要用，装完不用再管）：
 
    ```powershell
-   winget install OpenJS.NodeJS.LTS          # 执行器本体需要 Node
    winget install Microsoft.PowerShell       # agent 的 shell 工具用它（系统自带的 5.1 不算）
    winget install BurntSushi.ripgrep.MSVC    # agent 的 glob / grep 用它
    ```
-
-2. **下载两个文件，双击其中一个。** 在**这台客户端机器**的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「客户端执行器（executor）」那张卡片** → 先点「下载 `executor.mjs`」，再点「**下载一键启动脚本**」。把两个文件放进**同一个文件夹**，双击 `启动执行器.cmd`。
-
-   那个脚本里已经写好了一切，所以**不需要**：手工找证书、设 `NODE_EXTRA_CA_CERTS`、在配置页里输密码、手打服务器地址。它会自己写出 `caddy-root.crt`、带上服务器地址与一枚**新签发的执行器凭据**（可在「设置 → 工作区绑定」里看到并按机器撤销）。
-
-   跑起来后打开它给出的本机配置页 `http://127.0.0.1:38460`。
 
 3. **在配置页里做两件事**：填一次**工作区共享凭据**（共享账号与密码，执行器会存进本机凭据库，之后 `\\<服务器>\ws-<工作区>` 就像本地盘一样可用），然后**点「绑定」**——可见路径已经按服务器那边的共享规则**预填**好了（可改）。不需要登录。
 
    之后通常设成开机自启即可。无值守装机可以用 `--smb-user` / `--smb-password`。
 
-> **手动路径仍然可用**（脚本生成不了时的退路）：下载 `executor.mjs`，自己设 `NODE_EXTRA_CA_CERTS` 指向 caddy 的根证书，然后 `node executor.mjs --server https://<服务器>:8443`，在配置页用 `admin` 登录一次再绑定。旧版执行器**不会**应答服务器的 ping，空闲时会被每约 9 秒判一次掉线并重连 —— 所以服务端升级后，客户端也要重新下载一次执行器（**症状**：那台机器的日志里反复出现 `disconnected — retrying in …`）。
+> **分发包里的 exe 是什么。** 它是同一个执行器的单文件打包（Node SEA）：没有 Node 也能跑，界面就是它自带的本机配置页。**终端（ConPTY）需要 `node-pty`**，而原生模块没法打进 exe，所以它随包解压成 exe 旁边的 `node-pty\` 文件夹，执行器启动时自己会找到 —— 这就是「解压后免参数可用」的原因。把它单独拷走（只拷 exe、丢掉 `node-pty\`）会**只丢交互式终端**，命令执行、HTTP 转发、文件读写都照常，并且会在终端第一次被请求时报出确切原因。
+
+> **手动路径仍然可用**（想自己管一个 Node 环境时）：下载 `/dsh-subprocess-dispatch/executor.mjs`，自己设 `NODE_EXTRA_CA_CERTS` 指向 caddy 的根证书，然后 `node executor.mjs --server https://<服务器>:8443`，在配置页用 `admin` 登录一次再绑定；`npm i node-pty` 到它旁边就能得到终端，或用 `--node-pty <路径>` 指明。旧版执行器**不会**应答服务器的 ping，空闲时会被每约 9 秒判一次掉线并重连 —— 所以服务端升级后，客户端也要重新下载一次执行器（**症状**：那台机器的日志里反复出现 `disconnected — retrying in …`）。
+
+> **换新包之前先关掉旧的。** 正在运行的 exe 会占住文件（Windows 不允许删改运行中的 exe），要替换那个文件夹请先在它的窗口里按 `Ctrl+C`，或结束任务管理器里的 `dsh-executor`。
+
+> **自检**：`dsh-executor.exe --self-test` 会在本机回答「这台机器到底能不能开终端」，成功时输出 `"loaded":true,"spawned":true,"sawMarker":true`，失败时给出确切原因（找不到 `node-pty`、程序在 PATH 上找不到、终端分配失败）。排查装机问题时先跑它。
 
 > 主机名不用你填：执行器从**绑定带回的可见路径**里推出共享在哪台机器上，所以不会指错。改密码后重新保存即可，会对当前已绑定的工作区重新应用。凭据与 executor token 存在同一个 `state.json`（权限 0600），**不会回显、也不会发往服务器**。
 

@@ -1893,8 +1893,9 @@ pnpm dsh --profile web-client --port 3086
    > ⚠️ **重启后的头一两秒，端口已经在听、插件树还没挂完** —— 这时候请求会拿到 **404 / 503**（实测：`/api` 404、`/client-auth/state` 503），随后才稳定成 403/401。这不是故障。体检脚本**自己会等**（轮询 `/api` 直到 403，最多 30s），并在输出里注明"启动瞬间先看到 404/404/404"；但如果你是手工敲命令核对，别在这一两秒里下结论。
 
    切换**之前**跑同一条命令会得到 4 项 FAIL（`/client-auth/state` 返回 200 + index.html，即前端兜底路由）—— 那正是"这个实例没挂客户端世界"的判据，可以拿它确认自己切没切过去。
-3. **在 SUNDA 上装客户端**：装 Node → 设 `NODE_EXTRA_CA_CERTS`（见 README；忘了会得到一条写明补救办法的错误）→ 用浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 下载 `executor.mjs`** → `node executor.mjs` → 打开 `http://127.0.0.1:38460`，在配置页填服务器地址 `https://192.168.28.239:8443`、用 `admin` 登录一次 → 填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
-   **还要装 agent 会用到的程序**（否则绑定成功、命令却一条都跑不起来）：**PowerShell 7**（`pwsh`，shell 工具用）与 **ripgrep**（`rg`，`glob`/`grep` 用），装完重启执行器 —— 详见 README"每台客户端机器的一次性准备"第 3 条与 §1 的跨机首跑记录。
+3. **在 SUNDA 上装客户端**：浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 「客户端执行器（executor）」卡片** → 点「下载」拿 `dsh-executor.zip`（32 MB）→ 再点「**下载一键启动脚本**」→ **把 zip 解压**，`启动执行器.cmd` 放进解压出来的文件夹，双击 → 打开 `http://127.0.0.1:38460`，填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
+   **这台机器不再需要装 Node**（包里自带 exe 与 `node-pty`）。**仍然要装 agent 会用到的程序**（否则绑定成功、命令却一条都跑不起来）：**PowerShell 7**（`pwsh`，shell 工具用）与 **ripgrep**（`rg`，`glob`/`grep` 用），装完重启执行器 —— 详见 README"每台客户端机器的一次性准备"与 §1 的跨机首跑记录。
+   **装完先自检**：在解压出来的文件夹里跑 `.\dsh-executor.exe --self-test`，看到 `"sawMarker":true` 才说明终端的原生依赖到位（§7-D）。
 
 **判据（这一步才是跨机证明）**：在线上 GUI 里开一个会话、cwd 指向 `smbtest`，让 agent 跑 `hostname` 与 `Get-Location` —— **子进程自报 `SUNDA`** 就是跨机证明；同时 `execution:world` 提示词段应当出现（§2.5）。这一条同时把 `argv[0]` 跨机解析、UNC 路径翻译、"真实 shell 工具链而非探针直调 `spawn`"一并验掉。
 
@@ -1905,5 +1906,56 @@ node "$env:USERPROFILE\.dsh\check-cross-machine.mjs" --limit 5
 ```
 
 它从会话日志里读子进程自报的 stdout、从分派 trace 里读 dispatch 决定，并给出"这条命令跑在哪台机器上"的判定；跨机成立时会明说 `ran on SUNDA — NOT this machine`，只有 transport 证据时会明说"这不是跨机证据"。
+
+### D. exe 客户端分发包（2026-09-16 本轮）
+
+**起因**：装机成本太高 —— 要装 Node、下载 `.mjs`、在命令行敲 `--server`，还要为了终端再解决原生模块。目标是把客户端这一侧降到"**解压 + 双击**"。
+
+**产物**：`plugins/dsh-subprocess-dispatch/dist/dsh-executor.zip`（**32.4 MB**）= `dsh-executor.exe`（83.1 MB，Node SEA 单文件）+ `node-pty\`（1.6 MB）。由 `~/.dsh/build-executor-exe.mjs` 重建（`dist/` 与 `.build/` 已 gitignore）。
+
+```powershell
+Set-Location "$env:USERPROFILE\.dsh"
+node build-executor-exe.mjs          # 5 步：CJS bundle → SEA blob → 注入 → 终端自检 → 打包+解包自检
+```
+
+**本轮修掉的真 bug（值得记下来）**：exe 里**进程执行一切正常，只有终端一开就关**，报 `remote terminal is closed`。根因不在终端代码，而在 SEA 的模块系统：**SEA 把入口按 CommonJS 跑**，esbuild 为此把 `import.meta` 重写成 `var import_meta = {}`，于是 `createRequire(import.meta.url)` 收到 `undefined` 并抛 *"The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received undefined"* —— **连显式传给 `--node-pty` 的绝对路径都到不了**（`require` 都建不出来）。修法是 `resolveRequireBase()`：先读 `import.meta.url`，拿不到就回退到程序自身目录。
+
+**判读经验，两条**：
+
+- **「终端立刻关闭」不等于「node-pty 没装」。** 缺 node-pty 是 `proc.error`（`startTerminal` 会明说 `node-pty is unavailable …`），而 `remote terminal is closed` 是 `RemoteTerminalHandle.write()` 在 `settled` 之后被调用 —— 说明**会话曾经成功建立、随后结束**。把两者混为一谈会去修错的那一半。
+- **本机能跑 ≠ exe 里能跑。** 同一个 `node-pty` 路径，`node executor.mjs --node-pty <path>` 通过，exe 却失败；差别只在 `import.meta.url` 存不存在。所以"exe 形态"必须**单独**验一遍，不能拿 `.mjs` 的结果外推。
+
+**新增的自检（装机排障第一站）**：`dsh-executor.exe --self-test` —— 用**与 socket 路径同一个**加载器和 spawn 调用，在本机回答"能不能开终端"：
+
+```powershell
+& "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-dispatch\dist\dsh-executor.exe" --self-test
+# 期望 exit 0：{"loaded":true,"spawned":true,"sawMarker":true,...}
+# 失败时 error 字段给出确切原因，且带上 node-pty 的解析路径
+```
+
+**本轮实测证据**（不是推断）：
+
+| 验的是什么 | 怎么验的 | 结果 |
+|---|---|---|
+| exe 能自己开终端 | `dsh-executor.exe --self-test --node-pty <pnpm 里的 node-pty>` | `loaded:true, spawned:true, sawMarker:true`，exit 0 |
+| 裁剪后的 node-pty 够用 | 只拷 `lib\` + `prebuilds\win32-x64\`（去掉 `.pdb`）再跑自检 | 1.6 MB，同样通过 → 25 MB 里绝大部分是调试符号与其它平台 |
+| exe 能免参数找到 node-pty | 把 `node-pty\` 放在 exe 旁边，`--self-test`（**不带任何参数**） | `nodePtyPath:"(bare name node-pty)"`，`loaded:true` |
+| 下载端点 | 带会话 `HEAD` / `Range: bytes=0-99` / 越界 Range | 200 + `Content-Length=34006216`；206 + `Content-Range: bytes 0-99/34006216`，首字节 `50-4B-03-04`（PK）；**416** + `bytes */34006216` |
+| **分发包真的可用** | 从服务器 HTTP 下载 zip → `Expand-Archive` → 跑解包出来的 exe（**全新副本，未做任何手工设置**） | 免参数自检通过，并可连上 3084 接活 |
+| **exe 客户端跑完整冒烟** | 用上面那份解包副本当 executor，跑 §7-A 全部用例 | **89 步**、`probe-complete`、**失败项恰好只有 `argv0-unresolvable` 一条**（刻意负例）、`HUNG` 0；`terminal-interactive` / `terminal-python-repl` 双 true 且 `sawServerPath=false`、`sawTranslatedPath=true`、`client-execution` 的 `executedOn=client` |
+
+> **`crash-offline-spawn` 这一次显示 `ok:true`**，原因是用例需要**外部在 `crash-armed` 出现的瞬间杀掉 executor**（§6 那套），本轮没做这个动作，所以它证明了"掉线前一切正常"，**没有**证明"掉线时明确失败"。要验后者，按 §6「断线 / 终止树用例」跑；上一轮纯 Node 客户端那次跑出了 `rejected: … lost its executor connection before exit`。
+
+**分发路径**：
+
+| 端点 | 内容 | 门禁 |
+|---|---|---|
+| `/dsh-subprocess-dispatch/dsh-executor.zip` | 分发包本体，**流式 + Range 续传**（32 MB 掉线可续） | 不放行匿名（下载者是设置页里已登录的浏览器） |
+| `/auth/executor-pack` | 卡片上的入口，同样流式 | 同一门禁 |
+| `/dsh-subprocess-dispatch/executor.mjs` | 只要程序本体（自管 Node 环境时用） | 同上 |
+
+**装机后的形态**：`启动执行器.cmd` **优先跑 exe**，没有 exe 才回退到 `node executor.mjs`（脚本里两条分支都实测过：有 exe 走 exe、无 exe 走 node）。它自带 `caddy-root.crt` 与服务器地址，凭据由卡片按次签发。
+
+**换包注意**：正在运行的 exe 会**占住文件**（Windows 不允许删改运行中的 exe，实测 `Remove-Item` 报 Access denied）—— 替换那个文件夹前先关掉它。**这是客户端侧的正常操作，不是构建脚本的问题。**
 
 
