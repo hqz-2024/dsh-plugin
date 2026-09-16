@@ -1290,6 +1290,31 @@ credential in this machine's executor page)
 
 
 
+### 执行器配置页的按钮**一直是死的**：模板字符串吃掉了一个 `\n`（本轮，用户报障后发现）
+
+上线当天用户报"进得去配置页，但**登录**和**保存共享凭据**点了没反应"。
+
+**根因**：配置页是 `executor.mjs` 里一个**模板字符串**生成的 —— 页面里的 JavaScript 是**生成出来的文本**。其中一行写了 `.join('\n')`：在模板字符串里，`\n` 会被 executor 自己解释成**真正的换行**，于是生成出去的 JS 里那个单引号字符串跨了两行：
+
+```
+'<pre>'+x.leftovers.map(...).join('
+')+'</pre>'+
+```
+
+**executor 源码语法完全有效、页面能打开、每条 HTTP 路由从 PowerShell 调都正常** —— 只有 `<script>` 整体解析失败，`signIn` 之类的函数压根没定义，按钮点下去毫无动静。浏览器控制台里是 `pageerror: Invalid or unexpected token` 与 `signIn is not defined`。
+
+**为什么一直没被发现**：这个页面的**每一条路由都测过，但从来没有人点过按钮** —— 此前所有验证（登录、绑定、共享凭据）都是直接 POST 那些 JSON 路由，而唯一那次 Playwright 点的是 **dsh GUI 的设置页**，不是执行器自己的页面。又一次同一个形状：**两半只在"被测过的那一种用法"下一致**。
+
+**修法**：`join('\\n')`（模板字符串里写两个反斜杠，生成出去的才是 JS 的转义序列）。顺手复查了模板里其它转义（`\\'`、`\\\\` 都对），只有这一处。
+
+**新增自检 `check-executor-page.mjs`**：起一个临时执行器（或用 `--external` 检查已在跑的那个），把页面的内联脚本抽出来用 `new Function(script)` **编译**一遍（编译即检查，不执行），再断言五个处理函数与九个元素都在。**它对这一个 bug 有效**：把修好的文件改回坏写法，它报 `[FAIL] 内联脚本语法有效（这是"按钮没反应"的那个坑）— Invalid or unexpected token`；对修好的版本全过。
+
+**另外用真实浏览器各点了一次**（Playwright）：坏副本上 `#msg` 保持空白、控制台 `signIn is not defined`；修好的版本上点击显示 `无法连接服务器：bad port`（我故意指向不存在的服务器）—— 处理器确实跑起来了。**"按钮有没有反应"这件事，只有点过才算验过。**
+
+> 下载端点每次请求都重新读文件（`readFileSync(this.executorEntry)` + `Cache-Control: no-store`），所以**修好之后不需要重启 dsh**：在客户端机器上重新下载一次 `executor.mjs` 就是修好的版本。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。

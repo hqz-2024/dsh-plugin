@@ -568,7 +568,7 @@ async function refresh(){
     '<fieldset style="border-color:#e0b000"><legend>暂存目录里有未回写的文件</legend>'+
     '<p><code>'+x.stagingDir+'</code> 里有 '+x.leftovers.length+' 项。这些可能是**上次任务没写完的中间结果** —— '+
     '请先确认它们还要不要，再决定回写、保留还是删除。<b>执行器不会替你删。</b></p>'+
-    '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\n')+'</pre>'+
+    '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\\n')+'</pre>'+
     '</fieldset>').join('');
 }
 refresh();
