@@ -602,11 +602,50 @@ P0-3 要的是"8–10MB 边界文件"与"Office 在 SMB 上的锁文件行为"�
 
 **顺带把两边对齐**：`local-staging` skill 的"残留处理"补了一句 —— 用户那边也会被告知，所以 agent 看到残留时用户很可能已经看过同样的提示，两处是同一个判断，不该当成两件事。
 
+### UNC 当工作目录：计划担心的那条，实测**不适用于我们用到的程序**（本轮）
+
+计划 §4.3 写着："**UNC 不能作为进程工作目录**（`cmd` 与部分程序会拒绝）。路径翻译时 `spawn` 的 `cwd` 要么用本地盘符，要么退到临时目录 + 绝对路径传参 —— **P2 定死**。"
+
+**这条一直没被测到，而且原因很隐蔽**：此前所有 spawn 用例的 `visiblePath` 都是**本地路径** `C:\dsh-executor-root`（当初是刻意跟服务器路径不同，好让"路径被翻译过"可证）。而生产的可见路径**就是 UNC** —— 也就是说，最贴近生产的那种形态，恰恰是唯一没跑过的那种。
+
+**分两步测。**
+
+第一步，直接问操作系统（同一台机器，UNC 可达）：
+
+| 程序 | 结果是 |
+|---|---|
+| `node.exe` | exit 0，`process.cwd()` = `\\192.168.28.239\ws-smbtest` ✅ |
+| `powershell.exe` | exit 0 ✅，但 `(Get-Location).Path` 给出的是 **provider 形式** |
+| **`cmd.exe`** | exit 0 —— 但**静默把工作目录退回了 `C:\Windows`**，并提示"UNC 路径不受支持" |
+
+第二步，端到端（pilot 的 `visiblePath` 改成真实 UNC，`workspaceTitle: smbtest`）：
+
+| 观察 | 值 |
+|---|---|
+| `client-execution` | `ok`，子进程自报 cwd = **`\\192.168.28.239\ws-smbtest`**（就是那个 UNC） |
+| 路线翻译 | `translated = \\192.168.28.239\ws-smbtest` |
+| 交互式终端 | 可用；PowerShell 提示符显示 `PS Microsoft.PowerShell.Core\FileSystem::\\192.168.28.239\ws-smbtest>` |
+| 其余全部步骤 | 与本地路径那次一致，唯一的 FAIL 仍是刻意构造的 `argv0-unresolvable` |
+
+**结论**：计划那条要防的问题**对 dsh 实际使用的程序不存在** —— PowerShell 与 Node 都接受 UNC 当 cwd，所以"退到临时目录 + 绝对路径传参"这套兜底**不需要做**。`cmd.exe` 是唯一拒绝的，而 dsh 的 shell 工具跑的是 pwsh/bash，不是 cmd。
+
+**但比"拒绝"更值得记的是 `cmd.exe` 的失败方式**：它**不报错、退出码 0，只是把目录换成了 `C:\Windows`**。也就是说任何经 `cmd /c` 出去的活都会在错误的目录上默默执行 —— 这类"成功了的失败"比直接报错危险得多。
+
+**实测出来的第二个坑（PowerShell 的 provider 形式）**：cwd 是 UNC 时，`(Get-Location).Path` 与 `$PWD` 返回的是
+
+```
+Microsoft.PowerShell.Core\FileSystem::\\192.168.28.239\ws-smbtest
+```
+
+PowerShell 自己认这个形式（`Test-Path` 为 True），但**别的程序不认**。而 `(Get-Location).ProviderPath` 与 `(Get-Item .).FullName` 给的是干净的 UNC。这个形式从路径本身看不出来，只有真跑一次才会遇到 —— 所以**写进了 v1 提示词段**（仅当可见路径是 UNC 时追加）：告诉模型 PowerShell 会用 provider 形式显示位置、`cmd /c` 会静默换目录、以及要取干净路径该用哪个属性。
+
+**验证这个新增段落确实生效**：probe 增加了两个直接断言（`hasShareGuidance`、`hasCmdFallbackWarning`），实测都为 `true`；段落长度 1465 → 2099；未绑定时仍为 **0**（这段只在 UNC 绑定时出现）。
+
+**回归安排**：`pilot` 固定成 UNC（生产形态），`pilot-auth` 保留本地路径 —— 两个 profile 合起来把两种形态都覆盖。pilot 因此多了一个前置：跑之前要 `net use` 建一次 `dshtest` 凭据（已写进 profile 注释与 §7），跑完收掉。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
-服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
-服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
 
 > ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.7）。
 
@@ -905,6 +944,15 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 # 起 fixture（38450）与 executor（token 见 profile），然后：
 #   轮询 crash-armed.marker 出现 → 杀掉 executor（这是用例要求的动作，不是干扰）
 ```
+
+> **`pilot`（3082）现在是 UNC 形态**（`visiblePath` 是真实共享），因为它覆盖生产配置，而 `pilot-auth` 用本地路径 —— 两者合起来把两种形态都覆盖。跑 `pilot` 之前要在同一个登录会话里先建一次共享凭据，否则客户端子进程进不去那个目录：
+>
+> ```powershell
+> net use \\192.168.28.239\ws-smbtest /user:dshtest <密码>
+> # 跑完：net use \\192.168.28.239\ws-smbtest /delete
+> ```
+>
+> 判据里多两条：`prompt-section-bound` 的 `hasShareGuidance` 与 `hasCmdFallbackWarning` 都应为 **true**（只在 UNC 绑定时出现；`pilot-auth` 的本地路径形态下它们应为 false）。
 
 **判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
 

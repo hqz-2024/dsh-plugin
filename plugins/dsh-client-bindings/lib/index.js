@@ -230,6 +230,22 @@ export default class ClientBindings extends Service {
 			'- When you pass a path INSIDE a shell command, use the second spelling. A path in the first spelling',
 			'  names a location that does not exist on the user\'s computer.',
 		]
+		// A UNC working directory is accepted by PowerShell and Node, but not by every
+		// program, and PowerShell displays the location in provider form rather than as
+		// the plain path. Both facts were measured on this deployment; neither is
+		// guessable from the path itself, and both bite only when the agent reuses a
+		// path it read from output or hands one to a native program.
+		if (binding.visiblePath.startsWith('\\\\')) {
+			lines.push(
+				'- This location is a network share, and programs differ in how they take a share as a working',
+				'  directory. PowerShell and Node accept it; `cmd.exe` refuses and silently falls back to',
+				'  `C:\\Windows`, so a `cmd /c` command would operate on the wrong directory without failing.',
+				'- PowerShell prints the share location in provider form',
+				`  (\`Microsoft.PowerShell.Core\\FileSystem::${binding.visiblePath}\`), and \`Get-Location\`/\`$PWD\` return that`,
+				'  form. PowerShell itself accepts it, but a native program will not: when you need the plain path,',
+				'  use `(Get-Location).ProviderPath` or `(Get-Item .).FullName`, or write the path literally.',
+			)
+		}
 		if (binding.stagingDir) {
 			lines.push(
 				'',

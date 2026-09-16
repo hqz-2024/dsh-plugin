@@ -43,11 +43,20 @@
 #    client execution whose child prints facts only the executing machine knows.
 - id: subprocess-probe
   config:
-    workspaceTitle: 宝单科技资料
+    workspaceTitle: smbtest
     username: probe-primary
-    # Deliberately different from the server path: the child's reported cwd
-    # proves the translation ran, not just that a process started.
-    visiblePath: 'C:\dsh-executor-root'
+    # 计划 §4.3 明确要求 P2 定死一件事：**UNC 能不能当进程工作目录**。
+    # 生产配置里可见路径**就是** UNC，而此前所有 spawn 用例用的都是本地路径
+    # （C:\dsh-executor-root），所以这条一直没被测到。结论：能（见
+    # docs/plan-client-world-progress.md §1「UNC 当工作目录」）。
+    # 所以 pilot 固定成 UNC（生产形态），pilot-auth 保留本地路径 —— 两个 profile
+    # 合起来把两种形态都覆盖了。
+    #
+    # ⚠️ 前置：本机账号对共享没有权限（共享 ACL 只给了 dshtest），跑之前先在同一个
+    #    登录会话里建一次凭据，否则客户端子进程进不去这个目录：
+    #      net use \\192.168.28.239\ws-smbtest /user:dshtest <密码>
+    #    跑完可以 net use ... /delete 收掉。
+    visiblePath: '\\192.168.28.239\ws-smbtest'
     reindexMs: 2500
     executorWaitMs: 40000
     serverPort: 3082

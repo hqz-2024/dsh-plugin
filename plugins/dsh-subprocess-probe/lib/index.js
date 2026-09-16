@@ -191,6 +191,11 @@ export function apply(ctx, config) {
 			hasPlatform: !!record2?.machinePlatform && boundText.includes(record2.machinePlatform),
 			machineHost: record2?.machineHost ?? null,
 			machinePlatform: record2?.machinePlatform ?? null,
+			// The share guidance is asserted rather than assumed: it decides whether the
+			// agent reuses a path PowerShell printed in provider form, or hands a UNC to a
+			// program that silently ignores it. Only UNC bindings carry it.
+			hasShareGuidance: boundText.includes('ProviderPath'),
+			hasCmdFallbackWarning: boundText.includes('falls back to'),
 			head: boundText.slice(0, 180),
 		})
 		record({
