@@ -63,8 +63,22 @@ Write-Host "检查目标: $base" -ForegroundColor Yellow
 if ($Via) { Write-Host "（走反代：TLS 证书不做校验 —— 这里测的是门禁与路由，不是证书链）" }
 
 Section '1. 会话门禁还在（匿名访问 /api 应当被拦）'
+# Poll rather than sample once: the web server starts accepting connections BEFORE the
+# plugin tree finishes mounting, so a check run right after a restart sees 404/503 for a
+# moment. Measured on the go-live profile: `/api` answered 404 and `/client-auth/state`
+# 503 in the first instant, then both settled. A health check that fails inside that
+# window is worse than no check — it is exactly when someone runs it.
+$samples = @()
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {
+  $a = Invoke-Probe "$base/api" $skipCert
+  if ($a.status -eq 403) { break }
+  $samples += [string]$a.status
+  Start-Sleep -Milliseconds 500
+}
 $a = Invoke-Probe "$base/api" $skipCert
-Report '/api 匿名' '403 且 body 无处理器文本（门禁自己答的）' ("{0} {1}" -f $a.status, $a.body) `
+$settleNote = if ($samples.Count -gt 0) { "（启动瞬间先看到 $($samples -join '/')，等门禁挂上再判定）" } else { '' }
+Report '/api 匿名' ("403 且 body 无处理器文本（门禁自己答的）$settleNote") ("{0} {1}" -f $a.status, $a.body) `
   ($a.status -eq 403 -and $a.body -notmatch 'executor token|relay secret')
 
 Section '2. /client-auth 已被门禁放行、且处理器自己校验凭据'
