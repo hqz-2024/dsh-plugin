@@ -44,6 +44,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { homedir, hostname, platform, release } from 'node:os'
 import { delimiter, dirname, basename, extname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
+import { getCACertificates, setDefaultCACertificates } from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.3.0'
@@ -68,6 +69,60 @@ function isScrubbed(name) {
 }
 
 const IS_WINDOWS = platform() === 'win32'
+
+/**
+ * Trust this deployment's own certificate authority.
+ *
+ * The server is reached through a reverse proxy holding a self-signed certificate, so a
+ * client that trusts only the public roots fails the TLS handshake — and the WebSocket
+ * library reports every such failure as the same opaque "Received network error or
+ * non-101 status code", which says nothing about a certificate. For the script form of
+ * the client the launcher set `NODE_EXTRA_CA_CERTS`; a downloaded executable has no
+ * launcher, so the same fact has to be expressible as an argument.
+ *
+ * The bundled roots are kept and this certificate is appended: replacing them would make
+ * the program trust less than a plain Node install does, which is the opposite of the
+ * point.
+ * @param certificate - PEM text of the authority to trust.
+ * @returns whether it was added.
+ */
+function trustCertificate(certificate) {
+	if (typeof certificate !== 'string' || !certificate.includes('BEGIN CERTIFICATE')) return false
+	try {
+		setDefaultCACertificates([...new Set([...getCACertificates('default'), certificate])])
+		return true
+	} catch (error) {
+		console.error(`[executor] could not add the supplied certificate to the trust store: ${String(error?.message ?? error)}`)
+		return false
+	}
+}
+
+/** The certificate to trust: `--ca`, else `NODE_EXTRA_CA_CERTS`, else a known location. */
+function loadTrustedCertificate(explicitPath) {
+	const given = String(explicitPath ?? '').trim() || String(envValue(process.env, 'NODE_EXTRA_CA_CERTS') ?? '').trim()
+	// A downloaded executable has no launcher to set an environment variable and no
+	// default it could inherit, so the deployment's own certificate is looked for where
+	// this client actually ships it: beside the program (the launcher writes it there)
+	// and in the reverse proxy's own storage on a machine that runs both halves.
+	const candidates = given !== '' ? [given] : [
+		join(dirname(process.execPath), 'caddy-root.crt'),
+		process.env.APPDATA ? join(process.env.APPDATA, 'Caddy', 'pki', 'authorities', 'local', 'root.crt') : '',
+	].filter((candidate) => candidate !== '')
+	if (candidates.length === 0) return { path: '', loaded: false }
+	let lastPath = candidates[0]
+	for (const path of candidates) {
+		lastPath = path
+		let pem
+		try {
+			pem = readFileSync(path, 'utf8')
+		} catch {
+			// Simply not there, which is the normal case for every candidate but one.
+			continue
+		}
+		if (trustCertificate(pem)) return { path, loaded: true }
+	}
+	return { path: given === '' ? '' : lastPath, loaded: false }
+}
 
 /**
  * When the program this machine is running was built.
@@ -216,7 +271,7 @@ function resolveProgram(program, env) {
 }
 
 function parseArgs(argv) {
-	const out = { server: '', token: '', label: '', nodePty: '', configPort: 38460, state: '' }
+	const out = { server: '', token: '', label: '', nodePty: '', configPort: 38460, state: '', ca: '' }
 	for (let i = 0; i < argv.length; i += 1) {
 		if (argv[i] === '--server' && argv[i + 1]) out.server = argv[++i]
 		else if (argv[i] === '--token' && argv[i + 1]) out.token = argv[++i]
@@ -227,6 +282,8 @@ function parseArgs(argv) {
 		else if (argv[i] === '--smb-user' && argv[i + 1]) out.smbUser = argv[++i]
 		else if (argv[i] === '--smb-password' && argv[i + 1]) out.smbPassword = argv[++i]
 		else if (argv[i] === '--self-test') out.selfTest = true
+		else if (argv[i] === '--no-open') out.noOpen = true
+		else if (argv[i] === '--ca' && argv[i + 1]) out.ca = argv[++i]
 	}
 	return out
 }
@@ -534,34 +591,58 @@ function attr(value) {
 /** The page itself; a thin form over the JSON routes. */
 function configPage() {
 	return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>DSH 本机执行器</title>
+<html lang="zh"><head><meta charset="utf-8"><title>DSH 客户端执行器</title>
 <style>
-body{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem;color:#222}
-h1{font-size:1.3rem}fieldset{border:1px solid #ddd;border-radius:6px;margin:0 0 1rem;padding:.8rem 1rem}
+body{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;max-width:46rem;margin:2.5rem auto;padding:0 1rem;color:#222}
+h1{font-size:1.25rem;margin:0 0 .2rem}.sub{color:#666;margin:0 0 1.2rem}
+fieldset{border:1px solid #ddd;border-radius:6px;margin:0 0 1rem;padding:.8rem 1rem}
 legend{font-weight:600;padding:0 .4rem}label{display:block;margin:.4rem 0 .1rem}
 input,button{font:inherit;padding:.35rem .5rem}input{width:100%;box-sizing:border-box}
-button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;border-radius:6px;overflow:auto;font-size:12px}
-.err{color:#b00}.ok{color:#070}
+button{margin-top:.7rem;cursor:pointer}
+button.primary{background:#1f6feb;color:#fff;border:1px solid #1a5fd0;border-radius:6px;padding:.5rem 1rem;font-weight:600}
+button.primary:disabled{background:#bbb;border-color:#aaa;cursor:default}
+pre{background:#f6f6f6;padding:.6rem;border-radius:6px;overflow:auto;font-size:12px}
+.err{color:#b00}.ok{color:#070}.muted{color:#666;font-size:13px}
+.state{display:flex;align-items:center;gap:.5rem;font-weight:600}
+.dot{width:10px;height:10px;border-radius:50%;background:#bbb;display:inline-block}
+.dot.on{background:#1a7f37}.dot.off{background:#b00}
+details{margin:.4rem 0}summary{cursor:pointer;color:#444}
 </style></head><body>
-<h1>DSH 本机执行器</h1>
-<p>这台机器可以替服务器执行命令。先登录，服务器会签发一个只属于本机的凭据。</p>
+<h1>DSH 客户端执行器</h1>
+<p class="sub">这台电脑可以替服务器执行命令：绑定某个工作区之后，这个工作区里的命令就在这台电脑上运行。</p>
 <div id="msg"></div>
-<fieldset><legend>1. 登录（用启动脚本装好的机器通常不需要）</legend>
+
+<fieldset><legend>当前状态</legend>
+<div class="state"><span id="dot" class="dot"></span><span id="stateText">读取中…</span></div>
+<p class="muted" id="stateDetail"></p>
+<button class="primary" id="openWeb" onclick="openWeb()" disabled>打开 Web UI</button>
+<p class="muted" id="webHint">配置完成后，用这个按钮在浏览器里打开工作界面。</p>
+</fieldset>
+
+<fieldset><legend>1. 连接服务器</legend>
+<details id="connectBox"${enrollment.token ? '' : ' open'}><summary id="connectSummary">用账号登录这台服务器</summary>
 <label>服务器地址</label><input id="server" placeholder="https://192.168.28.239:8443" value="${attr(httpBase(enrollment.server))}">
 <label>账号</label><input id="username" autocomplete="username">
 <label>密码</label><input id="password" type="password" autocomplete="current-password">
-<button onclick="signIn()">登录</button>
+<button onclick="signIn()">登录并连接</button>
+<p class="muted">登录成功后服务器会签发一枚只属于这台电脑的凭据，之后重启会自动连上，不用再登录。</p>
+</details>
 </fieldset>
+
 <fieldset><legend>2. 绑定工作区</legend>
+<p class="muted">绑定之后，该工作区里的命令就在这台电脑上执行。同一时刻一个工作区只能被一台电脑绑定。</p>
 <div id="workspaces">正在读取可绑定的工作区…</div>
 </fieldset>
+
 <fieldset><legend>3. 工作区共享凭据（可选）</legend>
-<p>工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在绑定工作区时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。留空则不改动本机凭据。</p>
+<p class="muted">工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在绑定工作区时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。留空则不改动本机凭据。</p>
 <label>共享账号</label><input id="smbuser" autocomplete="username">
 <label>共享密码</label><input id="smbpass" type="password" autocomplete="current-password">
 <button onclick="saveSmb()">保存并应用</button>
 </fieldset>
-<fieldset><legend>当前状态</legend><pre id="status">…</pre>
+
+<fieldset><legend>诊断</legend>
+<pre id="status">…</pre>
 <button onclick="refresh()">刷新</button></fieldset>
 <div id="leftovers"></div>
 <script>
@@ -592,26 +673,60 @@ async function saveSmb(){
   const detail = hosts.length ? hosts.map((h)=>h+'：'+(r.applied[h]||'未配置')).join('；') : '还没有绑定的工作区，绑定时会自动应用';
   show('已保存。'+detail,'ok'); refresh();
 }
+// Which workspaces this machine currently holds, so each row can say 「已绑定」 and
+// offer 解绑 instead of binding again. Filled by refresh(), read by renderWorkspaces().
+let heldIds = [];
 function renderWorkspaces(list){
   if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
-  $('workspaces').innerHTML = list.map((w)=>
-    '<div style="margin:.4rem 0"><b>'+w.title+'</b><br><code>'+w.path+'</code><br>'+
-    '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="'+esc(w.suggestedVisiblePath||'')+'">'+
-    '<label>本机暂存目录（留空则用 '+DEFAULT_STAGING+'）</label><input id="sd-'+w.id+'" placeholder="'+DEFAULT_STAGING+'" value="">'+
-    '<button onclick="bind(\\''+w.id+'\\')">绑定</button></div>').join('');
+  $('workspaces').innerHTML = list.map((w)=>{
+    const held = heldIds.indexOf(w.id) >= 0;
+    return '<div style="margin:.5rem 0;padding:.55rem;border:1px solid '+(held?'#1a7f37':'#eee')+';border-radius:6px">'
+      + '<b>'+esc(w.title)+'</b>'+(held?' <span class="ok">已绑定到这台电脑</span>':'')+'<br><code>'+esc(w.path)+'</code><br>'
+      + '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="'+esc(w.suggestedVisiblePath||'')+'">'
+      + '<label>本机暂存目录（留空则用 '+esc(DEFAULT_STAGING)+'）</label><input id="sd-'+w.id+'" placeholder="'+esc(DEFAULT_STAGING)+'" value="">'
+      + '<button onclick="bind(\\''+w.id+'\\')">'+(held?'重新绑定':'绑定')+'</button>'
+      + (held?' <button onclick="unbind(\\''+w.id+'\\')">解绑</button>':'')
+      + '</div>';
+  }).join('');
 }
 async function bind(id){
+  show('绑定中…');
   const r = await api('/bind',{workspaceId:id,visiblePath:$('vp-'+id).value,stagingDir:$('sd-'+id).value});
-  show(r.ok?'绑定成功':(r.error||'绑定失败'), r.ok?'ok':'err'); refresh();
+  show(r.ok?'绑定成功：这个工作区里的命令现在跑在这台电脑上':(r.error||'绑定失败'), r.ok?'ok':'err');
+  await refresh(); await loadWorkspaces();
 }
-async function unbind(id){ await api('/unbind',{workspaceId:id}); refresh(); }
+async function unbind(id){
+  await api('/unbind',{workspaceId:id});
+  show('已解绑','ok'); await refresh(); await loadWorkspaces();
+}
+// The address is the one this machine enrolled against, so nobody types it twice.
+async function openWeb(){
+  const s = await api('/status');
+  if(!s || !s.webUrl){ show('还没有连接服务器：先在下面登录一次','err'); return; }
+  window.open(s.webUrl, '_blank');
+}
 async function refresh(){
   const s = await api('/status');
   $('status').textContent = JSON.stringify(s, null, 2);
+  const on = !!s.connected;
+  $('dot').className = 'dot ' + (on ? 'on' : 'off');
+  $('stateText').textContent = on
+    ? ('已连接服务器' + (s.username ? '（'+s.username+'）' : ''))
+    : (s.enrolled ? '未连接 —— 正在重试' : '尚未配置');
+  const heldCount = (s.heldShares||[]).length;
+  $('stateDetail').textContent = on
+    ? (heldCount > 0 ? ('本机正在执行 '+heldCount+' 个工作区') : '已连接，但还没有绑定工作区：请在下面绑定一个')
+    : '连不上服务器时，命令不会静默改到服务器上执行，而是明确报错。';
+  $('openWeb').disabled = !s.webUrl;
+  $('webHint').textContent = s.webUrl ? ('浏览器打开：'+s.webUrl) : '配置完成后，用这个按钮打开工作界面。';
+  $('connectSummary').textContent = s.enrolled
+    ? ('已配置：'+(s.username||'(未知账号)')+' @ '+(s.server||'-')+' —— 点这里可换服务器或重新登录')
+    : '用账号登录这台服务器';
+  heldIds = (s.staging||[]).map((x)=>x.workspaceId);
   const blocks = (s.staging||[]).filter((x)=>Array.isArray(x.leftovers) && x.leftovers.length>0);
   $('leftovers').innerHTML = blocks.length===0 ? '' : blocks.map((x)=>
     '<fieldset style="border-color:#e0b000"><legend>暂存目录里有未回写的文件</legend>'+
-    '<p><code>'+x.stagingDir+'</code> 里有 '+x.leftovers.length+' 项。这些可能是**上次任务没写完的中间结果** —— '+
+    '<p><code>'+esc(x.stagingDir)+'</code> 里有 '+x.leftovers.length+' 项。这些可能是上次任务没写完的中间结果 —— '+
     '请先确认它们还要不要，再决定回写、保留还是删除。<b>执行器不会替你删。</b></p>'+
     '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\\n')+'</pre>'+
     '</fieldset>').join('');
@@ -699,6 +814,10 @@ function startConfigServer(port) {
 							username: enrollment.smb?.username ?? '',
 						},
 						heldShares: [...held.values()].map((entry) => entry.visiblePath),
+						// The page's "open the web UI" action targets the same server this
+						// machine is enrolled against, so the operator never types that address
+						// twice. A base URL is what the browser needs; the enrollment stores one.
+						webUrl: enrollment.server ? httpBase(enrollment.server) : '',
 						// Computed on demand rather than cached at bind time, so the page
 						// reflects the directory as it is right now.
 						staging: [...held.entries()].map(([workspaceId, entry]) => ({
@@ -1465,6 +1584,17 @@ function connect(server, token, label) {
 	})
 	socket.addEventListener('error', (error) => {
 		console.error('[executor] error:', String(error?.message ?? error))
+		// A TLS handshake refused for want of a trusted certificate reaches this handler
+		// as a bare network error, so the one thing that would let a person fix it has to
+		// be said here. `wss:` is the trigger: a plain `ws:` link has no certificate to
+		// refuse, so this message cannot fire for a failure that is not about trust.
+		if (/^wss:/i.test(socketUrl(server)) && !tlsTrust.loaded) {
+			console.error(tlsTrust.path === ''
+				? '[executor] if this server uses its own certificate, point --ca at it '
+					+ '(for example --ca caddy-root.crt) or set NODE_EXTRA_CA_CERTS; '
+					+ 'the 启动执行器.cmd launcher does this for you'
+				: `[executor] the certificate from ${tlsTrust.path} did not load, so this handshake may still be refused for want of trust`)
+		}
 		// A failed handshake may deliver only this event, so it schedules too.
 		if (activeSocket !== socket) return
 		clearTimeout(handshakeTimer)
@@ -1472,9 +1602,16 @@ function connect(server, token, label) {
 	})
 }
 
+/** Whether a certificate for this deployment's proxy was trusted, and from where. */
+let tlsTrust = { path: '', loaded: false }
+
 const config = parseArgs(process.argv.slice(2))
 nodePtyPath = config.nodePty
 statePath = config.state || join(homedir(), '.dsh-executor', 'state.json')
+tlsTrust = loadTrustedCertificate(config.ca)
+if (tlsTrust.path !== '') {
+	console.log(`[executor] trusted certificate ${tlsTrust.loaded ? 'loaded' : 'NOT loaded'} from ${tlsTrust.path}`)
+}
 
 if (config.selfTest) {
 	// Terminal support is the one capability that depends on a native addon shipped
@@ -1556,9 +1693,45 @@ if (config.token) {
 // page is a convenience, the connection is the job.
 try {
 	const server = startConfigServer(config.configPort)
+	server.on('listening', () => {
+		// Opened by default, so double-clicking the executable behaves like a client
+		// program rather than like a service with a page nobody is told about. The window
+		// it opens is the whole user interface: sign in, pick a workspace, open the web UI.
+		if (!config.noOpen) openConfigPage(config.configPort)
+	})
 	server.on('error', (error) => {
 		console.error(`[executor] configuration page unavailable on port ${config.configPort}: ${String(error?.message ?? error)}`)
 	})
 } catch (error) {
 	console.error(`[executor] configuration page failed to start: ${String(error?.message ?? error)}`)
+}
+
+/**
+ * Open this machine's default browser at the configuration page.
+ *
+ * Spawned detached and unref'd: the browser is the user's program, not a child of this
+ * one, and a browser that outlives the executor must not keep it alive or take it down.
+ * A failure here is reported and nothing else — a machine whose default browser cannot
+ * be launched can still be configured by typing the printed address.
+ * @param port - The port the local configuration page listens on.
+ */
+function openConfigPage(port) {
+	const url = `http://127.0.0.1:${port}/`
+	console.log(`[executor] opening ${url} in the default browser`)
+	try {
+		// `explorer.exe <url>` hands the address to whatever the user chose as their
+		// browser and returns immediately. Chosen over the usual `cmd /c start`, which
+		// needs a shell to interpret it: a plain spawn of `cmd` resolves against the
+		// system directory rather than the search path, so the command would be neither
+		// predictable nor testable.
+		const child = IS_WINDOWS
+			? spawn('explorer.exe', [url], { detached: true, stdio: 'ignore' })
+			: spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { detached: true, stdio: 'ignore' })
+		child.on('error', (error) => {
+			console.error(`[executor] could not open a browser automatically: ${String(error?.message ?? error)}`)
+		})
+		child.unref()
+	} catch (error) {
+		console.error(`[executor] could not open a browser automatically: ${String(error?.message ?? error)}`)
+	}
 }

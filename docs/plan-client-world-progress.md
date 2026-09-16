@@ -2040,4 +2040,48 @@ pnpm dsh --profile web-client --patch "$env:USERPROFILE\.dsh\profiles\web-client
 
 > **排查这条时踩的坑（值得记）**：测试期间**同时跑了两个执行器**（同一个 token、同一个账号），于是服务器按设计"一个账号只保留一条连接"来回顶，日志表现为**每秒重连一次**。我一度以为是自己新加的代码把它弄崩了。**判据**：`[client-transport] … superseded by a newer connection`；**规避**：测试时确保只有一个执行器在跑（README 也记了同一条）。
 
+#### D-5. 把 exe 做成"客户端软件"（2026-09-16，用户要求）
+
+**用户的原话**：「我需要的是一个类似客户端软件的用户交互界面。用户直接在 exe 里面就能完成登陆，服务器访问，工作区绑定等一系列配置，完成配置之后，点击打开浏览器就直接在浏览器打开 web ui 进行正常的工作访问了。」
+
+**改之前的实际形态**：exe 起来了，但（1）双击后**什么都不显示**，得自己知道去开 `http://127.0.0.1:38460`；（2）页面上没有"打开 Web UI"这个动作；（3）**直接双击 exe 根本连不上服务器**（见下）。所以"用不了"是对的。
+
+**这次挖出的第二个真 bug（比第一个更挡人）**：**直接运行 exe 连不上 wss 服务器**，日志是 `Received network error or non-101 status code` + 反复 `disconnected`。根因是**证书**：服务器走 caddy 自签证书，`.mjs` 形态一直靠启动脚本设的 `NODE_EXTRA_CA_CERTS`，而 exe **没有启动脚本、也没有任何默认值**，于是 TLS 握手被拒 —— 而 dsh 用的 ws 库把**所有**握手失败都报成同一句 `non-101`，看不出是证书问题。
+
+**本机对照实验（同一 exe、同一地址、只差一个环境变量）**：
+
+| 试法 | 结果 |
+|---|---|
+| `wss://192.168.28.239:8443/executor`，**不设证书** | ❌ `Received network error or non-101 status code`，每秒重试 |
+| 同地址，**设 `NODE_EXTRA_CA_CERTS`** | ✅ `connected to wss://192.168.28.239:8443/executor` |
+
+**修法与新增能力**：
+
+| 能力 | 说明 |
+|---|---|
+| `--ca <路径>` | 显式指定要信任的证书。**追加**到 Node 内置根证书之后（`setDefaultCACertificates([...getCACertificates('default'), pem])`）—— 替换掉内置根会让程序比普通 Node 信任得更少，正好相反 |
+| 自动探测 | 没给 `--ca` 时依次找：环境变量、**exe 自己旁边**的 `caddy-root.crt`、caddy 默认安装位置 `%APPDATA%\Caddy\pki\authorities\local\root.crt`。实测打印 `[executor] trusted certificate loaded from …\Caddy\pki\authorities\local\root.crt` |
+| 失败时说人话 | `wss:` 且证书未加载时，额外打印一行指向 `--ca` / `NODE_EXTRA_CA_CERTS` / 启动脚本；给了路径但没加载成功则明说那个路径有问题 |
+| 双击自动开界面 | 启动时用 `explorer.exe <url>` 打开配置页（`--no-open` 可关）。**不用 `cmd /c start`**：`spawn('cmd')` 会解析到系统目录而不是 PATH，既不可预期也不可测；`explorer.exe <url>` 直接交地址、立即返回，且**可被 PATH 探针验证** |
+| 页面 = 客户端界面 | 状态区（已连接/未连接/尚未配置 + 正在执行几个工作区）、**「打开 Web UI」按钮**、① 连接服务器（**未配置时默认展开**）② 绑定工作区（已绑定的行显示「已绑定到这台电脑」并有「解绑」）③ 共享凭据 ④ 诊断折叠区 |
+
+**新增的自动化检查**：`check-executor-enroll.mjs`（真浏览器跑这个页面）。它验的是：页面无脚本报错 → 状态区有内容 → **未配置时登录表单是展开的** → 登录换取凭据（以状态区文字变化为准，不是以计时为准）→ 工作区列表渲染 → 可见路径按共享规则预填 → 点绑定看到「绑定成功」→ 落到 `/status` → **状态区显示已连接且已绑定** → **「打开 Web UI」启用的地址 = 这台机器注册的服务器**（`window.open` 被拦截记录，不会真开窗口）。
+
+**实测**：
+
+| 形态 | 结果 |
+|---|---|
+| **全新机器**（无 state、无 token、无环境变量，`https://192.168.28.239:8443` 走真 TLS） | 证书自动加载 ✅；用错误密码得到 **401**（= 真的连到了服务器，不是网络失败） |
+| **全新机器 + 正确账号**（pilot-auth 的 `probe-admin`） | **14/14**：登录 → 绑定 `宝单科技资料` → 状态区「已连接服务器（probe-admin）/ 本机正在执行 1 个工作区」→ 打开 Web UI 指向 `http://127.0.0.1:3084` |
+| **启动脚本形态**（token、无密码） | **13/13**（少一条登录项） |
+| **双击自动开界面** | exe 自己打印 `[executor] opening http://127.0.0.1:38497/ in the default browser`，同一时刻浏览器进程出现 |
+
+**判读经验（记下来）**：
+
+- **`hello` 到达就说明 TLS 通了。** 用 pilot 的 token 去连线上实例时，状态里 `hello` 有值、`connected:false` —— 那是**认证**被拒（服务器以 close code 4001 关闭），**不是证书问题**。两者症状都是"连不上"，靠 `hello` 在不在区分。
+- **假 exe 当探针是错的做法。** 我一度想用改名成 `explorer.exe` 的 `cmd.exe` 拦截调用，结果"探针不工作"，差点得出"自动打开没发生"的结论。**改用 exe 自己的 stdout**（`Start-Process -RedirectStandardOutput`）就拿到了确凿证据。
+
+> **这套改动需要重启线上实例才生效**：`executor.mjs`、插件 `lib/` 都是 host 侧代码（这个部署没有 `patchReload: live`）。重启代价与步骤见 §7-C-2。
+
+
 

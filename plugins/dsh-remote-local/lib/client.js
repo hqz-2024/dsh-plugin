@@ -1405,7 +1405,10 @@ window.__ModuleLoader__.load({
 						+ "echo     winget install BurntSushi.ripgrep.MSVC\r\n"
 						+ "echo.\r\n"
 						+ "if exist \"%~dp0dsh-executor.exe\" (\r\n"
-						+ "  \"%~dp0dsh-executor.exe\" --server " + bundle.server + " --token " + bundle.token + "\r\n"
+						// --ca is explicit even though the executable also looks for
+						// caddy-root.crt beside itself: the script knows the path, and being
+						// told is one less thing that has to be discovered at runtime.
+						+ "  \"%~dp0dsh-executor.exe\" --server " + bundle.server + " --token " + bundle.token + " --ca \"%~dp0caddy-root.crt\"\r\n"
 						+ "  goto done\r\n"
 						+ ")\r\n"
 						+ "where node >nul 2>nul\r\n"
