@@ -1,0 +1,17 @@
+# Overlay: run `pilot-auth` with the PRODUCTION binding clock.
+#
+# The pilot profile's clock is seconds-scale (heartbeat 1s / grace 20s / sweep 1s)
+# so a smoke run finishes quickly. Production is 30x slower on purpose, and the
+# behaviour that depends on it -- "a short network blip must NOT cost you the
+# workspace" -- is not exercised by any second-scale test: there, the grace
+# expires long before the machine can reconnect.
+#
+#   pnpm dsh --profile pilot-auth --patch <no-probe.patch.yml> --patch <this file> --port 3084
+#
+# A patch replaces the row's whole `config`, so the complete value is restated.
+
+- id: client-bindings
+  config:
+    heartbeatMs: 30000
+    graceMs: 120000
+    sweepMs: 15000

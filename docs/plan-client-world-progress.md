@@ -1111,6 +1111,21 @@ Compare-Object (Get-Content $env:TEMP\dump-web.txt) (Get-Content $env:TEMP\dump-
 
 
 
+### 生产节奏下的网络抖动：抖多久会丢工作区（本轮，实测）
+
+pilot 的绑定时钟是**秒级**的（心跳 1s / 宽限 20s / 扫描 1s），生产是 **30s / 120s / 15s** —— 相差 30 倍。而"短暂抖动不该让你丢工作区"这件事**在秒级配置下根本测不出来**：宽限期早在机器重连之前就过了。所以本轮给 `pilot-auth` 加了一个覆盖层 `profiles/pilot-auth/prod-timing.patch.yml`（把 `client-bindings` 那一行换成生产节奏），配合 `no-probe.patch.yml` 起一个安静实例，用 `link-proxy.mjs` 制造真实的链路中断，直接读存储文件与 `/status` 对账。
+
+| 场景 | 观察 |
+|---|---|
+| **12 秒抖动** | 客户端在 **9.7s** 主动切断（预算 9s）并停掉自己名下的进程；链路回来后重连，服务器把**仍然有效**的绑定**重放**给它（`onConnect` → `bind.apply`）→ 客户端重新持有，**不需要重新绑定**。记录里 `boundAt` 仍是抖动之前那一刻，`endedAt` 为空 |
+| **130 秒中断** | 记录被判定失效：`endedAt` = 最后一次心跳 + 120s，**再等到下一次扫描**（`sweepMs` 15s，实测多出约 11s）；`endReason=heartbeat-timeout`。链路回来后客户端照样重连，但**不会**再拿回绑定 —— 需要重新绑定 |
+
+**顺带确认了一条 README 没写清的行为**：**重启客户端机器/执行器也不丢绑定**（只要在宽限期内重连）—— 我拿它当"重新绑定"去调 `/bind` 时收到 `409 occupied`，记录里的 `boundAt` 是重启前那一刻且仍然 active。丢绑定的只有两种情况：**超过宽限期的中断**，和**服务端重启**（见 §1 另一节）。
+
+**由此发现并修掉一个恢复延迟**：12 秒抖动从"链路可用"到"重新持有"实测要 **27.5s** —— 因为卡住的那个 socket 是**在中断期间建立**的：对端 TCP 栈接受了连接，而握手的请求字节已经丢了，于是它永远不会有人应答，只有**重新发起**才能成功。当时 `HANDSHAKE_MS` 是 15s，所以光等它就占了 15s。把它改成 **5s**（LAN 上握手是几十毫秒量级，逆向代理下也就几百毫秒；这个期限是**恢复机制**，不只是兜底），同一场景重测 **16.0s**（链路 12s 可用，之后 4s 完成恢复）。
+
+> 顺带一个观察：这次 smoke 起实例时，客户端**第一次连接正好撞上服务器刚监听、路由还没就绪的窗口**，拿到一个 non-101 网络错误后按既有逻辑重试、第二次连上 —— 所以缩短期限没有改变那条路径（它本来就走 `error`，不走期限）。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1304,6 +1319,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | `profiles/pilot/` | pilot profile（无门禁，验证客户端执行机制） |
 | `profiles/pilot-auth/` | pilot + `dsh-remote`（门禁开启 + 种一个 admin），验证 §2.5 登录链路与门禁豁免 |
 | `profiles/pilot-auth/no-probe.patch.yml` | 覆盖层：把探针那一行 `disabled`，用来观察**安静**的实例（探针自己会抢工作区，见 §1 的服务端重启用例）。用法：`dsh --profile pilot-auth --patch <此文件> --port 3084`（`--patch` 必须写在 app 自己的 flag **之前**，launcher 的 flag 到第一个不认识的 token 就停） |
+| `profiles/pilot-auth/prod-timing.patch.yml` | 覆盖层：把 `client-bindings` 换成**生产节奏**（心跳 30s / 宽限 120s / 扫描 15s）。秒级配置下测不出"抖动不丢工作区"，见 §1。可与 `no-probe.patch.yml` 叠用 |
 | **`profiles/web-client/`** | **上线 profile**：`profiles/web` 组合的逐行副本 + 客户端世界四行。已按真实组合验证 |
 | `~/.dsh-web-client/` | web-client 的隔离 home（junction 复用 plugins/profiles/.agent-presets/skills，独立 auth/sessions/storages） |
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |

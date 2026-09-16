@@ -46,8 +46,18 @@ import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.3.0'
-/** How long a WebSocket handshake may stay unanswered before this side retries. */
-const HANDSHAKE_MS = 15000
+/**
+ * How long a WebSocket handshake may stay unanswered before this side retries.
+ *
+ * This is a recovery mechanism, not just a backstop. The socket that stalls is
+ * usually the one opened *during* the outage: the peer's TCP stack accepted it
+ * while the handshake request was lost, so nothing will ever answer and only a
+ * fresh attempt can succeed. The deadline therefore bounds how long a blip costs
+ * after the link is usable again, which is why it is seconds rather than the tens
+ * of seconds a conservative backstop would use — a LAN handshake completes in
+ * tens of milliseconds, or a few hundred through the reverse proxy.
+ */
+const HANDSHAKE_MS = 5000
 const DSH_ENV_PREFIX = 'DSH_'
 const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
 
