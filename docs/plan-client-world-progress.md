@@ -21,7 +21,8 @@
 | **P1** | 服务端重启 → 绑定一律失效 | ✅ 记录标 `endReason=server-restart`；重连**不重放**陈旧绑定（§1） |
 | **P1** | 客户端重启 / 短暂抖动**不**丢绑定 | ✅ 生产时序下 12s 抖动后自动重新持有；执行器重启后 `409 occupied` 且记录仍 active（§1） |
 | **P1 剩余** | 账号上的工作区授权字段 | ❌ 未做（`workspaces` 复用 roleMap，计划 §2.1 明确允许） |
-| **P2** | 客户端真的执行：传输 + 路径翻译 + 终止阶梯 | ✅ 含心跳回路 |
+| **P2** | 客户端真的执行：传输 + 路径翻译 + 终止阶梯 | ✅ 含心跳回路；子目录 cwd 的翻译见 §1 |
+| **P2** | 引擎 LSP 是否也跟着工作区走 | 🟡 **按构造验证**：`lsp-stdio` 与 shell 共用 `ctx.subprocess`（代码指针见 §1）；本机没装语言服务器，未端到端跑过 |
 | **P2** | 权限一致性（执行机 = 会话账号自己绑的那台） | ✅ `DSH_SESSION_ID` 归属比对；admin 会话不在覆盖范围内，已记为已知边界（§1） |
 | **P2** | 终止按进程树、不留孤儿 | ✅ 孙进程用例 + `tasklist` 独立复核 |
 | **P2** | §4.6 在飞调用有确定结局 | ✅ 杀进程 1964ms 失败收场；静默断链 9386ms `rejected:` |
@@ -1230,6 +1231,27 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 **顺带抓到一个"证据工具本身在说谎"的问题**：探针判断"跑在哪台机器上"用的是**等值比较**（`parsed.cwd === visiblePath`）。子目录那一行的 cwd 是 `<可见路径>\probe-subdir`，于是它被标成 **`executedOn: server`** —— 一条**命令其实跑在客户端**、却被记录成跑在服务器的行。改成**带边界的**前缀比较（相等、或 `<可见路径>\` / `/` 开头）之后，两行都是 `client`。这类问题不是产品 bug，但它会污染证据表，而证据表正是这个项目唯一能拿出来的东西。
 
 > 两个 profile 合起来的覆盖：`pilot-auth` = 本地盘可见路径 + 门禁/crash 段；`pilot` = **UNC 可见路径 + 子目录翻译**（本机账号对共享要先 `net use` 一次）。
+
+
+
+### 切换之后"哪些东西会跟着工作区走"：逐个消费者核对（本轮）
+
+切 profile 会换掉 `ctx.subprocess` 的 provider，所以问题不是"机制对不对"（那已经验过很多遍），而是**这个部署里到底谁在用这个 seam**。逐个查过：
+
+| 消费者 | 是否走 `ctx.subprocess` | 绑定后行为 |
+|---|---|---|
+| 引擎 shell 工具（`pwsh` 等） | ✅ | 已验（§1 多处） |
+| 引擎终端（ConPTY） | ✅ | 已验 |
+| 引擎 `fs` 搜索工具（`glob`/`grep`） | ✅ | 已验（`argv0` 用例 + §2.3） |
+| **引擎 LSP（`lsp-stdio`）** | ✅ | **按构造成立，未端到端跑过**（见下） |
+| 部署侧 8 个插件 | ❌ **一个都不用** | 切换对它们**完全无影响** |
+
+**LSP 这一条**：`packages/lsp/lsp-stdio/src/index.ts:47` 写着 `inject = ['fs', 'lsp', 'subprocess']`，`:157` 把 `spec => ctx.subprocess.spawn(spec)` 当 spawner 传下去 —— 也就是说语言服务器和 shell 走**同一个 seam**，所以分派规则同样适用（引擎自己在 `instance.ts:112` 也写着 "A subprocess provider may run in another PID namespace or machine"，这个 seam 就是为远程 provider 设计的）。**本轮没有端到端跑过 LSP**：本机没装语言服务器，跑它还需要一个真实会话。如实记为"按构造验证"，不写成"已验证"。
+
+**两处不走 seam 的 spawn（查明是设计，不是缺陷）**：
+
+- `dsh-local-bridge/sidecar/sidecar.mjs:98` —— sidecar 本来就在**用户机器**上跑，它就是那条逃生口；
+- `dsh-video-studio-local/lib/ffmpeg.js:28` —— **视频渲染始终在服务器上**跑 ffmpeg。绑定工作区时文件两边是同一份字节，所以渲染结果正确；但"视频编码不跟着工作区搬到用户电脑"这一点值得知道（那是插件内部的 spawn，不是 shell 命令，提示词里"命令在那台电脑上执行"说的是 shell/终端）。
 
 
 
