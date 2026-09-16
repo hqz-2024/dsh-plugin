@@ -263,6 +263,44 @@ subprocess/src/index.ts:114     SubprocessSpawnSpec.env
 
 **如实说明的边界**：不带 `DSH_SESSION_ID` 的 spawn（LSP、subagent CLI、`fs` 搜索）仍然只按绑定路由 —— 那些路径上没有任何东西标识会话。上表第 3、4 行就是这两种情况的实测值。所以本轮关闭的是"shell 调用"这条主路径上的缺口，不是全部 spawn。
 
+### 上线组合 dry run：客户端世界挂到**真实 web 组合**上（本轮）
+
+此前所有验证都在 `pilot` / `pilot-auth` 这种最小组合上，而线上是有 `agent-presets`、`permission`、`dsh-doc`、`local-bridge`、`llm-deepseek` 的真实组合。上线前必须证明它能挂上去 —— 于是做了这一轮 dry run。
+
+做法：新增 `profiles/web-client/`，内容是 `profiles/web/cordis.patch.yml` 的**逐行副本** + 客户端世界那四行；跑在隔离 home `~/.dsh-web-client`（`plugins`/`profiles`/`.agent-presets`/`skills` 用 junction 复用，`auth`/`sessions`/`storages` 独立，工作区注册表从线上复制）。线上 3080 实例全程未重启、未受影响。
+
+结果（同一次运行）：
+
+| 观察点 | 结果 |
+|---|---|
+| 启动 | 无组合错误；`delegate-mounted: @deepseek-ai/dsh-subprocess-local`、`client-transport-started` |
+| 路由索引 | **4 个真实工作区**（deepseek-harness / 宝单科技资料 / 微众诉讼 / .dsh），未绑定基线全为 server |
+| `local-bridge` 并存 | 服务正常挂载。它走自己的出站 WebSocket，**完全不碰 `ctx.subprocess`**（已核对源码），两者不抢路由 |
+| 绑定→路由 | `POST /client-auth/bind` 200；索引由 `宝单科技资料=server` 翻为 **`=client`**；`unbind` 后翻回 `=server` |
+| P2 客户端执行 | 已绑定 → `executedOn=client`，子进程自报 `cwd=C:\dsh-executor-root` |
+| P2 权限一致性 | 四例行为与 `pilot-auth` **完全一致**（占用者→client、他人→server、未知/无身份→client） |
+| P3 终端 | 看到 marker 与翻译后路径，**无服务器路径**，含 ANSI 序列，终止 91 ms |
+| P4 转发 | 200 / 200 / **SSE `streamed=true` `[415, 822, 1235]`** / 403 白名单 / 403 未知密钥 |
+| P5 提示词段 | 已绑定 1463 字符、未绑定 0；段仍排在 `deployment:persona` 与文件引用之间 |
+
+**门禁在真实 `remote` 配置下（`trustProxy:false` + `enforceRoles:true` + `roleMap`）确实在拦**，且三个前缀确实放行：
+
+| 请求 | 结果 | 谁答的 |
+|---|---|---|
+| `/api` 无 cookie | **403** `{"ok":false,"error":"unauthorized"}` | 门禁 |
+| `/client-auth/state` 无 token | **401** `a valid executor token is required` | **我的处理器** |
+| `/client-relay/<错密钥>/3845/ping` | **403** `unknown relay secret` | **我的处理器** |
+| `/executor` 无 token / 错 token | WebSocket **close 4001 `unauthorized`** | 我的处理器 |
+| `/executor` 正确 token | 保持连接 | 我的处理器 |
+
+**怎么区分"被门禁拦"和"被处理器拒绝"**：两者都是 403，但**处理器会带上错误文本**（`unknown relay secret`、`a valid executor token is required`）。没有文本的 403 = 门禁。这条判据在本轮救了一次误判（见下）。
+
+**`/executor` 的握手先于认证**：无 token 时 upgrade **会成功**，随后服务端以 4001 关闭 —— 所以"连接上了"什么都证明不了，只有 close code 能证明。我第一次只连不发就得出"未授权也能连上"的结论，是错的；补测 close code 才看清。
+
+**本轮抓到的一个配置错（我自己的）**：第一次跑时 relay 五步全是 403。因为我在 `relayPorts` 里只写了 Figma 的 3845，而冒烟 fixture 在 38450 —— 三行 403 全是白名单在正常工作。凭错误文本（`port 38450 is not in the relay allowlist`）与门禁 403 区分开，才没有误判成"新组合下转发坏了"。
+
+**交付形态与冒烟形态的差别（如实说明）**：冒烟用的临时组合额外带了 ① `subprocess-probe` harness、② 一个已知密码的 `admin` 账号播种、③ fixture 端口 38450。**这三样都没有进入交付的 `web-client`**（账号播种尤其不能上线）。交付形态是**单独验证**的：启动无错、索引 4 个工作区、绑定→路由翻转、以及上表五条门禁/认证判据全部复测通过。完整冒烟的可重跑载体仍是 `pilot-auth`。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -341,19 +379,26 @@ typeof pid: number value: 0
 
 后果：`signalForeground` 的返回值在 Windows 上可能是 `0` 而不是进程组 id。消费者只是把它透传进 `TerminalSignalResult`（`session.ts:377-381`），不做比较，因此功能无影响；但**返回值不满足"exact group id"的字面契约**，这是一个记录在案的偏离。
 
-### 3.5 上线前状态：线上 `web` profile 尚未挂载（本轮确认）
+### 3.5 上线路径：`web-client` profile 已就绪并验证（本轮更新）
 
 三个新插件都是**独立 bundle**（各自带 `cordis.patch.yml`，把行插进去时 `disabled: true`），只有把它们列进 profile 的 `dsh.profile.bundles` 才会挂载：
 
-| profile | bundles 里的客户端世界部分 |
-|---|---|
-| `pilot` | `dsh-client-bindings`, `dsh-subprocess-dispatch`, `dsh-subprocess-probe` |
-| `pilot-auth` | 同上 + `@xgone/dsh-remote` |
-| **`web`（线上）** | **无** |
+| profile | bundles 里的客户端世界部分 | 用途 |
+|---|---|---|
+| `pilot` | `dsh-client-bindings`, `dsh-subprocess-dispatch`, `dsh-subprocess-probe` | 最小组合冒烟 |
+| `pilot-auth` | 同上 + `@xgone/dsh-remote` | 门禁下的完整冒烟（含权限一致性） |
+| **`web-client`** | `dsh-client-bindings`, `dsh-subprocess-dispatch`（**无 probe**） | **上线 profile** |
+| `web`（线上） | 无 | 现状，未动 |
 
-所以 P0–P5 的验证全部发生在 pilot 载体上，**线上 3080 实例的行为一点没变**（本轮全程未重启、未受影响）。这是有意的：`subprocess-dispatch` 会替换掉 `subprocess` 服务，而它的前置条件 P0-2（SMB 共享）还没建 —— 没有 SMB，翻译后的可见路径在用户机器上不存在，客户端执行会立刻失败。**先建共享，再上线。**
+**上线 = 把启动命令的 `--profile web` 换成 `--profile web-client`**（`~/.dsh/start-dsh-lan.cmd` 里那处）。线上 `web` 与其运行中的实例一行不动，随时可退。`web-client` 已按真实组合跑过完整冒烟与单独复测，见 §1「上线组合 dry run」。
 
-顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它有完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
+**为什么仍然没上线**：前置条件 P0-2（SMB 共享）还没建 —— 没有 SMB，翻译后的可见路径在用户机器上不存在，客户端执行会立刻失败。**先建共享，再切 profile。**
+
+**上线时要改的两处占位值**：`subprocess-dispatch.config.tokens` 与 `relayTokens` 里现在是测试值，需换成真实签发的 token（按账号，泄露即等于该账号在自己机器上的执行权限）。
+
+**这个 profile 的唯一长期维护负担**：它的 patch 是 `profiles/web/cordis.patch.yml` 的副本，web 改了它必须同步（文件头已写明）。若不想承担，改为把文件末尾「客户端执行世界」那四行直接并入 web 的 patch —— 线上 `patchReload: live`，合并后无需重启即生效，代价是没有独立的回退档。
+
+顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它的完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
 
 ### 3.6 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）
 
@@ -400,6 +445,8 @@ typeof pid: number value: 0
 | `plugins/dsh-subprocess-probe/fixtures/local-service.mjs` | 本机服务 fixture（`/ping`、`/echo`、`/sse`），验证转发用 |
 | `profiles/pilot/` | pilot profile（无门禁，验证客户端执行机制） |
 | `profiles/pilot-auth/` | pilot + `dsh-remote`（门禁开启 + 种一个 admin），验证 §2.5 登录链路与门禁豁免 |
+| **`profiles/web-client/`** | **上线 profile**：`profiles/web` 组合的逐行副本 + 客户端世界四行。已按真实组合验证 |
+| `~/.dsh-web-client/` | web-client 的隔离 home（junction 复用 plugins/profiles/.agent-presets/skills，独立 auth/sessions/storages） |
 | `skills/local-staging/SKILL.md` | 暂存工作流全局 skill（判定 → 签出 → 处理 → 回写 → 清理） |
 | `setup-smb.ps1` | SMB 共享安装脚本（需管理员运行） |
 | `~/.dsh-pilot/` | pilot 的独立 home（junction 复用，不污染线上） |
@@ -443,3 +490,27 @@ node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-probe\fixtures\local-service.
 ```
 
 读结果时看 `perm-*` 四步的 `executedOn`（client/server）与 `parsed.cwd`，以及 `dispatch-trace.jsonl` 里的 `foreign-session-fallback`。
+
+### 跑 `web-client`（上线组合复测，不需要 probe）
+
+```powershell
+$env:DSH_HOME = "$env:USERPROFILE\.dsh-web-client"     # 隔离 home，不要用线上 home
+Set-Location C:\Users\bestarc\Desktop\deepseek-harness
+pnpm dsh --profile web-client --port 3086               # 后台
+
+# 起 executor，然后直接用它验绑定→路由翻转（无 probe 也能验）
+node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-dispatch\executor\executor.mjs" `
+  --server ws://127.0.0.1:3086/executor `
+  --token web-client-executor-token-0123456789 --label go-live-check
+```
+
+绑定后隔 2–3 秒读 `profiles/web-client/dispatch-trace.jsonl` 里最后一条 `routing-index`：应从 `宝单科技资料=server` 翻为 `=client`，`unbind` 后翻回。
+
+三条门禁判据（**看错误文本判断是谁答的**：有处理器文本 = 已放行）：
+
+```powershell
+$h = @{ authorization = "Bearer web-client-executor-token-0123456789" }
+Invoke-WebRequest http://127.0.0.1:3086/api -SkipHttpErrorCheck                                   # 403 门禁
+Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -SkipHttpErrorCheck                     # 401 我的处理器
+Invoke-WebRequest http://127.0.0.1:3086/client-auth/state -Headers $h -SkipHttpErrorCheck         # 200
+```

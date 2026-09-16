@@ -16,6 +16,8 @@ auth/
 
 # profile 真实配置含 sidecar token，只留本地；提交脱敏版 cordis.patch.example.yml
 profiles/web/cordis.patch.yml
+# 同理：web-client 的 patch 是从 web 复制来的，含同一批真实 sidecar token
+profiles/web-client/cordis.patch.yml
 
 # 备份包（含机密 + 会话数据，绝不进 git）
 backup/
@@ -66,3 +68,5 @@ plugins/*/.git/
 # pilot / pilot-auth verification harness output
 profiles/pilot*/dispatch-trace.jsonl
 profiles/pilot*/probe-result.jsonl
+profiles/web-client/dispatch-trace.jsonl
+profiles/web-client/probe-result.jsonl

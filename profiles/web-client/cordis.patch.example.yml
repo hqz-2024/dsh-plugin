@@ -1,0 +1,137 @@
+# ============================================================
+# web-client profile patch — 模板（占位版，可安全提交 / 开源）
+#
+# 这是 `profiles/web-client/cordis.patch.yml` 的脱敏副本，替换了：
+#   1) local-bridge 的 sidecar token（真实 token 是机密，绝不提交）
+#   2) subprocess-dispatch 的 executor token 与 relay 路径密钥
+#   3) dsh-doc 的 runtimeDir 绝对路径（机器相关）
+#
+# 使用方式：
+#   复制本文件为 cordis.patch.yml，填入你自己的 token / 路径后使用。
+#   token 可用 `openssl rand -hex 20` 生成。
+#
+# 这个 profile = 线上 `web` 组合 + 客户端执行世界。上线 = 把启动命令的
+# `--profile web` 换成 `--profile web-client`。
+# ============================================================
+
+# Default agent preset: the shipped full coding agent (standard).
+- id: agent-presets
+  config:
+    default: standard
+
+# ── dsh-remote 认证门禁 ────────────────────────────────────────────────────
+- id: remote
+  config:
+    enabled: true
+    adminOnly: false
+    enforceRoles: true
+    # LAN/caddy 反代场景：trustProxy 默认 true 会让 normalizeForFence 把 /api 与
+    # WebSocket 请求的 Host 强改为 127.0.0.1:3080，导致 browser-auth 按
+    # 127.0.0.1:3080 找 cookie，永远匹配不上按 <局域网IP>:8443 绑定的 cookie
+    # → 401 / 前端一直"连接中"。设 false 保留原始 Host，配合启动时的
+    # --trusted-host <LAN-IP> 即可通过浏览器信任栅栏。
+    trustProxy: false
+    roleMap:
+      Finance-mgr:
+        preset: finance-manager
+        workspace: finance-ws
+      Finance-staff:
+        preset: finance-manager
+        workspace: finance-ws
+    # 客户端执行的三个前缀必须由门禁放行：它们的处理器各自校验凭据，而摆在用户
+    # 机器上的程序带不了 dsh_session cookie，不放行整条世界连不上。
+    #
+    # 判断某条 403 是谁答的：处理器会带上自己的错误文本（例如
+    # "unknown relay secret"）；没有文本的 403 才是门禁。
+    publicPrefixes:
+      - /executor
+      - /client-auth
+      - /client-relay
+
+# ── 权限预设表 ─────────────────────────────────────────────────────────────
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+        name: read-only
+        description: "Read-only: no file modifications."
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+        name: workspace-write
+        description: Write inside the workspace and permitted temporary directories; wider retries require approval.
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+        name: danger-full-access
+        description: Full file access without approval prompts.
+      finance-confined:
+        sandbox: workspace-write
+        approval: never
+        name: 工作区限定
+        description: 仅可在本账号工作区文件夹内写入文件；禁止任何权限升级。
+
+# ── 办公文档解析 ───────────────────────────────────────────────────────────
+- id: dsh-doc
+  config:
+    engine: python
+    runtimeDir: !!js dshHomePath('runtimes/dshdoc-runtime-win32-x64')
+    defaultOcr: true
+    maxOutputChars: 32000
+    allowedLocalRoots: []
+
+# ── 本机桥接（sidecar）────────────────────────────────────────────────────
+# 与客户端世界并存不冲突：sidecar 走自己的出站 WebSocket，不碰 ctx.subprocess。
+# 分工：sidecar = 显式的 local_run 工具；客户端世界 = 整个 shell/PTY/LSP 世界
+# 跟着工作区走（agent 不需要选）。
+- id: local-bridge
+  config:
+    tokens:
+      REPLACE_WITH_SIDECAR_TOKEN_FOR_ADMIN: admin
+      REPLACE_WITH_SIDECAR_TOKEN_FOR_FINANCE_MGR: Finance-mgr
+      REPLACE_WITH_SIDECAR_TOKEN_FOR_FINANCE_STAFF: Finance-staff
+
+# ── 模型目录 ───────────────────────────────────────────────────────────────
+- id: llm-deepseek
+  config:
+    models:
+      - id: deepseek-flash
+        name: DeepSeek-V4.1-Flash
+        inputModalities: [text, image]
+      - id: deepseek-v4-pro
+        name: DeepSeek-V4-Pro
+
+# ══ 客户端执行世界 ══════════════════════════════════════════════════════════
+
+# 1. 让出 `subprocess` 服务名。base 的行 id 是 `subprocess`，**不是**
+#    `subprocess-local`（packages/bundle/base/cordis.patch.yml:205）。
+- id: subprocess
+  disabled: true
+
+# 2. 分派 provider 接管 `ctx.subprocess`：cwd 落在已绑定工作区 → 发到该机器，
+#    否则留在服务器。**未绑定时行为与今天完全一致**，所以上线本身不改变现状。
+- id: subprocess-dispatch
+  disabled: false
+  config:
+    serverRuntime: '@deepseek-ai/dsh-subprocess-local'
+    refreshMs: 2000
+    tracePath: !!js dshHomePath('profiles/web-client/dispatch-trace.jsonl')
+    # executor 用它换账号。每个账号一个 token；与 sidecar token 同理，泄露即等于
+    # 该账号在自己机器上的执行权限，所以按账号单独签发与撤销。
+    tokens:
+      REPLACE_WITH_EXECUTOR_TOKEN_FOR_ADMIN: admin
+    # 客户端 127.0.0.1 转发白名单。3845 = Figma Dev Mode MCP。只列真正需要转发的端口。
+    relayPorts: [3845]
+    relayTokens:
+      REPLACE_WITH_RELAY_PATH_SECRET: admin
+    authPath: '/client-auth'
+
+# 3. 绑定存储。生产节奏：心跳 30s、宽限 2 分钟（够 executor 重连或短暂休眠而不
+#    掉绑定）、扫描 15s。
+- id: client-bindings
+  config:
+    heartbeatMs: 30000
+    graceMs: 120000
+    sweepMs: 15000
