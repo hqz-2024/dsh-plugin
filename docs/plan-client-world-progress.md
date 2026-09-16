@@ -29,7 +29,7 @@
 | **P2** | §4.5 executor 掉线时后续 spawn **明确失败**、绝不静默回落 | ✅ 错误文本自己声明"未在服务器上执行" |
 | **P2** | **静默断链**（不发 FIN/RST 的掉网） | ✅ 复现三种失败并修复（服务器 keepalive + 客户端看门狗 + 握手期限）（§1） |
 | **P2** | `argv[0]` 跨机解析 / 初始 stdin / spill | ✅ 三者皆已验证（stdin 曾是真 bug） |
-| **P3** | ConPTY 交互式终端 + Ctrl-C + 信号拒绝 | ✅ 随机 GUID 判定，避免 PTY 回显混淆 |
+| **P3** | ConPTY 交互式终端 + Ctrl-C + 信号拒绝 | ✅ **在 seam 层验证**（随机 GUID 判定，避免 PTY 回显混淆）：探针直接调 `ctx.subprocess.spawnTerminal`。⚠️ **线上组合没有挂终端 provider**，所以 agent 手里没有终端工具（见 §1 的消费者名单 B 组） |
 | **P3** | crashtest / python REPL | ✅ 均按计划原文判据验过 |
 | **P3** | **"断网"**（链路中断，而非关进程） | ✅ 生产时序两个场景：12s 抖动不丢、130s 中断失效（§1） |
 | **P4** | `/client-relay` 转发 | ✅ 200/200/SSE 三段到达、端口白名单 403、未知密钥 403、上游死 502 |
@@ -1234,24 +1234,35 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 
 
 
-### 切换之后"哪些东西会跟着工作区走"：逐个消费者核对（本轮）
+### 切换之后"哪些东西会跟着工作区走"：把消费者逐个查清（本轮）
 
-切 profile 会换掉 `ctx.subprocess` 的 provider，所以问题不是"机制对不对"（那已经验过很多遍），而是**这个部署里到底谁在用这个 seam**。逐个查过：
+切 profile 换的是 `ctx.subprocess` 的 provider，所以真正要问的是**这个部署里谁在用这个 seam**。三份名单（都是查出来的，不是推断的）：
 
-| 消费者 | 是否走 `ctx.subprocess` | 绑定后行为 |
-|---|---|---|
-| 引擎 shell 工具（`pwsh` 等） | ✅ | 已验（§1 多处） |
-| 引擎终端（ConPTY） | ✅ | 已验 |
-| 引擎 `fs` 搜索工具（`glob`/`grep`） | ✅ | 已验（`argv0` 用例 + §2.3） |
-| **引擎 LSP（`lsp-stdio`）** | ✅ | **按构造成立，未端到端跑过**（见下） |
-| 部署侧 8 个插件 | ❌ **一个都不用** | 切换对它们**完全无影响** |
+**A. 线上组合挂了、且确实走 seam（切换后跟着工作区走）**
 
-**LSP 这一条（先把上一句改准）**：计划里"Bash/PTY/LSP 一起走"是**引擎架构层面**的说法 —— `packages/lsp/lsp-stdio/src/index.ts:47` 确实是 `inject = ['fs', 'lsp', 'subprocess']`、`:157` 把 `spec => ctx.subprocess.spawn(spec)` 当 spawner，所以**只要挂了 LSP，它就会跟着工作区走**。但**本部署根本没挂**：`packages/bundle/base/cordis.patch.yml` 里搜不到任何 lsp 行，`--profile web-client --dump-config` 的合成结果里也没有。所以这条对本部署而言**不是"未验证"，而是"没有可验的东西"** —— 我先前把它记成"按构造验证"是说重了，已改回。
+| 消费者 | 证据 |
+|---|---|
+| `pwsh-sandbox`（shell 工具） | 引擎 `inject = ['subprocess','sandbox','sandboxPolicy']`；本项目的 `client-execution` 等用例就是它 |
+| `tool-fs-search`（`glob`/`grep`） | 同上（`inject` 里有 `subprocess`）；`argv0-server-only-path` 用例覆盖 |
 
-**两处不走 seam 的 spawn（查明是设计，不是缺陷）**：
+**B. 引擎里有、但本部署没有挂（所以没有可验的东西）**
 
-- `dsh-local-bridge/sidecar/sidecar.mjs:98` —— sidecar 本来就在**用户机器**上跑，它就是那条逃生口；
-- `dsh-video-studio-local/lib/ffmpeg.js:28` —— **视频渲染始终在服务器上**跑 ffmpeg。绑定工作区时文件两边是同一份字节，所以渲染结果正确；但"视频编码不跟着工作区搬到用户电脑"这一点值得知道（那是插件内部的 spawn，不是 shell 命令，提示词里"命令在那台电脑上执行"说的是 shell/终端）。
+| 消费者 | 状态 |
+|---|---|
+| `lsp-stdio`（LSP） | ❌ 没挂：base bundle 与线上组合里都没有 lsp 行 |
+| `terminal-bash`（交互终端） | ❌ **没挂**：线上组合里搜不到任何 terminal 行 —— 也就是说**agent 手里没有终端工具**。P3 那些工作是**在 seam 层验证**的（探针直接调 `ctx.subprocess.spawnTerminal`），不是通过某个 agent 工具验的。将来挂了终端 provider，它就会自动跟着工作区走 |
+| `subagent-codex` / `-acp` / `-claude-code` | ❌ 没挂（线上用的是 `subagent-spawn-in-process` / `-fork-in-process`）。这三个会 spawn 外部 CLI，**如果将来挂了，那些 CLI 会在绑定机器上跑** —— 那多半是对的行为（CLI 是用户自己装的），记一句免得将来惊讶 |
+
+**C. 完全不碰 seam（切换对它们零影响）**
+
+| 插件 | 事实 |
+|---|---|
+| `dsh-doc` | **直接**用 `node:child_process` spawn 它的 Python worker（`lib/engine/python-stdio-client.js:2` 与 `:432`），而且**只把文档字节（base64）与显示名喂给 Python，不传路径**（文件头注释明说）。所以文档解析**始终在服务器上跑**、在绑定工作区里照常工作 —— 这正好是对的，因为运行时（`~/.dsh/runtimes/dshdoc-runtime-win32-x64`）只装在服务器上 |
+| `dsh-video-studio-local` | ffmpeg 始终在服务器上跑（`lib/ffmpeg.js:28`） |
+| `folder-tree-sh-local` | 自己用 `spawnSync`（服务器侧） |
+| `dsh-local-bridge` | sidecar 本来就在**用户机器**上跑（`sidecar/sidecar.mjs:98`），它就是那条逃生口 |
+
+> 这张表的用处：上线前不必猜"切换会不会影响某个功能" —— 部署侧这些插件**要么不碰 seam，要么根本没挂**；真正会改行为的只有 A 组那两个。
 
 
 
