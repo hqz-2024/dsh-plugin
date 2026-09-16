@@ -74,6 +74,14 @@ export function apply(ctx, config) {
 	 * server), so it also exercises the executor's cross-machine `argv[0]` rule.
 	 */
 	const pythonPath = String(config?.pythonPath ?? 'python')
+	/**
+	 * When set, the probe drives the sweep-vs-claim interleaving (§4.2 arbitration).
+	 * It needs binding records that lapse quickly and are not swept on their own,
+	 * which is a property of the profile's `client-bindings` config, not of the probe.
+	 */
+	const sweepRaceTest = config?.sweepRaceTest === true
+	/** How long to wait for the seeded records to lapse before racing the sweep. */
+	const sweepRaceLapseMs = Number.isInteger(config?.sweepRaceLapseMs) ? config.sweepRaceLapseMs : 1200
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -483,6 +491,90 @@ export function apply(ctx, config) {
 		record({ step: 'release', result: await bindings.release({ workspaceId, username }) })
 		await sleep(reindexMs)
 		await attemptSpawn('after-release-server-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+
+		// ── 5b. Concurrent claims resolve to exactly one winner (§4.2) ────────
+		// The plan requires the server to arbitrate: "两台设备同时抢一个已失效的绑定，
+		// 先到者成功，另一个收到拒绝". A race is exactly the claim that passes by luck,
+		// so it is driven deliberately: five claims are enqueued in the same tick, and
+		// the assertion is that ONE wins and the rest are told who took it.
+		try {
+			await bindings.release({ workspaceId, username })
+			const attempts = 5
+			const results = await Promise.all(Array.from({ length: attempts }, (_, index) => bindings.claim({
+				workspaceId,
+				workspaceTitle,
+				username: `racer-${index}`,
+				machine: `machine-${index}`,
+				visiblePath: `\\\\probe-host\\share-${index}`,
+				stagingDir: '',
+			})))
+			const winners = results.filter((result) => result.ok)
+			const loserReasons = results.filter((result) => !result.ok).map((result) => `${result.reason}${result.occupant ? `:${result.occupant}` : ''}`)
+			record({
+				step: 'concurrent-claim-race',
+				attempts,
+				winners: winners.length,
+				exactlyOne: winners.length === 1,
+				winner: winners[0]?.binding?.username ?? null,
+				losersAllNameTheWinner: loserReasons.length === attempts - 1
+					&& loserReasons.every((reason) => reason === `occupied:${winners[0]?.binding?.username}`),
+				loserReasons,
+			})
+			// Leave the store as it was found.
+			if (winners[0]) await bindings.release({ workspaceId, username: winners[0].binding.username })
+		} catch (error) {
+			record({ step: 'concurrent-claim-race', error: String((error && error.message) || error) })
+		}
+
+		// ── 5c. Does a sweep expire a binding claimed while it was running? ───
+		// `sweep()` reads the table once, then finishes each lapsed record with an
+		// `await` between them. Unlike `claim`/`heartbeat`/`release`, it does NOT run
+		// through the mutation queue, so a claim can land inside that await -- and the
+		// loop then finishes the SECOND workspace from its stale snapshot, re-reading
+		// (in `finish`) the binding that was just written. This drives exactly that
+		// interleaving and reports the end state, so the answer is measured rather
+		// than argued. It needs a profile whose binding records lapse quickly and are
+		// not swept on their own (see the pilot profile's client-bindings config).
+		if (sweepRaceTest) {
+			const w1 = 'sweep-race-1'
+			const w2 = 'sweep-race-2'
+			const seed = { workspaceTitle: 'sweep-race', username: 'sweep-stale', machine: 'm1', visiblePath: '', stagingDir: '' }
+			try {
+				await bindings.claim({ workspaceId: w1, ...seed })
+				await bindings.claim({ workspaceId: w2, ...seed })
+				await sleep(sweepRaceLapseMs)
+				record({
+					step: 'sweep-race-seeded',
+					w1Lapsed: !bindings.isLive(bindings.get(w1)),
+					w2Lapsed: !bindings.isLive(bindings.get(w2)),
+				})
+				// One tick: start the sweep, then claim into the window it opens.
+				const sweeping = bindings.sweep()
+				const claiming = bindings.claim({
+					workspaceId: w2, workspaceTitle: 'sweep-race', username: 'fresh-claimer',
+					machine: 'm2', visiblePath: '', stagingDir: '',
+				})
+				const claimed = await claiming
+				const expiredByThisSweep = await sweeping
+				const after = bindings.get(w2)
+				record({
+					step: 'sweep-race-result',
+					claimOk: claimed.ok,
+					finalUsername: after?.username ?? null,
+					freshBindingEnded: !!after?.endedAt,
+					endReason: after?.endReason ?? null,
+					raceReproduced: claimed.ok === true && !!after?.endedAt,
+					// The fix routes `sweep` through the mutation queue; this proves it still
+					// expires what it is supposed to, rather than only that it stopped racing.
+					sweepExpired: expiredByThisSweep,
+					sweepStillExpires: Array.isArray(expiredByThisSweep) && expiredByThisSweep.includes(w1),
+				})
+				await bindings.release({ workspaceId: w1, username: 'sweep-stale' })
+				await bindings.release({ workspaceId: w2, username: 'fresh-claimer' })
+			} catch (error) {
+				record({ step: 'sweep-race-result', error: String((error && error.message) || error) })
+			}
+		}
 
 		// ── 6. Executor authorization endpoint (plan §2.5) ────────────────────
 		// The page driving this runs on the user's machine, so the endpoint must

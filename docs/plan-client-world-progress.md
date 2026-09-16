@@ -643,6 +643,42 @@ PowerShell 自己认这个形式（`Test-Path` 为 True），但**别的程序�
 
 **回归安排**：`pilot` 固定成 UNC（生产形态），`pilot-auth` 保留本地路径 —— 两个 profile 合起来把两种形态都覆盖。pilot 因此多了一个前置：跑之前要 `net use` 建一次 `dshtest` 凭据（已写进 profile 注释与 §7），跑完收掉。
 
+### §4.2 的并发仲裁：**真的跑了一次race**，并因此发现 `sweep()` 会把刚拿到的绑定抹掉（本轮）
+
+计划 §4.2 写着"两台设备同时抢一个已失效的绑定，**由服务端单点仲裁：先到者成功，另一个收到拒绝**"。这是一条**并发**断言 —— 而并发断言恰恰是最容易"碰巧通过"的那种，所以这轮不是读代码，而是真发了一次竞争。
+
+**（一）竞态本身：设计成立。** 五个 claim 在同一个 tick 里入队，结果：
+
+| 观察 | 值 |
+|---|---|
+| 同时尝试 | 5 |
+| 成功 | **1**（`racer-0`） |
+| 失败者 | 4 个，**全部**回报 `occupied:racer-0` —— 不只是拒绝，还说清了是谁拿走的 |
+| `exactlyOne` | **true** |
+
+机制也对得上：`claim` 整个跑在 `enqueue` 里，`isLive(existing)` 的判定与 `table.put` 在**同一个临界区**内，中间没有 await 能让别人插进来。
+
+**（二）但顺着这条线读下去，发现了另一个真的竞态。** `enqueue` 的注释写着"Queue one mutation behind every earlier one; racing claims therefore resolve in order" —— 而 `claim` / `heartbeat` / `release` 都走了队列，**`sweep` 与它调用的 `finish` 没有**。`sweep` 同样在改这张表。
+
+交错是这样的：`sweep` 先用快照 `[...this.table.entries()]` 判定"W1、W2 都已失效"，然后逐个 `await this.finish(...)`。**在 W1 那个 await 期间**，一个 `claim(W2)` 可以完整跑完并写入新记录；`sweep` 恢复后处理 W2 时用的还是**旧快照**，于是 `finish(W2)` 重新读到的是**刚写进去的那条新记录**，把它标成了 ended。
+
+**不是推理，是复现出来的**（给 pilot 临时配 `graceMs: 800 / sweepMs: 600000`，好让"已失效但还没被扫到"这个状态稳定存在；否则 1 秒一次的扫描会抢在测试之前把窗口关掉）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `claim` 返回 | `ok:true` | `ok:true` |
+| 表里剩下的记录属于 | **`sweep-stale`**（上一条） | `fresh-claimer` |
+| 新绑定是否已被标 ended | **是**（`heartbeat-timeout`） | 否 |
+| `raceReproduced` | **true** | **false** |
+
+**修复前的结局比"绑定被立刻作废"更糟**：`claim` 报成功，而存储里留下的是**上一条已结束的记录** —— 客户端以为自己拿到了工作区，服务端那边却是死的。
+
+**修法**：让 `sweep` 走同一条队列。这不是防御性代码，而是**恢复模块自己声明的那条不变量**（所有对这张表的改动都串行化）。`sweep` 只调用未入队的 `finish`，所以不会自锁。
+
+**验证修复没有把扫描本身弄坏**：同一个用例里同时断言 `sweepExpired = sweep-race-1, sweep-race-2` 且 `sweepStillExpires = true` —— 扫描**照样会把失效记录标结束**，只是不再抢掉别人的 claim。恢复成正常配置（心跳 1s / 宽限 20s / 扫描 1s）再跑一遍完整用例，仍然全绿。
+
+**如实说明**：要在测试台上稳定复现，需要一组刻意敌对的配置（宽限 800ms、周期扫描推到 10 分钟）。生产配置是宽限 120s、扫描 15s，窗口真实存在但很窄 —— 触发条件是"一次扫描遇到 ≥2 条失效记录，且期间有人认领其中靠后的一条"。所以这是一个**低概率但真实的正确性缺陷**，不是日常可复现的故障。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -656,6 +692,8 @@ PowerShell 自己认这个形式（`Test-Path` 为 True），但**别的程序�
 | 场景 | 结果 |
 |---|---|
 | 活跃占用时第二台机器 claim | `ok:false, reason:occupied, occupant:<用户名>` |
+| **5 个 claim 同时抢一个空闲工作区** | **恰好 1 个成功**；其余 4 个都回报 `occupied:<胜者>`（§4.2 的单点仲裁，本轮实测） |
+| **扫描与认领交错** | 修复前：`claim` 报成功但记录被扫描抹掉（**已修**，见 §1「§4.2 的并发仲裁」） |
 | release 后 | `ok:true`，路由回落 server |
 | 心跳超时 | `state:expired, endReason:heartbeat-timeout`（**记录保留，不删**） |
 | 失效机心跳 | `ok:false, reason:not-held`（**不自动夺回**） |

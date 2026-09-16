@@ -455,20 +455,30 @@ export default class ClientBindings extends Service {
 	/**
 	 * Expire every binding that lapsed. Stale records are marked ended rather than
 	 * removed, and an already-ended record is left alone.
+	 *
+	 * This mutates the same table `claim` does, so it runs through the same queue.
+	 * Without that it interleaved with a claim against the same workspace and lost
+	 * the claim outright: the loop decides from a snapshot of the table, then awaits
+	 * each `finish`, and a claim landing inside that await was overwritten by a
+	 * `finish` that re-read the record it had already judged to be lapsed. The
+	 * measured outcome was a claim reporting success while the store was left
+	 * holding the previous, ended record.
 	 * @returns the workspace ids that were expired by this sweep.
 	 */
 	async sweep() {
 		if (!this.table) return []
-		const expired = []
-		for (const [workspaceId, record] of [...this.table.entries()]) {
-			if (record.endedAt) continue
-			const reason = record.serverBoot !== this.bootId ? 'server-restart' : 'heartbeat-timeout'
-			if (reason === 'server-restart' || !this.isLive(record)) {
-				await this.finish(workspaceId, reason)
-				expired.push(workspaceId)
+		return await this.enqueue(async () => {
+			const expired = []
+			for (const [workspaceId, record] of [...this.table.entries()]) {
+				if (record.endedAt) continue
+				const reason = record.serverBoot !== this.bootId ? 'server-restart' : 'heartbeat-timeout'
+				if (reason === 'server-restart' || !this.isLive(record)) {
+					await this.finish(workspaceId, reason)
+					expired.push(workspaceId)
+				}
 			}
-		}
-		return expired
+			return expired
+		})
 	}
 
 	/**
