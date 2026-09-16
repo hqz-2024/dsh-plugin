@@ -449,9 +449,44 @@ REPL 比 `powershell -Command` 是**更严的**测试：它逐行从终端读输
 
 载荷能出现在子进程的 stdout 里，说明字节真的过了 socket 并且 stdin 被关闭（否则子进程不会看到 EOF、不会退出、也就不会有 `exitCode: 0`）。spill 那行则是：内存里只留 4 KB、读取标记为有损，而**完整的 300 KB 落在文件里** —— 落盘文件在 `%TEMP%\dsh-remote-spill\`（在服务器侧，因为流是在服务器侧从 socket 拼起来的），磁盘上实测 300000 字节。
 
+### executor 自带 SMB 凭据（计划 §2.0 划给 executor 的职责，本轮）
+
+计划 §2.0 的图把 executor 的活写成三件：**登录（复用 dsh-remote）**、**绑定工作区（SMB 凭据）**、**`proc.*` / `http.*` 执行**。本轮之前，第二件实际上没人做：executor 里没有任何 `net use` / `cmdkey`（全文搜过），我上一轮把它记成"客户端先手工 `cmdkey` 存一次"。那等于把"跨机可用"押在用户知道一个诀窍上 —— 而计划把这件事划给了 executor。
+
+**现在的做法**：
+
+| 入口 | 行为 |
+|---|---|
+| 配置页新增「3. 工作区共享凭据」 | 共享账号 + 共享密码，保存即应用 |
+| `--smb-user` / `--smb-password` | 无值守等价物（装机脚本用） |
+| 存放 | 与 executor token 同一个 `state.json`（`0600`） |
+| 应用时机 | 每次 `bind.apply` |
+| **主机从哪来** | **从绑定带回的 `visiblePath` 推出** —— 用户既不填主机名，也不可能指错共享 |
+| 改密码后 | `POST /smb` 会**对当前已持有的共享**重新应用，不必先解绑 |
+| `/status` | 只报"是否配置 + 账号名"，**从不回显密码** |
+
+两个实现细节是承重的：
+
+1. **`cmdkey` 的成败不能看退出码。** 它有失败情形是往 stdout 打一行字、退出码仍然 0。所以判定改成"加完之后再 `cmdkey /list:<host>` 看账号在不在" —— 这样也和系统语言无关（匹配本地化的"已成功"文案必然出错）。
+2. **密码必然出现在 `cmdkey` 的 argv 里** —— 该命令没有 stdin 形式，所以那条命令存活期间密码在进程列表里可见。这是这条路径的固有代价，已写进注释。
+
+**验证**（用**不存在的宿主** `dsh-smb-probe-test`，所以全程没有碰真实共享的任何已存凭据；验完已删除）：
+
+| 步骤 | 观察 |
+|---|---|
+| `bind` 时 `visiblePath = \\dsh-smb-probe-test\ws-x` | executor 日志：`holding … at \\dsh-smb-probe-test\ws-x` → `SMB credential for dsh-smb-probe-test as dshprobe: stored` |
+| 凭据库 | `cmdkey /list:dsh-smb-probe-test` → `Target: dsh-smb-probe-test` / `Type: Domain Password` / `User: dshprobe` |
+| `GET /status` | `enrolled:true`、`connected:true`、`smb.configured:false`（种下的 state 里为空，符合预期）、`heldShares: \\dsh-smb-probe-test\ws-x`、**body 里搜不到密码** |
+| `POST /smb`（对已持有共享重放） | `{"ok":true,"applied":{"dsh-smb-probe-test":"stored"},"hosts":["dsh-smb-probe-test"]}` |
+| 配置页 | 三个新元素都在（fieldset / 两个 input / `saveSmb()`） |
+| 重连 | executor 重连后服务端重放 `bind.apply`，凭据**自动重新应用**（日志里第二次出现 `stored`） |
+
+**这条只关掉了 §2.0 的客户端那一半，如实说明**：生产侧还差"一个 DSH 账号一个 SMB 账号" —— `setup-smb.ps1` 目前只建**一个**共享账号，所以计划 §2.1 要求的"ACL 与账号可访问工作区一致"在共享层面**还不成立**（所有账号用同一个 SMB 身份）。本轮让凭据的**建立**自动化了，但**按账号区分**还没做。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
+服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
 
 > ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.7）。
 
@@ -578,14 +613,14 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 | # | 约束 | 后果 |
 |---|---|---|
 | ① | dsh **按设计拒绝** `--host 0.0.0.0` | executor 无法直连 dsh 端口，只能走 caddy。而 caddy 指向 3080，所以跨机验证必须落在**真实拓扑**上（= 上线），没法用旁路服务器糊过去 |
-| ② | executor **不建立 SMB 凭据** | 客户端机器须先 `cmdkey /add:192.168.28.239 /user:<smb账号> /pass:<密码>` 存一次凭据 |
+| ② | ~~executor **不建立 SMB 凭据**~~ | ✅ **已修**（见 §1「executor 自带 SMB 凭据」）：凭据由 executor 在 `bind.apply` 时自动应用，主机名从绑定的 `visiblePath` 推出，不再需要用户手工 `cmdkey` |
 | ③ | 手改 `storages/workspace.json` 破坏域不变量 | 工作区要通过 Web UI 建，别手改存储 |
 
 **因此跨机验证的形态是**：把 3080 切到 `web-client`（`patchReload: live` 之外的那一步需要重启），在真实 GUI 里建一个会话、cwd 指向 `\\192.168.28.239\ws-smbtest` 对应的工作区，由 agent 跑一条 `hostname` —— **子进程自报 `SUNDA` 就是跨机证明**。这也顺带把 `argv[0]` 跨机解析、UNC 路径翻译、真实 shell 工具链（而不是探针直调 `spawn`）一次性验掉。
 
 **为什么这可以接受**：挂载客户端世界对**未绑定的工作区是行为中性的** —— 所有未绑定工作区照旧在服务器执行，与今天完全一致（真实组合的 dry run 已证）。所以切换本身不改变任何现状，改变只发生在有人主动绑定之后。
 
-**上线前还差的准备**：① 在 3080 那个 home 里建好 `smbtest` 工作区；② 把 `web-client` 的 executor token / relay 密钥换成真实签发的；③ SUNDA 上装 Node、存 SMB 凭据、启动 executor。**防火墙不需要新规则** —— 走的是已经在开的 8443。
+**上线前还差的准备**：① 在 3080 那个 home 里建好 `smbtest` 工作区；② 把 `web-client` 的 executor token / relay 密钥换成真实签发的；③ SUNDA 上装 Node、启动 executor（并在配置页填一次共享凭据 —— 本轮起 executor 会自己应用，不必手工 `cmdkey`）。**防火墙不需要新规则** —— 走的是已经在开的 8443。
 
 
 ### 3.8 `plan.md` 里关于引擎源码改动的说法已过期（本轮核对）

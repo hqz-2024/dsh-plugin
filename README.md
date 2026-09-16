@@ -220,6 +220,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **manifest 校对工具（2026-09-10）**：Electron 桌面工具（`~\.dsh\tools\manifest-tool`），三栏布局（视频列表 / 帧级预览 / manifest 表单），本地预览视频 + 帧级进度条 + 快进 + 加速 + 人工校对/修正 manifest（动态字段 / 新增字段 / tags 逗号分隔 / 直接保存 + 另存为），UI 中英切换；打包成 portable exe（内嵌 FFmpeg，约 151MB）挂到设置页「本地插件」供局域网用户下载。
 - **部署工具**：`install.ps1`（含 dsh-doc 运行时下载、FFmpeg 下载、manifest 校对工具打包）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 - **客户端执行世界（2026-09-16）**：本机桥接之后的更进一步——不再需要 agent 显式选 `local_run`，而是**整个执行面跟着工作区走**。新增两个插件（`dsh-client-bindings` 绑定存储、`dsh-subprocess-dispatch` 按 cwd→工作区→绑定分派）与一个跑在用户机器上的 executor；文件仍是服务器上那一份，客户端通过 SMB 共享（`\\<服务器>\ws-<工作区>`）看到同一份字节。另加全局 skill `local-staging`（>10MB / 工程格式走本机暂存）。实施与验收记录见 `docs/plan-client-world-progress.md`，设计见 `docs/plan-client-world.md`。
+- **executor 自带共享凭据（2026-09-16）**：计划 §2.0 把「绑定工作区（SMB 凭据）」划给 executor，此前靠用户手工 `cmdkey`。现在配置页有「工作区共享凭据」一节，`--smb-user/--smb-password` 供无值守装机；主机名从绑定带回的可见路径推出，改密码可对已绑定工作区重新应用，`/status` 只报账号不回显密码。
 
 ### 11.4 运维提示
 
@@ -269,9 +270,7 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **和"本机软件调用"（`local_run`）的关系**：`local_run` 现在退居**逃生口**——跑一次不常用的 exe、应急排查用。处理工作区里的文件请用客户端执行世界，因为文件本来就在工作区里，不需要在模型上下文里来回搬运。
 
-**每台客户端机器的一次性准备**（SMB 凭据）：客户端机器需要具备工作区共享的访问凭据，助手本身不会替你建立。存一次即可，跨重启保留：
+**每台客户端机器的一次性准备**（SMB 凭据）：工作区文件在服务器上，客户端通过共享访问它。**在 executor 的配置页「3. 工作区共享凭据」里填一次共享账号与密码即可** —— 执行器会在绑定工作区时把它存进本机凭据库，之后 `\\<服务器>\ws-<工作区>` 就像本地盘一样可用。无值守装机可以用 `--smb-user` / `--smb-password`。
 
-```powershell
-cmdkey /add:<服务器IP> /user:<SMB账号> /pass:<密码>
-```
+> 主机名不用你填：执行器从**绑定带回的可见路径**里推出共享在哪台机器上，所以不会指错。改密码后重新保存即可，会对当前已绑定的工作区重新应用。凭据与 executor token 存在同一个 `state.json`（权限 0600），**不会回显、也不会发往服务器**。
 

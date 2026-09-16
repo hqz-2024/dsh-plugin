@@ -7,6 +7,11 @@
  *
  * Usage:
  *   node executor.mjs --server ws://<host>:3080/executor --token <token> [--label <name>]
+ *                     [--smb-user <account> --smb-password <password>]
+ *
+ * `--smb-*` are optional unattended equivalents of the configuration page's
+ * "工作区共享凭据" fields; without them the executor applies whatever the page
+ * stored, and applies nothing at all when neither is set.
  *
  * Protocol (plan §2.4, the subset the dispatcher needs today):
  *
@@ -184,6 +189,8 @@ function parseArgs(argv) {
 		else if (argv[i] === '--node-pty' && argv[i + 1]) out.nodePty = argv[++i]
 		else if (argv[i] === '--config-port' && argv[i + 1]) out.configPort = Number(argv[++i])
 		else if (argv[i] === '--state' && argv[i + 1]) out.state = argv[++i]
+		else if (argv[i] === '--smb-user' && argv[i + 1]) out.smbUser = argv[++i]
+		else if (argv[i] === '--smb-password' && argv[i + 1]) out.smbPassword = argv[++i]
 	}
 	return out
 }
@@ -204,7 +211,7 @@ function parseArgs(argv) {
 /** Where the enrolled server and token live between restarts. */
 let statePath = ''
 /** The enrollment this process is using. */
-let enrollment = { server: '', token: '', username: '', label: '' }
+let enrollment = { server: '', token: '', username: '', label: '', smb: { username: '', password: '' } }
 /** The most recent answer from `hello`, for the status view. */
 let lastHello = null
 /** Set when the config page is what started this process, so `/status` can say so. */
@@ -228,6 +235,58 @@ function saveState() {
 	} catch (error) {
 		console.error(`[executor] could not persist state to ${statePath}: ${String(error?.message ?? error)}`)
 	}
+}
+
+/**
+ * The server host a UNC path names, or `undefined` when the path is not UNC.
+ * @param visiblePath - The path this machine sees for a bound workspace.
+ * @returns The host portion of `\\host\share\...`.
+ */
+function uncHost(visiblePath) {
+	const match = /^\\\\([^\\/]+)/.exec(String(visiblePath ?? ''))
+	return match ? match[1] : undefined
+}
+
+/**
+ * Make a workspace share reachable by storing this account's SMB credential.
+ *
+ * Plan §2.0 puts "绑定工作区（SMB 凭据）" in the executor's own job, and §2.2
+ * names `net use` and `cmdkey` as the ways to do it. `cmdkey` is used because it
+ * persists in the user's credential store, so a machine that starts at boot can
+ * still reach the share with nobody signed in to the page.
+ *
+ * Two details are load-bearing. `cmdkey` reports some failures on stdout while
+ * still exiting 0, so the outcome is decided by a follow-up `/list` rather than by
+ * the exit status or by matching localized success text. And the password has to
+ * appear in `cmdkey`'s argv — the command offers no stdin form — so it is visible
+ * in the process list for the moment that process lives.
+ *
+ * @param host - Server host holding the share.
+ * @returns a short outcome for the log, or `undefined` when nothing is configured.
+ */
+function applySmbCredential(host) {
+	const smb = enrollment.smb
+	if (!host || !smb?.username || !smb?.password) return undefined
+	if (platform() !== 'win32') {
+		console.log(`[executor] SMB credential not applied on ${platform()}; make \\\\${host} reachable yourself`)
+		return 'unsupported-platform'
+	}
+	const run = (args) => new Promise((resolve) => {
+		const child = spawn('cmdkey', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+		let out = ''
+		child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
+		child.stderr?.on('data', (chunk) => { out += chunk.toString('utf8') })
+		child.on('error', () => resolve({ code: -1, out }))
+		child.on('close', (code) => resolve({ code, out }))
+	})
+	return (async () => {
+		await run(['/add:' + host, '/user:' + smb.username, '/pass:' + smb.password])
+		// Verification is separate on purpose: a rejected credential still exits 0.
+		const listed = await run(['/list:' + host])
+		const stored = listed.out.includes(smb.username)
+		console.log(`[executor] SMB credential for ${host} as ${smb.username}: ${stored ? 'stored' : 'NOT stored'}`)
+		return stored ? 'stored' : 'refused'
+	})()
 }
 
 /**
@@ -327,6 +386,12 @@ button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;bord
 <fieldset><legend>2. 绑定工作区</legend>
 <div id="workspaces">登录后显示可绑定的工作区。</div>
 </fieldset>
+<fieldset><legend>3. 工作区共享凭据（可选）</legend>
+<p>工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在绑定工作区时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。留空则不改动本机凭据。</p>
+<label>共享账号</label><input id="smbuser" autocomplete="username">
+<label>共享密码</label><input id="smbpass" type="password" autocomplete="current-password">
+<button onclick="saveSmb()">保存并应用</button>
+</fieldset>
 <fieldset><legend>当前状态</legend><pre id="status">…</pre>
 <button onclick="refresh()">刷新</button></fieldset>
 <script>
@@ -341,6 +406,14 @@ async function signIn(){
   const r = await api('/login',{server:$('server').value,username:$('username').value,password:$('password').value});
   if(!r.ok){ show(r.error||'登录失败','err'); return; }
   show('已登录为 '+r.username,'ok'); renderWorkspaces(r.workspaces); refresh();
+}
+async function saveSmb(){
+  show('保存中…');
+  const r = await api('/smb',{username:$('smbuser').value,password:$('smbpass').value});
+  if(!r.ok){ show(r.error||'保存失败','err'); return; }
+  const hosts = Object.keys(r.applied||{});
+  const detail = hosts.length ? hosts.map((h)=>h+'：'+(r.applied[h]||'未配置')).join('；') : '还没有绑定的工作区，绑定时会自动应用';
+  show('已保存。'+detail,'ok'); refresh();
 }
 function renderWorkspaces(list){
   if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
@@ -408,6 +481,12 @@ function startConfigServer(port) {
 						connected: !!enrollment.token && connectionsAlive(),
 						hello: lastHello,
 						statePath,
+						// The password is never echoed back, only whether one is set.
+						smb: {
+							configured: !!enrollment.smb?.username && !!enrollment.smb?.password,
+							username: enrollment.smb?.username ?? '',
+						},
+						heldShares: [...held.values()].map((entry) => entry.visiblePath),
 					})
 				}
 				if (req.method === 'POST' && url.pathname === '/login') {
@@ -426,6 +505,17 @@ function startConfigServer(port) {
 						machine: hostname(),
 					})
 					return send(result.ok ? 200 : 400, result)
+				}
+				if (req.method === 'POST' && url.pathname === '/smb') {
+					const body = await readJson(req)
+					enrollment.smb = { username: String(body.username ?? ''), password: String(body.password ?? '') }
+					saveState()
+					// Apply to every share already held, so a corrected password takes
+					// effect without the user unbinding and binding again.
+					const hosts = [...new Set([...held.values()].map((entry) => uncHost(entry.visiblePath)).filter(Boolean))]
+					const applied = {}
+					for (const host of hosts) applied[host] = await applySmbCredential(host)
+					return send(200, { ok: true, applied, hosts })
 				}
 				if (req.method === 'POST' && url.pathname === '/unbind') {
 					const body = await readJson(req)
@@ -884,6 +974,18 @@ function connect(server, token, label) {
 				const intervalMs = Number.isInteger(message.heartbeatMs) ? message.heartbeatMs : 15000
 				held.set(String(message.workspaceId), { visiblePath: message.visiblePath, stagingDir: message.stagingDir })
 				console.log(`[executor] holding ${message.workspaceId} at ${message.visiblePath}`)
+				// Plan §2.0 puts the SMB credential in the executor's own job. The
+				// host is read from the binding the server just sent, so the user
+				// never types it and cannot point it at the wrong share.
+				const host = uncHost(message.visiblePath)
+				if (host) {
+					const applying = applySmbCredential(host)
+					if (applying) {
+						void applying.catch((error) => {
+							console.log(`[executor] SMB credential error: ${String(error?.message ?? error)}`)
+						})
+					}
+				}
 				send(socket, { type: 'bind.heartbeat', workspaceId: String(message.workspaceId) })
 				ensureHeartbeatClock(socket, intervalMs)
 				break
@@ -976,10 +1078,16 @@ if (config.token) {
 	// Explicit enrollment on the command line: the shape the verification
 	// harnesses use, and still the way to run without a browser.
 	if (!config.server) {
-		console.error('Usage: node executor.mjs --server <url> --token <token> [--label <name>] [--node-pty <path>]')
+		console.error('Usage: node executor.mjs --server <url> --token <token> [--label <name>] [--node-pty <path>] [--smb-user <account> --smb-password <password>]')
 		process.exit(2)
 	}
-	enrollment = { server: config.server, token: config.token, username: '', label: config.label || hostname() }
+	enrollment = {
+		server: config.server,
+		token: config.token,
+		username: '',
+		label: config.label || hostname(),
+		smb: { username: config.smbUser ?? '', password: config.smbPassword ?? '' },
+	}
 	connect(config.server, config.token, enrollment.label)
 } else {
 	const saved = loadState()
@@ -987,6 +1095,15 @@ if (config.token) {
 		// A machine that has already enrolled reconnects on its own: nobody is
 		// watching a service that starts at boot.
 		enrollment = { ...saved, label: saved.label || hostname() }
+		// Flags win over the saved copy, so an unattended rollout can set the share
+		// credential without touching the page.
+		if (config.smbUser !== undefined || config.smbPassword !== undefined) {
+			enrollment.smb = {
+				username: config.smbUser ?? enrollment.smb?.username ?? '',
+				password: config.smbPassword ?? enrollment.smb?.password ?? '',
+			}
+			saveState()
+		}
 		console.log(`[executor] resuming enrollment as ${saved.username || '(unknown)'} from ${statePath}`)
 		connect(enrollment.server, enrollment.token, enrollment.label)
 	} else {
