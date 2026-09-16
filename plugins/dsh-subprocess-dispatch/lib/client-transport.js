@@ -1128,6 +1128,11 @@ export class ClientTransport {
 			argv: request.argv,
 			cwd: request.cwd,
 			env: request.env,
+			// The initial stdin disposition must cross too: `{ data }` is a payload the
+			// client writes and closes, and `'ignore'` is an immediate EOF. Omitting it
+			// dropped the payload and left a pipe open, which hung every child that
+			// reads stdin to end.
+			stdin: request.stdio.stdin,
 			graceMs: request.graceMs,
 		})
 		return handle

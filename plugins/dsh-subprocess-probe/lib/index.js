@@ -21,7 +21,7 @@
  *
  * Delete this package with its pilot bundle entry once v1 is signed off.
  */
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, statSync, writeFileSync } from 'node:fs'
 
 export const name = 'dsh-subprocess-probe'
 export const inject = ['subprocess', 'clientBindings', 'systemPrompt']
@@ -369,6 +369,69 @@ export function apply(ctx, config) {
 			record({ step: 'terminal-python-terminated', settled: await repl.waitForExit() })
 		} catch (error) {
 			record({ step: 'terminal-python-repl', ok: false, error: String((error && error.message) || error) })
+		}
+
+		// ── 3e. stdin reaches the remote child ────────────────────────────────
+		// `stdio.stdin = { data }` is written to the child's stdin on the far side
+		// of the socket, so the payload surviving into the child's stdout proves the
+		// bytes crossed, not merely that a stream was configured.
+		try {
+			const payload = 'STDIN-PAYLOAD-' + Date.now()
+			const echo = ctx.subprocess.spawn({
+				argv: [process.execPath, '-e',
+					'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write("GOT:"+d))'],
+				cwd: serverCwd,
+				stdio: { stdin: { data: payload }, stdout: { maxBytes: 65536 }, stderr: { maxBytes: 4096 } },
+				graceMs: 5000,
+			})
+			const outcome = await echo.done
+			const text = echo.collected.stdout?.readFrom(0).text ?? ''
+			record({
+				step: 'stdin-roundtrip',
+				ok: true,
+				sent: payload,
+				sawPayload: text.includes(payload),
+				exitCode: outcome.exitCode,
+				stdout: text.slice(0, 120),
+			})
+		} catch (error) {
+			record({ step: 'stdin-roundtrip', ok: false, error: String((error && error.message) || error) })
+		}
+
+		// ── 3f. stdout beyond the in-memory cap spills to a whole-stream file ──
+		// The spill file is the only complete copy once the retained tail has slid
+		// past the reader's offset, so its SIZE is the assertion: a 300 KB stream
+		// must land complete even though only `maxBytes` stays in memory.
+		try {
+			const total = 300000
+			const spill = ctx.subprocess.spawn({
+				argv: [process.execPath, '-e', `process.stdout.write("S".repeat(${total}))`],
+				cwd: serverCwd,
+				stdio: {
+					stdin: 'ignore',
+					stdout: { maxBytes: 4096, spill: { maxBytes: 2000000 } },
+					stderr: { maxBytes: 4096 },
+				},
+				graceMs: 10000,
+			})
+			const outcome = await spill.done
+			const read = spill.collected.stdout.readFrom(0)
+			let spillBytes = null
+			if (typeof read.spillPath === 'string') {
+				try { spillBytes = statSync(read.spillPath).size } catch { spillBytes = null }
+			}
+			record({
+				step: 'stdout-spill',
+				ok: true,
+				exitCode: outcome.exitCode,
+				inMemoryBytes: read.text.length,
+				lossy: read.lossy,
+				spillPath: read.spillPath ?? null,
+				spillBytes,
+				complete: spillBytes === total,
+			})
+		} catch (error) {
+			record({ step: 'stdout-spill', ok: false, error: String((error && error.message) || error) })
 		}
 
 		// ── 4. Termination settles instead of hanging (plan P2 acceptance) ────

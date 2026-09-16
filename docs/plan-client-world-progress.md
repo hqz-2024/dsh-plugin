@@ -24,7 +24,7 @@
 | **P2** | 终止按进程树、不留孤儿（`tasklist` 可证） | ✅ 已验证（本轮，孙进程用例 + 独立复核） |
 | **P2** | 断线语义（§4.6：在跑的调用有确定结局、不挂起） | ✅ 已验证（本轮，1964 ms 失败收场） |
 | **P2** | §4.5 executor 掉线时后续 spawn **明确失败**、绝不静默回落服务器 | ✅ 已验证（本轮，错误文本自己声明未回落） |
-| **P2 剩余** | `argv[0]` 跨机解析 **已修复**；stdin / spill 未验证 | 🟡 部分 |
+| **P2 剩余** | `argv[0]` 跨机解析 **已修复**；初始 stdin 与 spill **本轮已验证**（stdin 曾是真 bug，见 §1） | ✅ 该组已清 |
 | **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证 |
 | **P3** | crashtest：关 executor 时终端不挂死 | ✅ 已验证（本轮） |
 | **P3** | python REPL 可用（计划 P3 验收原文） | ✅ 已验证（本轮） |
@@ -420,10 +420,38 @@ REPL 比 `powershell -Command` 是**更严的**测试：它逐行从终端读输
 
 **顺带**：`local-staging` 的机制（判定 → 签出 → 处理 → 回写 → 清理）本身不依赖具体软件，可以用任意"重"程序演练；但计划要的是真实软件，所以仍记为未做而不是降级替代。
 
+### stdin 与 spill：两条一直挂着"已实现未测"的路径 —— 其中一条是坏的（本轮）
+
+§3.3 从第一轮起就挂着"`proc.stdin` 与 spill 文件已实现未测"。这轮补测，**测出一个真 bug**。
+
+**stdin 在客户端路径上根本不工作，而且失败形态是挂死。**
+
+| 层次 | 问题 |
+|---|---|
+| `lib/client-transport.js` | 发往 executor 的 `proc.spawn` 消息里**根本没有 `stdin` 字段** —— 而 executor 自己的协议注释（`executor.mjs:14`）把它写成了消息的一部分。载荷在传输层就被丢了 |
+| `executor/executor.mjs` | `startProcess` 无条件 `stdio: ['pipe','pipe','pipe']`，既不写也不关 stdin。于是读 stdin 到 EOF 的子进程**永远等不到 EOF** |
+
+第二个层次才是要命的：症状不是"少了数据"，而是**子进程和 `handle.done` 一起挂住**。§4.6 要求"正在执行的 tool call 必须有确定结局"，而这条路径给的结局是"没有结局"。**这个 bug 只有在真的去喂一次 stdin 才会现形** —— 这正是它挂了这么多轮"未测"的原因。
+
+**修法（两层）**：
+
+1. 传输层把 `request.stdio.stdin` 一并送过去。
+2. executor 按**引擎自己的本地 provider** 的规则映射（`subprocess-local/src/spawn.ts:380`：只有 `'ignore'` 映射成 `'ignore'`，其余都是 pipe），对 `{ data }` 写入并 `end()`；同时**注册 stdin 的 `error` 处理器** —— EPIPE 是以**事件**形式到达的，`try/catch` 捕获不到，少了它一个已经退出的子进程就能把 executor 整个带崩（引擎在原处也做了这件事，`spawn.ts:493`）。
+
+写不成 `'pipe'`、也不是 `{ data }` 的形态按 `'ignore'` 处理：这是**线上边界**，确定性的 EOF 远好过挂死。
+
+修完的实测（同一次运行）：
+
+| 步骤 | 观察 |
+|---|---|
+| **stdin 往返** | 发送 `STDIN-PAYLOAD-1789531235302` → 子进程 stdout 回 `GOT:STDIN-PAYLOAD-1789531235302`，`sawPayload: true`，`exitCode: 0` |
+| **stdout 溢出落盘** | `inMemoryBytes: 4096`（被 `maxBytes` 截住）、**`lossy: true`**、`spillPath` 有值、**`spillBytes: 300000`**、**`complete: true`** |
+
+载荷能出现在子进程的 stdout 里，说明字节真的过了 socket 并且 stdin 被关闭（否则子进程不会看到 EOF、不会退出、也就不会有 `exitCode: 0`）。spill 那行则是：内存里只留 4 KB、读取标记为有损，而**完整的 300 KB 落在文件里** —— 落盘文件在 `%TEMP%\dsh-remote-spill\`（在服务器侧，因为流是在服务器侧从 socket 拼起来的），磁盘上实测 300000 字节。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
-服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
 
 > ⚠️ 本次 executor 与服务器**同机**，所以 `argv[0]` 用了服务器侧的 `node.exe` 绝对路径也能跑。跨机时这是个真问题，见 §3.1。**跨机验证至今仍未做**（见 §3.7）。
 
@@ -471,8 +499,8 @@ REPL 比 `powershell -Command` 是**更严的**测试：它逐行从终端读输
 
 ### 3.3 其他未验证 / 未做
 
-- `proc.stdin`（已实现，未测）
-- spill 文件（已实现，未测）
+- ~~`proc.stdin`（已实现，未测）~~ → **本轮测了，而且是坏的**：初始 stdin 在客户端路径上既不送达也不关闭，读 EOF 的子进程会挂死。已修并验证，见 §1
+- ~~spill 文件（已实现，未测）~~ → **本轮已验证**（300 KB 完整落盘），见 §1
 - **P5 的三个真实软件端到端未做**：Blender（`-b -P`）、Photoshop（COM/ExtendScript）、Figma（MCP）。前两个需要目标机装好对应软件，第三个依赖 P4
 - **P4 的 Figma 端到端未做**：需要目标机开着 Figma 桌面 App 并在 Dev Mode 启用 MCP server。转发机制本身已验证，最后一段是配置与实测
 - executor 授权：**端点与登录链路均已验证**（`pilot-auth` 里走通 `/auth/login` → cookie → `/client-auth/login` → 签发 token → 该 token 可用）。配置 token 仍可用
@@ -535,7 +563,7 @@ typeof pid: number value: 0
 | **P5** | 补 `AGENTS.md` / `README.md` / 用户须知；`local_run` 降级为逃生口 | ✅ **已完成** |
 | **跨机** | 命令真的在**另一台机器**上执行 | ⛔ 见 §3.7 —— 唯一还缺的那类证据 |
 | §4.8 | 性能基准 | ❌ 未做（计划自己标了"未测，需补"） |
-| §3.3 | `proc.stdin`、spill 文件 | 🟡 已实现未测 |
+| §3.3 | `proc.stdin`、spill 文件 | ✅ **已验证**（stdin 曾因传输层丢字段 + executor 不关管道而挂死，已修；见 §1） |
 
 **剩下的缺口有一个共同前提**：P0-3、真实软件、跨机三项都需要**另一台机器上的动作**（SUNDA 或用户的工作机）。它们不是实现没做完，而是实现只能在目标环境里才验得动。见 §3.7。
 

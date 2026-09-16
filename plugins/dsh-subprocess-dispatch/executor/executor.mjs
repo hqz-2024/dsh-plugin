@@ -635,6 +635,20 @@ function startProcess(socket, request) {
 		console.log(`[executor] ${procId} resolved ${argv[0]} -> ${program.path} (${program.via})`)
 	}
 	let child
+	// stdin disposition mirrors the engine's own local provider
+	// (`subprocess-local/src/spawn.ts:380`): only `'ignore'` becomes `'ignore'`,
+	// everything else is a pipe. Spawning `'pipe'` unconditionally was wrong twice
+	// over -- it dropped the `{ data }` payload and left every EOF-reading child
+	// waiting forever. A shape that is neither `'pipe'` nor a payload is treated as
+	// `'ignore'`: this is a wire boundary, and a definite EOF is a far better
+	// failure mode than a hang.
+	const stdinSpec = request.stdin
+	const stdinIsPipe = stdinSpec === 'pipe'
+	const stdinPayload = stdinSpec !== null && typeof stdinSpec === 'object' && typeof stdinSpec.data === 'string'
+		? stdinSpec.data
+		: undefined
+	/** `'pipe'` only for the two shapes that need a writable stdin; everything else gets an EOF. */
+	const stdinDisposition = stdinIsPipe || stdinPayload !== undefined ? 'pipe' : 'ignore'
 	try {
 		child = spawn(program.path, argv.slice(1), {
 			cwd: typeof request.cwd === 'string' && request.cwd ? request.cwd : undefined,
@@ -642,11 +656,18 @@ function startProcess(socket, request) {
 			detached: platform() !== 'win32',
 			windowsHide: true,
 			shell: false,
-			stdio: ['pipe', 'pipe', 'pipe'],
+			stdio: [stdinDisposition, 'pipe', 'pipe'],
 		})
 	} catch (error) {
 		send(socket, { type: 'proc.error', procId, error: `spawn failed: ${String(error?.message ?? error)}` })
 		return
+	}
+	if (stdinPayload !== undefined && child.stdin) {
+		// Batch stdin is written and closed up front. The error handler matters: an
+		// EPIPE from a child that already exited arrives as an 'error' EVENT, which a
+		// try/catch cannot catch and which would otherwise take the executor down.
+		child.stdin.on('error', () => { /* stdin write is best-effort; outcome rides on exit/output. */ })
+		child.stdin.end(stdinPayload)
 	}
 
 	const entry = { child, procId, seq: 0, killTimer: undefined, forceTimer: undefined }
