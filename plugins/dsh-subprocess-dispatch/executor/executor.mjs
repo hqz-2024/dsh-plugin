@@ -39,7 +39,7 @@
  * command that started them.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { homedir, hostname, platform, release } from 'node:os'
 import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
@@ -238,6 +238,44 @@ function saveState() {
 }
 
 /**
+ * What is sitting in a staging directory, i.e. copies an earlier task did not
+ * write back (plan §2.6: "上次未回写的残留要在下次绑定时提示用户").
+ *
+ * Only this side can answer that: the staging directory is on the user's machine,
+ * and the agent only notices leftovers when it happens to start a task that uses
+ * staging. A user binding a machine in the morning would never be told. This is
+ * reported, never deleted — the files are the user's, and the skill's rule is to
+ * ask before touching them.
+ *
+ * @param dir - The staging directory a binding named.
+ * @returns Up to 20 top-level entries, or an empty list when there is nothing to report.
+ */
+function stagingLeftovers(dir) {
+	if (typeof dir !== 'string' || dir.length === 0) return []
+	let entries
+	try {
+		entries = readdirSync(dir, { withFileTypes: true })
+	} catch {
+		// A staging directory that does not exist yet is the normal state before the
+		// first checkout, and a permission error is not worth failing a bind over.
+		return []
+	}
+	return entries.slice(0, 20).map((entry) => {
+		const full = join(dir, entry.name)
+		let size
+		let modifiedAt
+		try {
+			const stats = statSync(full)
+			size = stats.size
+			modifiedAt = stats.mtime.toISOString()
+		} catch {
+			// The entry vanished between listing and stat; report it without facts.
+		}
+		return { name: entry.name, directory: entry.isDirectory(), size, modifiedAt }
+	})
+}
+
+/**
  * The server host a UNC path names, or `undefined` when the path is not UNC.
  * @param visiblePath - The path this machine sees for a bound workspace.
  * @returns The host portion of `\\host\share\...`.
@@ -394,6 +432,7 @@ button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;bord
 </fieldset>
 <fieldset><legend>当前状态</legend><pre id="status">…</pre>
 <button onclick="refresh()">刷新</button></fieldset>
+<div id="leftovers"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 function show(text, cls){ $('msg').innerHTML = '<p class="'+(cls||'')+'">'+text+'</p>'; }
@@ -428,7 +467,17 @@ async function bind(id){
   show(r.ok?'绑定成功':(r.error||'绑定失败'), r.ok?'ok':'err'); refresh();
 }
 async function unbind(id){ await api('/unbind',{workspaceId:id}); refresh(); }
-async function refresh(){ $('status').textContent = JSON.stringify(await api('/status'), null, 2); }
+async function refresh(){
+  const s = await api('/status');
+  $('status').textContent = JSON.stringify(s, null, 2);
+  const blocks = (s.staging||[]).filter((x)=>Array.isArray(x.leftovers) && x.leftovers.length>0);
+  $('leftovers').innerHTML = blocks.length===0 ? '' : blocks.map((x)=>
+    '<fieldset style="border-color:#e0b000"><legend>暂存目录里有未回写的文件</legend>'+
+    '<p><code>'+x.stagingDir+'</code> 里有 '+x.leftovers.length+' 项。这些可能是**上次任务没写完的中间结果** —— '+
+    '请先确认它们还要不要，再决定回写、保留还是删除。<b>执行器不会替你删。</b></p>'+
+    '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\n')+'</pre>'+
+    '</fieldset>').join('');
+}
 refresh();
 </script></body></html>`
 }
@@ -487,6 +536,13 @@ function startConfigServer(port) {
 							username: enrollment.smb?.username ?? '',
 						},
 						heldShares: [...held.values()].map((entry) => entry.visiblePath),
+						// Computed on demand rather than cached at bind time, so the page
+						// reflects the directory as it is right now.
+						staging: [...held.entries()].map(([workspaceId, entry]) => ({
+							workspaceId,
+							stagingDir: entry.stagingDir ?? '',
+							leftovers: stagingLeftovers(entry.stagingDir),
+						})),
 					})
 				}
 				if (req.method === 'POST' && url.pathname === '/login') {
@@ -985,6 +1041,17 @@ function connect(server, token, label) {
 							console.log(`[executor] SMB credential error: ${String(error?.message ?? error)}`)
 						})
 					}
+				}
+				// Plan §2.6: leftovers from a task that never wrote back are surfaced
+				// when the machine next binds, because this is the only side that can
+				// see the staging directory.
+				const leftovers = stagingLeftovers(message.stagingDir)
+				if (leftovers.length > 0) {
+					console.log(`[executor] 注意：暂存目录 ${message.stagingDir} 里有 ${leftovers.length} 项上次未回写的残留：`)
+					for (const item of leftovers) {
+						console.log(`[executor]   ${item.directory ? '[目录]' : ''}${item.name}${item.size === undefined ? '' : ` (${item.size} B, ${item.modifiedAt})`}`)
+					}
+					console.log('[executor] 这些可能是上次任务没写完的中间结果，请先确认再决定保留、回写还是删除。')
 				}
 				send(socket, { type: 'bind.heartbeat', workspaceId: String(message.workspaceId) })
 				ensureHeartbeatClock(socket, intervalMs)
