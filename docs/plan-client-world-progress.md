@@ -1266,6 +1266,30 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 
 
 
+### 可见路径不可达时的报错：Node 说是"程序找不到"（本轮，复现并改掉）
+
+绑定记录里的可见路径**不可达**是很现实的第一天故障：共享名写错、`cmdkey` 里的凭据过期、服务器共享掉线。把 `pilot-auth` 探针的 `visiblePath` 临时改成 `\\192.168.28.239\no-such-share` 跑一遍，agent 拿到的是：
+
+```
+spawn C:\nvm4w\nodejs\node.exe ENOENT
+```
+
+**这句话把原因指错了地方**：Node 对"程序不存在"和"工作目录不可达"用的是**同一句话**，而句子里只有程序名。于是 agent 会去追一个并不存在的"程序没装"问题（甚至建议用户装 Node），而真正的故障（共享不可用）在整条链路上**任何地方都看不到**。
+
+修法（executor 侧）：`proc.error` 在 ENOENT 时**先确认工作目录是否可达**，不可达就把原因说出来：
+
+```
+spawn C:\nvm4w\nodejs\node.exe ENOENT — the working directory \\192.168.28.239\no-such-share is not reachable
+from this machine (a network share may be offline, or its credential may have lapsed; re-save the share
+credential in this machine's executor page)
+```
+
+程序自身的解析在 spawn **之前**就已经做过（`resolveProgram`）并且有自己的准确报错，所以走到这里的 ENOENT 本来就该优先怀疑工作目录。
+
+**固化进回归**：探针新增 `client-cwd-missing`（一个真实可达但末段不存在的路径 —— 形状等同于"共享掉线/凭据失效"，而且**不需要改 profile 配置**）与断言行 `client-cwd-missing-verdict.namesTheWorkingDirectory`。同时给 `attemptSpawn` 加了 `expectFailure`：**故意构造的负例不该混进"哪些行失败了"**；顺带修掉它把 Error 对象原样返回的毛病（`typeof result.error === 'string'` 因此恒为 false，害我第一版断言白写）。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1627,7 +1651,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 
 **判据**：出现 `probe-complete`，且**失败项恰好只有两条**，且**没有任何 `HUNG`**：
 
-> **最近一次（本轮，加了 `spawn-latency` 与两条 bind 拒绝用例之后、fixture 已启动）**：**65 行**（62 + `spawn-latency` + 两条 `auth-bind-rejects-*`）、`probe-complete`、`HUNG` 计数 **0**、失败项仍然恰好是下面那两条，关键值与下表逐项一致。`spawn-latency` 只是**信息行**（它不设 `ok`），两条拒绝用例按期望返回 400，所以"恰好两条失败"这条判据不受影响 —— 数值与用例见 §1。
+> **最近一次（本轮，加了子目录翻译、不可达 cwd、`spawn-latency`、两条 bind 拒绝用例之后）**：**71 行**、`probe-complete`、`HUNG` 计数 **0**、失败项仍然恰好是下面那两条（`client-cwd-missing` 是**预期负例**，已用 `expectFailure` 记成 `ok: true`，不会混进来），关键值与下表逐项一致。
 
 | 允许失败的两条 | 为什么它们是"对的" |
 |---|---|
@@ -1640,6 +1664,7 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 |---|---|
 | `client-execution` | `parsed.cwd` = `C:\dsh-executor-root`（翻译后的路径，不是服务器路径） |
 | `client-execution-subdir-verdict` | `translatedSubdir` **true**（cwd 比工作区更深时的前缀算术；这一步在 `pilot` 的 UNC 形态下跑） |
+| `client-cwd-missing-verdict` | `namesTheWorkingDirectory` **true**：不可达的工作目录要在报错里被点名（否则 Node 的 `spawn … ENOENT` 会把人引向"程序没装"） |
 | `perm-occupant-session` / `perm-foreign-session` | `executedOn` 分别为 `client` / `server` |
 | `terminal-python-repl` | `sawBanner`、`sawMarker`、`sawTranslatedPath` 皆 true，`sawServerPath` **false** |
 | `stdin-roundtrip` | `sawPayload` true、`exitCode` 0 |

@@ -95,7 +95,7 @@ export function apply(ctx, config) {
 	const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
 	/** Spawn through the real dispatcher and report what came back. */
-	const attemptSpawn = async (label, cwd, argv, env) => {
+	const attemptSpawn = async (label, cwd, argv, env, expectation = {}) => {
 		const started = Date.now()
 		try {
 			const handle = ctx.subprocess.spawn({
@@ -139,8 +139,15 @@ export function apply(ctx, config) {
 			})
 			return { handle, stdout, parsed }
 		} catch (error) {
-			record({ step: label, ok: false, error: String((error && error.message) || error), ms: Date.now() - started })
-			return { error }
+			// A caller that knows this spawn must fail records it as a satisfied
+			// expectation: a deliberate negative that counted as an unexpected failure
+			// would drown the checklist's "which rows failed" signal. The message comes
+			// back as a STRING — returning the Error object made every caller's
+			// `typeof result.error === 'string'` assertion silently false.
+			const message = String((error && error.message) || error)
+			const expectedFailure = expectation.expectFailure === true
+			record({ step: label, ok: expectedFailure, expectedFailure, error: message, ms: Date.now() - started })
+			return { error: message }
 		}
 	}
 
@@ -349,6 +356,23 @@ export function apply(ctx, config) {
 			translatedSubdir: subdir.parsed?.cwd === expectedSubCwd,
 		})
 		await attemptSpawn('subdir-teardown', serverCwd, [process.execPath, '-e', `require('fs').rmSync(${JSON.stringify(subName)},{recursive:true,force:true})`])
+
+		// ── 3a2. A working directory that does not exist on the client ─────────
+		// Node reports a missing program and an unreachable working directory with the
+		// same text — `spawn <program> ENOENT` — and names only the program, so the
+		// obvious reading ("that program is not installed here") is the wrong one when
+		// the share behind the cwd is gone. This drives that failure on purpose: the
+		// path is real enough to route to the client (it is under the workspace) but
+		// its last components do not exist, which is exactly the shape of a share that
+		// is offline or has lost its credential.
+		const missing = await attemptSpawn('client-cwd-missing', `${serverCwd}\\no-such-subdir\\deeper`, [process.execPath, '-e', IDENTITY_SCRIPT], undefined, { expectFailure: true })
+		record({
+			step: 'client-cwd-missing-verdict',
+			// Named `message`, not `error`: a row carrying `error` reads as a FAILURE to
+			// anyone scanning the result file, and this one is the assertion.
+			message: missing.error ?? null,
+			namesTheWorkingDirectory: typeof missing.error === 'string' && missing.error.includes('is not reachable from this machine'),
+		})
 
 		// ── 3b. What routing a command to the client costs per call (plan §4.8) ─
 		// Both paths run the same child on the same machine here, so CPU and disk

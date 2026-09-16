@@ -340,6 +340,41 @@ function applySmbCredential(host) {
 }
 
 /**
+ * Explain a failed spawn in terms of the thing that is actually wrong.
+ *
+ * Node reports a missing program and an unreachable working directory with the very
+ * same message — `spawn <program> ENOENT` — and the program is the only name in it.
+ * On a bound machine the working directory is usually a network share, so the
+ * obvious reading ("that program is not installed here") is exactly the wrong one
+ * when the share is offline or its credential has lapsed. Left as it is, the agent
+ * goes hunting for a missing program while every command keeps failing for a reason
+ * neither it nor the user can see. Measured: a binding whose share does not exist
+ * produced `spawn C:\nvm4w\nodejs\node.exe ENOENT` for every spawn.
+ *
+ * The program's own resolution happens before the spawn (`resolveProgram`) and
+ * reports its own, accurate error, so an ENOENT arriving here points at the working
+ * directory first.
+ * @param error - The `error` event from the child process.
+ * @param cwd - The working directory that child was given.
+ * @returns A message naming the cause, keeping the original text for detail.
+ */
+function describeSpawnFailure(error, cwd) {
+	const message = String(error?.message ?? error)
+	if (error?.code !== 'ENOENT' || typeof cwd !== 'string' || cwd.length === 0) return message
+	let reachable = true
+	try {
+		reachable = existsSync(cwd)
+	} catch {
+		// An unreadable path is not a usable working directory either.
+		reachable = false
+	}
+	if (reachable) return message
+	return `${message} — the working directory ${cwd} is not reachable from this machine`
+		+ ' (a network share may be offline, or its credential may have lapsed;'
+		+ ' re-save the share credential in this machine\'s executor page)'
+}
+
+/**
  * Turn a failed request into something the user can act on.
  *
  * The supported LAN topology reaches the server through a reverse proxy with a
@@ -944,7 +979,7 @@ function startProcess(socket, request) {
 	})
 	child.on('error', (error) => {
 		running.delete(procId)
-		send(socket, { type: 'proc.error', procId, error: String(error?.message ?? error) })
+		send(socket, { type: 'proc.error', procId, error: describeSpawnFailure(error, request.cwd) })
 	})
 	for (const stream of ['stdout', 'stderr']) {
 		child[stream]?.on('data', (chunk) => {
