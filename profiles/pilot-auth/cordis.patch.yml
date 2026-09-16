@@ -84,4 +84,9 @@
     loginPassword: probe-admin-password
     viewerUser: probe-viewer
     viewerPassword: probe-viewer-password
+    # Permission consistency (plan §2.1). The profile seeds
+    # `auth/session-owners.json` with these two ids before boot; the store reads
+    # that file once, so it must exist by then.
+    ownSession: sess-occupant-fixture
+    foreignSession: sess-foreign-fixture
     resultPath: !!js dshHomePath('profiles/pilot-auth/probe-result.jsonl')

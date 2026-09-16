@@ -53,6 +53,14 @@ export function apply(ctx, config) {
 	/** A non-admin account, used to prove the admin surface refuses it. */
 	const viewerUser = String(config?.viewerUser ?? '')
 	const viewerPassword = String(config?.viewerPassword ?? '')
+	/**
+	 * Two session ids the deployment's owners file maps to different accounts.
+	 * The shell tools stamp a built-in `DSH_SESSION_ID` into every shell spawn, so
+	 * these stand in for the session identity a real shell call carries. When both
+	 * are set the probe also runs the plan §2.1 permission-consistency checks.
+	 */
+	const ownSession = String(config?.ownSession ?? '')
+	const foreignSession = String(config?.foreignSession ?? '')
 	const resultPath = typeof config?.resultPath === 'string' ? config.resultPath : undefined
 
 	const record = (entry) => {
@@ -64,7 +72,7 @@ export function apply(ctx, config) {
 	const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
 	/** Spawn through the real dispatcher and report what came back. */
-	const attemptSpawn = async (label, cwd, argv) => {
+	const attemptSpawn = async (label, cwd, argv, env) => {
 		const started = Date.now()
 		try {
 			const handle = ctx.subprocess.spawn({
@@ -72,6 +80,7 @@ export function apply(ctx, config) {
 				cwd,
 				stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
 				graceMs: 3000,
+				...env === undefined ? {} : { env },
 			})
 			const outcome = await handle.done
 			const stdout = handle.collected.stdout?.readFrom(0).text ?? ''
@@ -82,7 +91,11 @@ export function apply(ctx, config) {
 			record({
 				step: label,
 				ok: true,
-				target: route?.target ?? 'server',
+				// The routing index reports the BINDING; permission consistency can
+				// still refuse that binding, so the executed machine is read from what
+				// the child itself reported rather than from the index.
+				boundTarget: route?.target ?? 'server',
+				executedOn: parsed?.cwd === undefined ? null : (parsed.cwd === visiblePath ? 'client' : 'server'),
 				handlePid: handle.pid,
 				exitCode: outcome.exitCode,
 				parsed,
@@ -523,6 +536,19 @@ export function apply(ctx, config) {
 		// its grace clock and the spawn below would land on the server.
 		await sleep(reindexMs)
 		await attemptSpawn('after-auth-bind-client-execution', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+
+		// ── permission consistency (plan §2.1, §4.5) ─────────────────────────
+		// The binding made above belongs to the token's account. The owners file
+		// maps one fixture session to that same account and another to a different
+		// one, so these four spawns are what a shell call from each account would
+		// produce. Only the occupant's session may reach the bound machine; every
+		// other session treats the workspace as unbound and runs on the server.
+		if (ownSession && foreignSession) {
+			await attemptSpawn('perm-occupant-session', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT], { DSH_SESSION_ID: ownSession })
+			await attemptSpawn('perm-foreign-session', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT], { DSH_SESSION_ID: foreignSession })
+			await attemptSpawn('perm-unknown-session', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT], { DSH_SESSION_ID: 'sess-absent-from-owners' })
+			await attemptSpawn('perm-no-session-identity', serverCwd, [process.execPath, '-e', IDENTITY_SCRIPT])
+		}
 		try {
 			const released = await fetch(`${authBase}/unbind`, {
 				method: 'POST',

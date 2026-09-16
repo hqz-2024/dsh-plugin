@@ -6,11 +6,11 @@
  * spawn, whether the process runs on the server or is forwarded to the executor
  * bound to the workspace owning `spec.cwd`.
  *
- * Routing input is `spec.cwd` alone. `SubprocessRuntime.spawn(spec)` carries no
- * session or agent identity, so `cwd -> workspace -> binding` is the only key
- * the seam offers; that is sufficient for plan v1, where the workspace binding
- * alone decides execution location. Plan v2's per-session override needs a
- * second input and is not implemented here.
+ * Routing input is `spec.cwd`, plus `DSH_SESSION_ID` when `spec.env` carries it.
+ * `SubprocessRuntime.spawn(spec)` names no session, but the shell tools stamp
+ * that built-in `shellEnv` key into every shell spawn's env, which is what makes
+ * plan §2.1's permission consistency checkable. Plan v2's per-session
+ * execution-location override is not implemented.
  *
  * `spawn` must return a handle synchronously while `resolveByPath` awaits a
  * realpath, so the decision is a synchronous prefix match against a routing
@@ -55,6 +55,17 @@ const { SubprocessRuntime } = await import(pathToFileURL(resolveEnginePackage('@
 
 /** Lowercase a path for the case-insensitive comparison Windows uses. */
 const fold = (value) => value.toLowerCase()
+
+/** Read one environment entry, matching the case-insensitive keys Windows uses. */
+const envValue = (env, key) => {
+	if (env === undefined || env === null) return undefined
+	if (typeof env[key] === 'string') return env[key]
+	const wanted = key.toLowerCase()
+	for (const [name, value] of Object.entries(env)) {
+		if (name.toLowerCase() === wanted && typeof value === 'string') return value
+	}
+	return undefined
+}
 
 /**
  * Subprocess provider that owns `ctx.subprocess` and forwards each call to a
@@ -209,6 +220,53 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 		return undefined
 	}
 
+	/**
+	 * Apply permission consistency (plan §2.1) to a client route.
+	 *
+	 * `spawn` names no session, but the shell tools stamp `DSH_SESSION_ID` into
+	 * every shell spawn's env, so a client route can be compared against the
+	 * account owning that session. §4.5 makes a mismatch a fallback rather than
+	 * an error: for any session other than the binding's occupant, the workspace
+	 * counts as unbound and the child runs on the server.
+	 *
+	 * A spec without `DSH_SESSION_ID` — LSP, subagent CLIs, `fs` search — keeps
+	 * the binding's answer, because nothing identifies its session.
+	 *
+	 * @param route - the route {@link decide} returned, possibly `undefined`.
+	 * @param spec - the spawn or terminal spec, read for its `env`.
+	 * @param op - the trace label for the operation being routed.
+	 * @returns `route` when its caller may use it, otherwise a copy aimed at the server.
+	 */
+	admit(route, spec, op) {
+		if (route === undefined || route.target !== 'client') return route
+		const sessionId = envValue(spec.env, 'DSH_SESSION_ID')
+		if (sessionId === undefined) return route
+		const owner = this.ctx.get('sessionOwnership')?.ownerOf?.(sessionId)
+		if (owner === undefined || owner === null || owner === route.username) return route
+		this.traceEvent({
+			event: 'foreign-session-fallback',
+			op,
+			workspaceId: route.id,
+			boundTo: route.username,
+			sessionOwner: owner,
+			sessionId,
+		})
+		return { ...route, target: 'server', reason: 'foreign-session-fallback' }
+	}
+
+	/**
+	 * Resolve the client route one operation may use, recording the decision.
+	 *
+	 * @param spec - the spawn or terminal spec.
+	 * @param op - the trace label for the operation.
+	 * @returns the admitted route; its `target` names the machine that runs it.
+	 */
+	routeFor(spec, op) {
+		const route = this.admit(this.decide(spec.cwd), spec, op)
+		this.trace(op, spec.cwd, route, Array.isArray(spec.argv) ? spec.argv.slice(0, 3).join(' ') : null)
+		return route
+	}
+
 	/** Append one structured record to the trace file, when one is configured. */
 	traceEvent(record) {
 		if (!this.tracePath) return
@@ -285,8 +343,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 
 	/** Route and start one managed child process. */
 	spawn(spec) {
-		const route = this.decide(spec.cwd)
-		this.trace('spawn', spec.cwd, route, Array.isArray(spec.argv) ? spec.argv.slice(0, 3).join(' ') : null)
+		const route = this.routeFor(spec, 'spawn')
 		if (route?.target === 'client') return this.spawnOnClient(route, spec)
 		return this.delegate().spawn(spec)
 	}
@@ -300,8 +357,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 	 * as Ctrl-C written into the terminal.
 	 */
 	async spawnTerminal(spec) {
-		const route = this.decide(spec.cwd)
-		this.trace('spawnTerminal', spec.cwd, route, Array.isArray(spec.argv) ? spec.argv.slice(0, 3).join(' ') : null)
+		const route = this.routeFor(spec, 'spawnTerminal')
 		if (route?.target === 'client') {
 			const cwd = this.translateCwd(route, spec.cwd)
 			const handle = await this.transport.spawnTerminal({

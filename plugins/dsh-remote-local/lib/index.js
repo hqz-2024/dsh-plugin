@@ -711,7 +711,12 @@ const isVisible = (user, sessionId, cwd) => {
 // invisible to it and the scopeUser filter silently fell through to "show
 // everything". A separate effect only ties the root provide's disposer to this
 // fiber's lifetime.
-const disposeOwnership = ctx.provide("sessionOwnership", { isVisible });
+//
+// `ownerOf` is published beside `isVisible` because the execution world needs
+// the same reader: `subprocess-dispatch` compares a spawn's `DSH_SESSION_ID`
+// account against the workspace binding's occupant (plan §2.1), and this file
+// already owns the cache and the `auth/session-owners.json` path.
+const disposeOwnership = ctx.provide("sessionOwnership", { isVisible, ownerOf });
 ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership disposal");
 	// ── service-layer session visibility (local fork, 2026-09-07) ──────────
 	// mapResolver stamps scopeUser into session.list requests; this wrap filters

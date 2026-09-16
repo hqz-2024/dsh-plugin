@@ -1,6 +1,8 @@
 # plan-client-world · 实施进度（取代 plan-client-world-p0.md）
 
-> 对应 `plan-client-world.md`。**P0 / P1 / P2 已完成并验证**；P3–P5 未做，SMB 验证因需管理员权限与第二台设备而阻塞。
+> 对应 `plan-client-world.md`。**v1 范围 P0–P5 均已完成并验证**。仍未完成的是：P0-2/P0-3（SMB 双向可见，需管理员提权 + 第二台设备）、P4/P5 的三个真实软件端到端。
+>
+> ⚠️ 验证载体是 `pilot` / `pilot-auth` profile。**线上 `web` profile 尚未挂载**对应的两条 bundle，见 §3.5 —— 这是有意的上线前状态，不是遗漏。
 >
 > 全部改动在 `~/.dsh` 内，**引擎 checkout 零改动**。
 
@@ -15,8 +17,9 @@
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
 | **P1** | executor 授权与登录链路 + **本地配置页**（§2.5 闭环） | ✅ 已验证（`pilot-auth`，真实门禁下） |
 | **P1** | admin 强制解绑（接口层） | ✅ 已验证；Web UI 入口未做 |
-| **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面、executor 本地配置页 | ❌ 未做 |
+| **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面 | ❌ 未做 |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
+| **P2** | **权限一致性**（§2.1：执行机必须是会话账号自己绑定的那台） | ✅ 已验证（本轮，`DSH_SESSION_ID` 归属比对） |
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；stdin / spill 未验证 | 🟡 部分 |
 | **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证 |
 | **P5** | 暂存工作流：v1 提示词段 + 全局 skill | ✅ 机制已验证；三个真实软件端到端未做 |
@@ -226,6 +229,40 @@ executor 现在自带一个只绑 `127.0.0.1` 的配置页（默认端口 38460�
 
 修法：两个账号都在 `accounts` 里播种（`role: admin` / `role: user`），不再依赖 `bootstrap`。
 
+### P2 权限一致性（§2.1 / §4.5，本轮）
+
+计划 §2.1 要求"本地执行时必须拒绝并提示占用者"。原先的缺口是：**`spawn(spec)` 里没有会话身份**，所以工作区被 A 绑定时，B 的会话照样能用 A 的机器。
+
+**突破口**：`spawn` 确实没有会话身份，但 shell 工具**每次都把会话身份塞进了 `spec.env`**。`DSH_SESSION_ID` 是 `@deepseek-ai/dsh-shell-env` 的**内建**键（`shell-env/src/index.ts:155-157`，值就是 `execution.agent.session.header.id`），不需要写任何 contributor。三个环节都已按行核对：
+
+```
+tool-pwsh/src/index.ts:361      dshEnv: ctx.shellEnv.collect(exec)
+pwsh-local/src/index.ts:242     env: { ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv }
+subprocess/src/index.ts:114     SubprocessSpawnSpec.env
+```
+
+`dsh-remote` 本来就为 `isVisible` 读 `auth/session-owners.json`（`lib/index.js:635` 的 `ownerOf`），只是没发布。本轮把它加进 `sessionOwnership`（一行），dispatcher 新增 `admit()`：取 `spec.env` 里的 `DSH_SESSION_ID`（大小写不敏感）→ 查归属账号 → 与绑定的占用者比对 → 不一致则**按 §4.5 视同未绑定、回落服务器**，并写一条 `foreign-session-fallback` 轨迹。
+
+四次 spawn 全部发往**同一个已绑定**的工作区（`bound=client` 是这组证据的对照项，说明绑定当时是活的）：
+
+| 步骤 | `spec.env.DSH_SESSION_ID` | 绑定 | **实际执行机** | 子进程自报 cwd |
+|---|---|---|---|---|
+| 占用者自己的会话 | `sess-occupant-fixture` → `probe-primary` | client | **client** | `C:\dsh-executor-root` |
+| **他人会话** | `sess-foreign-fixture` → `probe-admin` | client | **server** | `C:\Users\bestarc\Desktop\宝单科技资料` |
+| owners 文件里没有的 id | `sess-absent-from-owners` | client | client | `C:\dsh-executor-root` |
+| 不带会话身份 | —（undefined） | client | client | `C:\dsh-executor-root` |
+
+轨迹文件独立佐证（`dispatch-trace.jsonl`）：
+
+```
+{"event":"foreign-session-fallback","op":"spawn","boundTo":"probe-primary","sessionOwner":"probe-admin","sessionId":"sess-foreign-fixture"}
+{"event":"decision","op":"spawn","target":"server","reason":"foreign-session-fallback", ...}
+```
+
+**为什么这组证据成立**：第 2 行是唯一与其余三行不同的输入（只有会话归属变了），输出却是唯一不同的（执行机变了），而"绑定仍然是 client"排除了"绑定刚好失效"这个解释 —— 回落只可能来自新增的准入判定。裁决用的 `bound=client` 读的是路由索引（绑定本身），`executedOn` 读的是**子进程自己报的 cwd**，两者来源不同。
+
+**如实说明的边界**：不带 `DSH_SESSION_ID` 的 spawn（LSP、subagent CLI、`fs` 搜索）仍然只按绑定路由 —— 那些路径上没有任何东西标识会话。上表第 3、4 行就是这两种情况的实测值。所以本轮关闭的是"shell 调用"这条主路径上的缺口，不是全部 spawn。
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -266,9 +303,13 @@ executor 现在自带一个只绑 `127.0.0.1` 的配置页（默认端口 38460�
 
 **未采纳**：把 ripgrep/node 打进 executor 分发（更可靠，但要维护二进制分发通道）。若将来发现 PATH 解析不够稳，再补。
 
-### 3.2 权限一致性（§2.1 的安全要求）
+### 3.2 权限一致性（§2.1 的安全要求）—— ✅ 已修复
 
-计划要求"执行机必须是该会话账号自己绑定的那台"。当前实现保证的是：**工作只会发到以自己的 token 认证、且持有该绑定的那台机器**（路由键是 `binding.username`，连接按 token 认证）。**缺口**：dispatcher 看不到会话身份，所以无法校验"会话归属人 == 占用者"。计划 §4.5 的处置（非占用人 → 视同未绑定）要靠会话身份，属 v2 或 P2 后续。
+计划要求"执行机必须是该会话账号自己绑定的那台"。原缺口：dispatcher 看不到会话身份，所以**工作区被 A 绑定时 B 的会话照用不误**。
+
+**已按 §4.5 实现并验证**（证据见 §1「P2 权限一致性」）：`DSH_SESSION_ID` 是 shell 工具每次都会注入的内建环境变量，所以 shell 调用这条路径上会话身份本来就是可得的 —— 只是没人用。dispatcher 现在拿它与绑定的占用者比对，不一致则视同未绑定、回落服务器。
+
+**仍未覆盖的输入**：不带 `DSH_SESSION_ID` 的 spawn（LSP、subagent CLI、`fs` 搜索的 ripgrep）仍只按绑定路由。这些路径上没有任何东西标识会话，要覆盖它们需要另一条身份通道（或让这些消费者也走 shell-env），属 v2。
 
 ### 3.3 其他未验证 / 未做
 
@@ -300,6 +341,20 @@ typeof pid: number value: 0
 
 后果：`signalForeground` 的返回值在 Windows 上可能是 `0` 而不是进程组 id。消费者只是把它透传进 `TerminalSignalResult`（`session.ts:377-381`），不做比较，因此功能无影响；但**返回值不满足"exact group id"的字面契约**，这是一个记录在案的偏离。
 
+### 3.5 上线前状态：线上 `web` profile 尚未挂载（本轮确认）
+
+三个新插件都是**独立 bundle**（各自带 `cordis.patch.yml`，把行插进去时 `disabled: true`），只有把它们列进 profile 的 `dsh.profile.bundles` 才会挂载：
+
+| profile | bundles 里的客户端世界部分 |
+|---|---|
+| `pilot` | `dsh-client-bindings`, `dsh-subprocess-dispatch`, `dsh-subprocess-probe` |
+| `pilot-auth` | 同上 + `@xgone/dsh-remote` |
+| **`web`（线上）** | **无** |
+
+所以 P0–P5 的验证全部发生在 pilot 载体上，**线上 3080 实例的行为一点没变**（本轮全程未重启、未受影响）。这是有意的：`subprocess-dispatch` 会替换掉 `subprocess` 服务，而它的前置条件 P0-2（SMB 共享）还没建 —— 没有 SMB，翻译后的可见路径在用户机器上不存在，客户端执行会立刻失败。**先建共享，再上线。**
+
+顺带发现：`install.sh` 的 `PLUGINS` 数组（第 37 行）没有这三个新插件，所以它有完整性检查不覆盖它们。要么补进去，要么明确它们不随仓库分发。
+
 ---
 
 ## 4. 计划需要修正的地方（累计）
@@ -330,6 +385,7 @@ typeof pid: number value: 0
 | `plugins/dsh-subprocess-dispatch/` | 分派 provider + `/executor` 传输端点（`lib/index.js`、`lib/client-transport.js`） |
 | `plugins/dsh-subprocess-dispatch/executor/executor.mjs` | 客户端 executor 程序 |
 | `plugins/dsh-client-bindings/` | 绑定存储（`client_binding` domain + `clientBindings` 服务） |
+| `plugins/dsh-remote-local/` | 部署侧 dsh-remote fork 上的三处增量：`publicPrefixes` 门禁豁免（HTTP 与 upgrade 共用）、`clientAuthResolver` 服务、`sessionOwnership.ownerOf`（权限一致性用） |
 | `plugins/dsh-subprocess-probe/` | pilot 验证 harness（**v1 签字后删除**） |
 | `plugins/dsh-subprocess-probe/fixtures/local-service.mjs` | 本机服务 fixture（`/ping`、`/echo`、`/sse`），验证转发用 |
 | `profiles/pilot/` | pilot profile（无门禁，验证客户端执行机制） |
@@ -366,3 +422,14 @@ P4 转发还需要 fixture 服务（端口与 `relayPorts` 一致）：
 ```powershell
 node "$env:USERPROFILE\.dsh\plugins\dsh-subprocess-probe\fixtures\local-service.mjs" 38450
 ```
+
+### 跑 `pilot-auth`（含权限一致性用例）
+
+把 `pilot` 换成 `pilot-auth`（`DSH_HOME` 用 `~/.dsh-pilot-auth`、端口 3084、token 用 `pilot-auth-executor-token-0123456789`）。权限一致性用例还需要一个会话归属映射，**必须在启动前写好** —— 归属表只在首次读取时加载：
+
+```powershell
+'{"sess-occupant-fixture":"probe-primary","sess-foreign-fixture":"probe-admin"}' |
+  Set-Content "$env:USERPROFILE\.dsh-pilot-auth\auth\session-owners.json" -Encoding utf8 -NoNewline
+```
+
+读结果时看 `perm-*` 四步的 `executedOn`（client/server）与 `parsed.cwd`，以及 `dispatch-trace.jsonl` 里的 `foreign-session-fallback`。
