@@ -496,6 +496,67 @@ export function apply(ctx, config) {
 			record({ step: 'stdout-spill-overflow', ok: false, error: String((error && error.message) || error) })
 		}
 
+		// ── 3h. Signals on a client terminal (§3.4's claims, never driven) ────
+		// The status table has claimed "ConPTY 交互式终端（含 Ctrl-C 中断）" for many
+		// rounds, but nothing ever called `signalForeground`. Two things are asserted
+		// there and both are checkable: the refusals (SIGKILL, and anything Windows has
+		// no console equivalent for) and the one signal that must genuinely work.
+		// Ctrl-C counts as working only if the command it interrupted never finished
+		// AND the session stayed usable afterwards -- a signal that kills the terminal
+		// would satisfy the first half alone.
+		try {
+			const term = await ctx.subprocess.spawnTerminal({
+				argv: ['powershell.exe', '-NoLogo', '-NoProfile'],
+				cwd: serverCwd,
+				rows: 24,
+				cols: 100,
+				graceMs: 5000,
+			})
+			let termText = ''
+			term.output.on('data', (chunk) => { termText += chunk.toString('utf8') })
+			await sleep(2500)
+
+			const attempt = async (signal) => {
+				try { return { signal, ok: true, pid: await term.signalForeground(signal) } }
+				catch (error) { return { signal, ok: false, error: String((error && error.message) || error) } }
+			}
+			const refusedKill = await attempt('SIGKILL')
+			const refusedHup = await attempt('SIGHUP')
+
+			// Echo-proof markers: the command prints a RANDOM GUID, so that value can
+			// only exist in the output if the command actually executed. Matching a
+			// literal was unreliable -- a PTY echoes what is typed and re-renders string
+			// literals with colour escapes, so the same text appeared in one run and not
+			// in the next, which is how a broken assertion looks like a passing one.
+			const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+			const printGuid = 'Write-Output ([guid]::NewGuid().ToString())\r'
+
+			await term.write(`Start-Sleep -Seconds 120; ${printGuid}`)
+			await sleep(1500)
+			const sentInt = await attempt('SIGINT')
+			await sleep(3000)
+			const guidAfterInterrupt = GUID.test(termText)
+			// A separate command: it prints only if the session is still alive.
+			await term.write(printGuid)
+			await sleep(3000)
+
+			record({
+				step: 'terminal-signals',
+				refusedKill,
+				refusedHup,
+				sentInt,
+				interruptedTheCommand: !guidAfterInterrupt,
+				sessionSurvivedAndUsable: GUID.test(termText),
+				bytes: termText.length,
+			})
+
+			await term.terminate()
+			const afterTerminate = await attempt('SIGINT')
+			record({ step: 'terminal-signal-after-terminate', afterTerminate })
+		} catch (error) {
+			record({ step: 'terminal-signals', ok: false, error: String((error && error.message) || error) })
+		}
+
 		// ── 4. Termination settles instead of hanging (plan P2 acceptance) ────
 		// P2 requires that timeout termination leave no orphan processes, provable
 		// with `tasklist`. Killing only the direct child would leave the child's own

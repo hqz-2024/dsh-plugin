@@ -25,7 +25,7 @@
 | **P2** | 断线语义（§4.6：在跑的调用有确定结局、不挂起） | ✅ 已验证（本轮，1964 ms 失败收场） |
 | **P2** | §4.5 executor 掉线时后续 spawn **明确失败**、绝不静默回落服务器 | ✅ 已验证（本轮，错误文本自己声明未回落） |
 | **P2 剩余** | `argv[0]` 跨机解析 **已修复**；初始 stdin 与 spill **本轮已验证**（stdin 曾是真 bug，见 §1） | ✅ 该组已清 |
-| **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证 |
+| **P3** | ConPTY 交互式终端（含 Ctrl-C 中断） | ✅ 已验证（**Ctrl-C 与信号拒绝是后来才真测的**，见 §1） |
 | **P3** | crashtest：关 executor 时终端不挂死 | ✅ 已验证（本轮） |
 | **P3** | python REPL 可用（计划 P3 验收原文） | ✅ 已验证（本轮） |
 | **P5** | 暂存工作流：v1 提示词段 + 全局 skill + 文档（AGENTS/README/用户须知） | ✅ 机制与文档已完成；三个真实软件端到端未做（本机无那些软件，见 §1） |
@@ -730,6 +730,29 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 
 
+### P3 的 Ctrl-C 与信号拒绝：状态表里那个 ✅ 此前**没有依据**（本轮补齐）
+
+§0 的状态表从很早开始就写着「P3 | ConPTY 交互式终端（**含 Ctrl-C 中断**）| ✅ 已验证」。本轮去核对时发现：**没有任何用例调用过 `signalForeground`** —— 那个 ✅ 是当时顺手写下的，不是测出来的。这比缺一个功能更糟，因为读表的人会以为它已经被验过。
+
+补齐后的结果（两次独立运行，完全一致）：
+
+| 调用 | 结果 |
+|---|---|
+| `signalForeground('SIGKILL')` | **拒绝**，`refusing to SIGKILL; terminate the terminal session instead` |
+| `signalForeground('SIGHUP')` | **拒绝**，`signal SIGHUP is unsupported on Windows` |
+| `signalForeground('SIGINT')` | 接受 |
+| **那条 120 秒的 `Start-Sleep` 是否真被打断** | **是** |
+| **打断之后会话还能不能用** | **能**（再跑一条命令仍出结果） |
+| 终止之后再发信号 | `terminal is terminating` |
+
+§3.4 那张表里关于信号的叙述，现在都有实测支撑。
+
+**这一轮真正的教训在测试方法上。** 第一版用字面标记（`Write-Output 'SHOULD-NOT-APPEAR'`）判断"命令有没有跑完"，结果**同一份代码在连续两次运行里给出 True 和 False**。原因是 PTY **会回显敲进去的内容**，而且 PSReadLine 会把字符串字面量按语法重新渲染（中间插入颜色转义）。我第二次试着把标记拆成 `'SHOULD'+'-NOT'+'-APPEAR'` 来绕开回显，**仍然不可靠** —— 因为我在猜回显的确切形态，而不是消除这个变量。
+
+最后改成让命令打印一个**随机 GUID**：那个值只可能在命令真的执行过之后出现，回显里永远不会有。两次运行结果一致。**结论：能靠"构造不可能出现的证据"就不要靠"猜测呈现形式"。** 这与前面几轮的教训是同一个：断言落在**只有目标行为发生时才可能出现**的观测上。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1065,6 +1088,8 @@ pnpm dsh --profile pilot-auth --port 3084          # 后台
 | `prompt-section-bound` / `unbound` | 长度 1463 / 0 |
 | `relay-sse` | `streamed` true，三个 `arrivals` 间隔约 400ms |
 | `relay-upstream-dead` | **502**，且错误文本含 `ECONNREFUSED` 与**确切端口**（3845 无人监听），不能是挂起或无理由的 502 |
+| `terminal-signals` | `refusedKill`/`refusedHup` 都是 `ok:false`；`sentInt` 是 `ok:true`；**`interruptedTheCommand` 与 `sessionSurvivedAndUsable` 都为 true**（用随机 GUID 判定，别改成字面标记 —— 见 §1） |
+| `terminal-signal-after-terminate` | 错误为 `terminal is terminating` |
 
 ### B. 上线组合（`web-client`）
 
