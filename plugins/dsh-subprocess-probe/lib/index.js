@@ -206,6 +206,12 @@ export function apply(ctx, config) {
 			// program that silently ignores it. Only UNC bindings carry it.
 			hasShareGuidance: boundText.includes('ProviderPath'),
 			hasCmdFallbackWarning: boundText.includes('falls back to'),
+			// Staging is the section's other load-bearing claim, and it is conditional
+			// on the binding naming a directory: the skill tells the agent to use "the
+			// staging directory the prompt gives you", so a binding without one leaves
+			// the agent holding instructions it cannot carry out.
+			stagingDir: record2?.stagingDir ?? null,
+			hasStagingGuidance: boundText.includes('## Working on large files'),
 			head: boundText.slice(0, 180),
 		})
 		record({

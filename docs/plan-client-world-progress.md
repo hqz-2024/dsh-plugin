@@ -33,7 +33,7 @@
 | **P3** | **"断网"**（链路中断，而非关进程） | ✅ 生产时序两个场景：12s 抖动不丢、130s 中断失效（§1） |
 | **P4** | `/client-relay` 转发 | ✅ 200/200/SSE 三段到达、端口白名单 403、未知密钥 403、上游死 502 |
 | **P4** | 调用方走人 → 客户端上游跟着断 | ✅ 本轮复现并修复（`http.abort` 曾是**死代码**，见 §1） |
-| **P5** | 暂存工作流（全局 skill + 提示词段 + 文档） | ✅ 机制与文档完成；三个真实软件端到端 ⛔（本机没装） |
+| **P5** | 暂存工作流（全局 skill + 提示词段 + 文档） | ✅ 机制与文档完成；**留空暂存目录的依赖已修**（空白 → 执行器填默认值，见 §1）；三个真实软件端到端 ⛔（本机没装） |
 | **P5** | 提示词段真的到达**真实会话** | ✅ 真实会话里读到（§1） |
 | **跨机** | 命令真的在**另一台机器**上执行 | ⛔ **唯一还缺的那类证据**（§3.7 / §7 C-2）；留档工具 `check-cross-machine.mjs` 已就绪 |
 | **§4.8** | 性能基准 | 🟡 执行路径：每次调用约 **+2ms**（同机对照，§1）；**SMB 往返 vs 本机盘**的客户端侧待测 |
@@ -1177,6 +1177,24 @@ Node 在 IncomingMessage 的**请求体读完**时就发 `close`，而转发是�
 **修复后的证据**：executor 打出 `http.abort http-8f17576a… — dropped the upstream`，fixture 打出 `sse aborted by the caller after 1 event(s)`（对照组 A 仍是 `completed normally after 3 event(s)`）。
 
 **顺带的方法记录**：我一度准备去"修" executor 的 `upstream.destroy()` —— 以为请求已经 `end()` 之后再 destroy 是空操作。先量了一下，发现 executor 那一半本来是对的，死的是服务器那一半。**先定位再修，别按最顺手的假设改。**
+
+
+
+### 暂存目录：一个"留空就整段消失"的依赖（本轮，已修）
+
+P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## Working on large files` 是**条件输出**的 —— `if (binding.stagingDir)`。而这个目录来自绑定记录，绑定记录来自执行器配置页上那个**可选、默认空白**的输入框。
+
+于是"用户按最自然的方式绑定（不填）"会得到：**提示词里根本没有暂存这一段**，而同一段提示词又触发了全局 skill `local-staging`，那个 skill 让 agent 用"本机暂存目录 —— 形如 `C:\dsh-staging`" —— 一个在任何地方都没有出现的目录。**agent 拿到的是它执行不了的指令。**
+
+这与前面几轮那些 bug 是同一个形状：**两半只在"被测过的那一种配置"下一致**；它之所以一直没暴露，是因为**探针每次都显式传了 `stagingDir`**。
+
+**修法：留空 = 用默认值**，由"知道用户文件系统的那一侧"决定默认值：
+
+- 执行器在 `/bind` 时把空白换成 `%USERPROFILE%\.dsh-staging`（`defaultStagingDir()`）；
+- 配置页把默认值同时写进**标签和 placeholder**（`DEFAULT_STAGING` 由服务端渲染时插值，所以用户看到的就是这台机器真正会用的路径）；
+- skill 与 README 改成"提示词一定会给出确切路径，留空则用默认值"。
+
+**验证**：用空 `stagingDir` 调 `/bind` → 绑定记录里是 `C:\Users\bestarc\.dsh-staging`；配置页里 `DEFAULT_STAGING` 插值正确；并且**把这件事变成常驻证据** —— 探针的 `prompt-section-bound` 现在多记两个字段（`stagingDir` / `hasStagingGuidance`），smoke 里读数为 `hasStagingGuidance: true`。**注意取值**：pilot-auth 的可见路径是本地盘，所以 `hasShareGuidance`/`hasCmdFallbackWarning` 为 false 是**对的**；UNC 那两条只在 `pilot`（真实共享）下为 true。
 
 
 

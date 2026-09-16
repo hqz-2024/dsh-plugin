@@ -491,6 +491,8 @@ button{margin-top:.7rem;cursor:pointer}pre{background:#f6f6f6;padding:.6rem;bord
 <div id="leftovers"></div>
 <script>
 const $ = (id) => document.getElementById(id);
+// Interpolated so the page shows the directory this machine will actually use.
+const DEFAULT_STAGING = ${JSON.stringify(defaultStagingDir())};
 function show(text, cls){ $('msg').innerHTML = '<p class="'+(cls||'')+'">'+text+'</p>'; }
 async function api(path, body){
   const r = await fetch(path, body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -515,7 +517,7 @@ function renderWorkspaces(list){
   $('workspaces').innerHTML = list.map((w)=>
     '<div style="margin:.4rem 0"><b>'+w.title+'</b><br><code>'+w.path+'</code><br>'+
     '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" value="">'+
-    '<label>本机暂存目录</label><input id="sd-'+w.id+'" value="">'+
+    '<label>本机暂存目录（留空则用 '+DEFAULT_STAGING+'）</label><input id="sd-'+w.id+'" placeholder="'+DEFAULT_STAGING+'" value="">'+
     '<button onclick="bind(\\''+w.id+'\\')">绑定</button></div>').join('');
 }
 async function bind(id){
@@ -555,6 +557,21 @@ async function readJson(req, limit = 64 * 1024) {
 	} catch {
 		return {}
 	}
+}
+
+/**
+ * Where large files are checked out to when the user does not name a directory.
+ *
+ * The staging directory is load-bearing rather than optional: the system prompt
+ * tells the agent to stage big files and names the directory to use, and it can
+ * only do that when the binding carries one. A blank field therefore must not
+ * mean "no staging" — it means "use the default", and this is the side that knows
+ * the user's own filesystem. `%USERPROFILE%` is the right base: it is the user's
+ * own space, on their own disk, and it survives the workspace being unbound.
+ * @returns The default staging directory on this machine.
+ */
+function defaultStagingDir() {
+	return join(homedir(), '.dsh-staging')
 }
 
 /**
@@ -613,7 +630,10 @@ function startConfigServer(port) {
 					const result = await callEnrolled('bind', {
 						workspaceId: String(body.workspaceId ?? ''),
 						visiblePath: String(body.visiblePath ?? ''),
-						stagingDir: String(body.stagingDir ?? ''),
+						// Blank means "use the default": the prompt section and the
+						// staging skill both need a real directory, and this machine is
+						// the only side that can pick one.
+						stagingDir: String(body.stagingDir ?? '').trim() || defaultStagingDir(),
 						machine: hostname(),
 					})
 					return send(result.ok ? 200 : 400, result)
