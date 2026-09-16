@@ -1255,6 +1255,12 @@ function connect(server, token, label) {
 				if (upstream) {
 					httpRequests.delete(requestId)
 					try { upstream.destroy() } catch { /* already settled */ }
+					// Logged because this is the one relay outcome with no answer frame
+					// of its own: without a line here, "the caller walked away" and "the
+					// abort never arrived" look identical from this side.
+					console.log(`[executor] http.abort ${requestId} — dropped the upstream`)
+				} else {
+					console.log(`[executor] http.abort ${requestId} — nothing in flight`)
 				}
 				break
 			}

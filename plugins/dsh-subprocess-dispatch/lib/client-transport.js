@@ -990,7 +990,17 @@ export class ClientTransport {
 		}
 		// A caller that walks away must not leave the client's upstream request
 		// running, so the disconnect aborts it there.
-		req.on('close', () => {
+		//
+		// This listens on the RESPONSE, not on the request. Node emits `close` on an
+		// IncomingMessage as soon as its body has been read to the end, and the body
+		// loop above always reads it to the end — so a listener attached afterwards
+		// never fires, and the abort was never sent at all (measured: with the body
+		// consumed, a client that dies mid-stream produces `res` `close` and no `req`
+		// `close`). `writableFinished` is what separates the two outcomes: a response
+		// that finished normally closes after flushing, while one whose caller
+		// vanished closes before it ever finished.
+		res.on('close', () => {
+			if (res.writableFinished) return
 			if (entry.settled) return
 			release()
 			this.send(username, { type: 'http.abort', requestId })

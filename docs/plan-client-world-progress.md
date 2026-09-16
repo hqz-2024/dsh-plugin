@@ -1150,6 +1150,31 @@ pilot 的绑定时钟是**秒级**的（心跳 1s / 宽限 20s / 扫描 1s），
 
 
 
+### 转发的"调用方走人"路径：一个从未被发出的 `http.abort`（本轮，已复现并修复）
+
+转发（`/client-relay`）就是给 Figma MCP 那类**长连接流**用的，而用户关标签页、刷新、取消请求是常态。服务器里本来就写了这条路径（"a caller that walks away must not leave the client's upstream request running"），但**没有任何用例碰过它**。
+
+**怎么测的（不用改探针）**：先让 fixture 自己能说清每条 SSE 是**正常结束**还是**被调用方切断**（`res.on('finish')` vs `res.on('close')` 且未 finish）；然后用一个外部 node 客户端走 `  /client-relay/.../38450/sse`，读到第 1 个事件后**杀掉自己的 socket**（等价于关标签页）。
+
+**修复前的观察**：调用方在第 1 个事件后就死了，fixture 却说 `sse completed normally after 3 event(s)` —— 而且 executor 日志里**根本没有** `http.abort` 这一行（那时它还没有任何日志，所以我先加了一行：这是唯一没有应答帧的转发结局，没有它"调用方走了"和"abort 没送到"长得一模一样）。
+
+**机制是量出来的，不是猜的**（一个 20 行的独立 server + client）：
+
+| 服务器的请求体 | 谁在调用方断开时触发 |
+|---|---|
+| **没**被读掉 | `req 'close'` 在断开时触发（+327ms）—— 我原先就是照这个假设写的 |
+| **被读到底**（转发循环正是这么做的：`for await (const chunk of req)`） | **`req 'close'` 一次都不触发**；只有 `res 'close'` 触发（+325ms，`writableFinished=false`） |
+
+Node 在 IncomingMessage 的**请求体读完**时就发 `close`，而转发是在读完那个循环**之后**才挂监听 —— 事件早就发过了。**结论：那条 abort 是死代码**，每一个被调用方放弃的转发请求，都在用户机器上继续把上游取到底。
+
+**修法**：监听 **response** 的 `close`，并用 `writableFinished` 区分"正常写完"与"调用方消失"。
+
+**修复后的证据**：executor 打出 `http.abort http-8f17576a… — dropped the upstream`，fixture 打出 `sse aborted by the caller after 1 event(s)`（对照组 A 仍是 `completed normally after 3 event(s)`）。
+
+**顺带的方法记录**：我一度准备去"修" executor 的 `upstream.destroy()` —— 以为请求已经 `end()` 之后再 destroy 是空操作。先量了一下，发现 executor 那一半本来是对的，死的是服务器那一半。**先定位再修，别按最顺手的假设改。**
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -1214,6 +1239,7 @@ pilot 的绑定时钟是**秒级**的（心跳 1s / 宽限 20s / 扫描 1s），
 - **admin 强制解绑已完成并验证**（`/client-admin/bindings` + `/client-admin/unbind`，非 admin 403），**界面也已补上**并在真实浏览器里点过（设置 → 工作区绑定，见 §1）
 - 账号上的工作区授权字段：未做（`workspaces` 目前复用 `roleMap`）
 - 转发端点的鉴权边界：**路径密钥**（`relayTokens`：secret → 账号）+ 账号在线 + 持有活跃绑定 + 端口在白名单。未知密钥一律 403（见 §1 的 P4 追加）。**这不替代 DSH 会话门禁** —— 它是一条自带凭据的通道，所以必须同时把它的前缀列入 `publicPrefixes` 才能绕过门禁
+- ~~转发的中断路径（调用方走人 → 上游要跟着断）~~ → **本轮复现并修复**：`req.on('close')` 在请求体读完之后才挂上，永远不触发，`http.abort` 是死代码；改成监听 response 的 `close` 并用 `writableFinished` 判定。见 §1
 - `local_binding` 只读工具未做 —— 计划 §2.6 把它与提示词段列为"或"关系，提示词段已覆盖
 
 ### 3.4 P3（终端）的 substrate 限制 —— 已知并接受

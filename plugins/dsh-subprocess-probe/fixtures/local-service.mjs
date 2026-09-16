@@ -46,14 +46,32 @@ const server = createServer((req, res) => {
 			'mcp-session-id': 'fixture-session-1',
 		})
 		let tick = 0
+		let ended = false
+		let reported = false
+		/** Say how this stream ended — the only place the peer's behaviour is visible. */
+		const report = (how) => {
+			if (reported) return
+			reported = true
+			console.log(`[fixture] sse ${how} after ${tick} event(s)`)
+		}
 		const timer = setInterval(() => {
 			tick += 1
 			res.write(`event: tick\ndata: ${tick}\n\n`)
 			if (tick >= 3) {
 				clearInterval(timer)
+				ended = true
 				res.end()
 			}
 		}, 400)
+		res.on('finish', () => { ended = true })
+		// A caller that walks away (browser tab closed, request aborted) must take the
+		// upstream down with it. That is what the relay's `http.abort` is for, and this
+		// line is the only place it becomes observable: `ended` distinguishes the
+		// stream that finished on its own from the one that was cut off.
+		res.on('close', () => {
+			clearInterval(timer)
+			report(ended ? 'completed normally' : 'aborted by the caller')
+		})
 		return
 	}
 	res.writeHead(404, { 'content-type': 'text/plain' })
