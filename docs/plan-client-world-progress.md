@@ -1470,11 +1470,38 @@ pnpm dsh --profile web-client --port 3086
 
 ### C. 上线前的最后三件事
 
-1. `profiles/web-client/cordis.patch.yml` 里的 `tokens` / `relayTokens` 换成**真实签发**的值（现在是测试值）。
+1. ~~`profiles/web-client/cordis.patch.yml` 里的 `tokens` / `relayTokens` 换成**真实签发**的值（现在是测试值）。~~
+   ✅ **已完成（本轮）**：
+   - `tokens: {}` —— **不写死任何 executor token**。每台客户端机器在配置页登录一次，由服务器签发专属 token（§2.5 的链路），可逐台撤销；写死 token 的写法仍受支持，但那份凭据撤不掉（删账号只吊销账号库里的 token，配置行要手工删并重启）。
+   - `relayTokens` 换成新随机密钥（48 hex，只存在于本 profile 与运维记录里；它在 gitignore 内，不会进仓库）。
+   - **取值已按上线形态 dry run 过**（`.dsh-web-client`，3086）：
+
+     | 检查 | 结果 |
+     |---|---|
+     | 组合能起（空 `tokens` 不影响装载） | ✅ 3086 监听 |
+     | `/api` 无 cookie | 403，且 body 里**没有**处理器文本 → 门禁答的 |
+     | `/client-auth/state` 无 token | 401 `a valid executor token is required` → 处理器答的，前缀确实放行 |
+     | `/client-relay/<错密钥>/3845/x` | 403 `unknown relay secret` |
+     | `/client-relay/<**新**密钥>/3845/x` | 502 `no executor is connected for 'admin'` → 密钥被识别、账号映射正确 |
+     | `/client-relay/<**旧测试**密钥>/3845/x` | 403 `unknown relay secret` → 测试值真的没了 |
+     | `/executor?token=<旧测试 token>` / 无 token / 任意串 | 均 close **4001 unauthorized** |
 2. 确认待提交文件里搜不到任何真实凭据：
    ```powershell
    git grep -n --fixed-strings '<真实 token 的前 12 位>' --
    ```
-3. 客户端机器：装了 Node、executor 在跑、配置页里填过一次共享凭据。
+3. 客户端机器：装了 Node、**设了 `NODE_EXTRA_CA_CERTS`**、executor 在跑、配置页里填过一次共享凭据。
+
+#### C-2. 切到 `web-client` 的步骤（需要人动手的部分）
+
+本轮把能准备的都准备了（见上），**剩下三步只能由人到机器前做**，因为都要求登录线上 GUI 或重启线上实例：
+
+1. **在线上 GUI 里建 `smbtest` 工作区**（路径 `C:\dsh-workspaces\smbtest`）。
+   线上 home（`~/.dsh`）目前的工作区只有 4 个：`deepseek-harness`、`宝单科技资料`、`微众诉讼`、`.dsh` —— **`smbtest` 只在 `.dsh-web-client` 那个测试 home 里**，线上没有。跨机验证要绑的就是它（它对应共享 `\\192.168.28.239\ws-smbtest`）。
+   **不要手改 `storages/workspace.json`**：`global.workspaceIds` 是另一份顺序表，只加一处启动就报 "absent from registry order"；而且线上实例正在运行，内存里的副本会把我写进去的内容覆盖掉。走 GUI（设置 → 工作区 → 添加）。
+2. **改启动命令并重启**：`start-dsh-lan.cmd` 里 `--profile web` → `--profile web-client`，然后关掉 dsh-web 那个窗口重新运行这个 cmd。**caddy 不用重启**（它只是反代 127.0.0.1:3080，上游换组合对它是透明的）。
+   回退同样一条命令改回来即可；绑定记录留在 `client_binding` 域里不会丢（但跨重启一律不活跃，需要重新绑定）。
+3. **在 SUNDA 上装客户端**：装 Node → 设 `NODE_EXTRA_CA_CERTS`（见 README；忘了会得到一条写明补救办法的错误）→ 用浏览器打开 `https://192.168.28.239:8443` 登录 → **设置 → 本地插件 → 下载 `executor.mjs`** → `node executor.mjs` → 打开 `http://127.0.0.1:38460`，在配置页填服务器地址 `https://192.168.28.239:8443`、用 `admin` 登录一次 → 填共享凭据（`dshtest` / 见运维记录）→ 绑 `smbtest`，可见路径填 `\\192.168.28.239\ws-smbtest`。
+
+**判据（这一步才是跨机证明）**：在线上 GUI 里开一个会话、cwd 指向 `smbtest`，让 agent 跑 `hostname` 与 `Get-Location` —— **子进程自报 `SUNDA`** 就是跨机证明；同时 `execution:world` 提示词段应当出现（§2.5）。这一条同时把 `argv[0]` 跨机解析、UNC 路径翻译、"真实 shell 工具链而非探针直调 `spawn`"一并验掉。
 
 

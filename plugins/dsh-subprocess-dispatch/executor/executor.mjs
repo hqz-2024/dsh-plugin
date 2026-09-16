@@ -330,6 +330,29 @@ function applySmbCredential(host) {
 }
 
 /**
+ * Turn a failed request into something the user can act on.
+ *
+ * The supported LAN topology reaches the server through a reverse proxy with a
+ * self-signed certificate, so the first thing a new machine hits is a trust
+ * error whose text names nothing fixable. Node does not read the Windows
+ * certificate store, so trusting the certificate in a browser changes nothing
+ * here — the remedy has to be said out loud, and this is the page the user is
+ * looking at when it fails.
+ * @param error - The rejection from `fetch`.
+ * @returns A message for the configuration page.
+ */
+function explainRequestFailure(error) {
+	const text = String(error?.cause?.message ?? error?.message ?? error)
+	if (/self.signed|unable to (get|verify)|certificate/i.test(text)) {
+		return `无法验证服务器证书（${text}）。Node 不读 Windows 证书库，在浏览器里信任过也没用：`
+			+ '把服务器上 caddy 的根证书 %APPDATA%\\Caddy\\pki\\authorities\\local\\root.crt 复制到本机，'
+			+ '然后在启动执行器前设置环境变量 NODE_EXTRA_CA_CERTS 指向那个文件（例如 '
+			+ '`$env:NODE_EXTRA_CA_CERTS="$env:USERPROFILE\\caddy-root.crt"`）。'
+	}
+	return `无法连接服务器：${text}`
+}
+
+/**
  * Sign in and exchange the session for an executor token (plan §2.5 steps 2-3).
  *
  * The server issues the token; this side only carries the cookie between the two
@@ -350,7 +373,7 @@ async function signIn(server, username, password) {
 			body: JSON.stringify({ username, password }),
 		})
 	} catch (error) {
-		return { ok: false, error: `无法连接服务器：${String(error?.message ?? error)}` }
+		return { ok: false, error: explainRequestFailure(error) }
 	}
 	if (!response.ok) {
 		const detail = await response.text().catch(() => '')
@@ -419,7 +442,7 @@ async function callEnrolled(action, body) {
 		const payload = await response.json().catch(() => ({}))
 		return { status: response.status, ...payload }
 	} catch (error) {
-		return { ok: false, error: String(error?.message ?? error) }
+		return { ok: false, error: explainRequestFailure(error) }
 	}
 }
 
