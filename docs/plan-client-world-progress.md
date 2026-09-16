@@ -22,7 +22,7 @@
 | **P1** | 客户端重启 / 短暂抖动**不**丢绑定 | ✅ 生产时序下 12s 抖动后自动重新持有；执行器重启后 `409 occupied` 且记录仍 active（§1） |
 | **P1 剩余** | 账号上的工作区授权字段 | ❌ 未做（`workspaces` 复用 roleMap，计划 §2.1 明确允许） |
 | **P2** | 客户端真的执行：传输 + 路径翻译 + 终止阶梯 | ✅ 含心跳回路；子目录 cwd 的翻译见 §1 |
-| **P2** | 引擎 LSP 是否也跟着工作区走 | 🟡 **按构造验证**：`lsp-stdio` 与 shell 共用 `ctx.subprocess`（代码指针见 §1）；本机没装语言服务器，未端到端跑过 |
+| **P2** | 引擎 LSP 是否也跟着工作区走 | ⚪ **本部署没有挂载 LSP**（base bundle 与线上组合里都没有 `lsp` 行）→ 切换对它无影响，也没有可验的东西（引擎侧共用 seam 的代码指针见 §1） |
 | **P2** | 权限一致性（执行机 = 会话账号自己绑的那台） | ✅ `DSH_SESSION_ID` 归属比对；admin 会话不在覆盖范围内，已记为已知边界（§1） |
 | **P2** | 终止按进程树、不留孤儿 | ✅ 孙进程用例 + `tasklist` 独立复核 |
 | **P2** | §4.6 在飞调用有确定结局 | ✅ 杀进程 1964ms 失败收场；静默断链 9386ms `rejected:` |
@@ -1246,7 +1246,7 @@ P5 的暂存机制挂在**提示词**上：`renderExecutionWorld` 里那段 `## 
 | **引擎 LSP（`lsp-stdio`）** | ✅ | **按构造成立，未端到端跑过**（见下） |
 | 部署侧 8 个插件 | ❌ **一个都不用** | 切换对它们**完全无影响** |
 
-**LSP 这一条**：`packages/lsp/lsp-stdio/src/index.ts:47` 写着 `inject = ['fs', 'lsp', 'subprocess']`，`:157` 把 `spec => ctx.subprocess.spawn(spec)` 当 spawner 传下去 —— 也就是说语言服务器和 shell 走**同一个 seam**，所以分派规则同样适用（引擎自己在 `instance.ts:112` 也写着 "A subprocess provider may run in another PID namespace or machine"，这个 seam 就是为远程 provider 设计的）。**本轮没有端到端跑过 LSP**：本机没装语言服务器，跑它还需要一个真实会话。如实记为"按构造验证"，不写成"已验证"。
+**LSP 这一条（先把上一句改准）**：计划里"Bash/PTY/LSP 一起走"是**引擎架构层面**的说法 —— `packages/lsp/lsp-stdio/src/index.ts:47` 确实是 `inject = ['fs', 'lsp', 'subprocess']`、`:157` 把 `spec => ctx.subprocess.spawn(spec)` 当 spawner，所以**只要挂了 LSP，它就会跟着工作区走**。但**本部署根本没挂**：`packages/bundle/base/cordis.patch.yml` 里搜不到任何 lsp 行，`--profile web-client --dump-config` 的合成结果里也没有。所以这条对本部署而言**不是"未验证"，而是"没有可验的东西"** —— 我先前把它记成"按构造验证"是说重了，已改回。
 
 **两处不走 seam 的 spawn（查明是设计，不是缺陷）**：
 
