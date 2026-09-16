@@ -17,8 +17,8 @@
 | **P0-3** | SMB 边界实测（8–10MB 边界 / Office 锁文件） | ⛔ 未做：需在客户端侧测量 |
 | **P1** | 绑定存储（占用人 / 心跳 / 失效 / 仲裁 / 撤销） | ✅ 已验证 |
 | **P1** | executor 授权与登录链路 + **本地配置页**（§2.5 闭环） | ✅ 已验证（`pilot-auth`，真实门禁下） |
-| **P1** | admin 强制解绑（接口层） | ✅ 已验证；Web UI 入口未做 |
-| **P1 剩余** | 账号上的工作区授权字段、admin 强制解绑界面 | ❌ 未做（**撤销授权→解绑已接通**，见 §1） |
+| **P1** | admin 强制解绑（接口层 + **界面**） | ✅ 已验证（界面用真实浏览器验过，见 §1） |
+| **P1 剩余** | 账号上的工作区授权字段 | ❌ 未做（`workspaces` 复用 roleMap，计划 §2.1 明确允许） |
 | **P2** | 客户端真的执行：传输层 + executor + 路径翻译 + 终止阶梯 | ✅ 已验证（含心跳回路） |
 | **P2** | **权限一致性**（§2.1：执行机必须是会话账号自己绑定的那台） | ✅ 已验证（本轮，`DSH_SESSION_ID` 归属比对） |
 | **P2** | 终止按进程树、不留孤儿（`tasklist` 可证） | ✅ 已验证（本轮，孙进程用例 + 独立复核） |
@@ -829,6 +829,33 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 
 
 
+### §2.1 的最后一项：admin 强制解绑的**界面**（本轮完成，并用真实浏览器验证）
+
+§2.1 把"admin 在**界面**强制解绑"列为两条人工出口之一。接口早就能用（`/client-admin/bindings`、`/client-admin/unbind`，非 admin 403），但**没有界面** —— 管理员只能自己想办法发 HTTP。
+
+**做法**：给 `dsh-subprocess-dispatch` 加了一个**浏览器半边**（`lib/client.js` + `package.json` 的 `exports["./client"]` 与 `dsh.client`），注册成 `settings.section`（order 1010，紧跟在 auth 插件的「本地插件」1000 之后）。**放在拥有该端点的插件里**，而不是塞进 auth 插件那个 100KB 的设置页 —— 谁拥有这个管理面，谁就拥有它的界面。
+
+界面内容：工作区 / 占用人 / 机器（含 host 与 platform）/ 状态（占用中·已失效 + 在线·离线 + 绑定时刻）/ 强制解绑按钮（只在 `state === "active"` 时出现）。已失效的记录**照样列出来**——§2.1 的"失效 ≠ 删记录"在这里也有用。
+
+**用真实浏览器验证**（Playwright 无头 Chromium，脚本存为 `~/.dsh/check-client-ui.mjs`）：
+
+| 检查 | 结果 |
+|---|---|
+| 登录 | 200 |
+| 客户端 bundle 是否加载失败 | **false**（页面无 "Failed to load plugins"） |
+| 设置里出现「工作区绑定」 | ✅（中文标签） |
+| 表格表头 | ✅ 占用人 / 机器 |
+| 行内容 | `宝单科技资料 │ probe-primary │ probe-executor │ DESKTOP-LCLS51R │ 占用中 在线 │ 强制解绑` |
+| **点击「强制解绑」** | `已释放`，**没有任何一行还是「占用中」** |
+| 页面级错误 | **0** |
+
+**浏览器抓出了两个读代码绝对看不出来的 bug**，这正是值得为它搭一套真实浏览器验证的原因：
+
+1. **整个 bundle 加载失败**：页面直接显示 `Failed to load plugins — dsh-subprocess-dispatch: cannot get property "slots" without inject`。原因是 `exports.inject = []`。**客户端半边的 `exports.inject` 是运行期注入，和 `package.json` 里 `dsh.client.inject`（加载期）是两回事** —— 用 `ctx.slots` 就必须声明 `slots`，漏了不是"功能降级"，是整个插件加载失败。
+2. **标签语言错了**：改对 inject 之后界面出来了，但它的标签是英文 **"Workspace bindings"**，夹在一排中文（「登录与账号」「本地插件」）中间。原因是我从 `document.documentElement.lang` 猜语言 —— 而这个 shell 把该属性留成英文，界面却是中文。正确做法是用应用的 **`locale` 服务**：`ctx.locale.register(NS, {zh, en})` + `ctx.locale.bind(NS)`（`dsh-remote` 就是这么做的，它因此也支持运行时切换语言）。
+
+
+
 ### 为什么这条证据是有效的
 
 子进程打印 `process.cwd()`。服务器路径与 `visiblePath` 不同，所以 cwd 等于 `C:\dsh-executor-root` 同时证明三件事：**进程跑在 executor 侧**、**cwd 被翻译过**、**stdout 走完了 WebSocket 往返**。三件事各自都有反例（服务器执行会打印服务器路径）。
@@ -889,7 +916,7 @@ seam 的契约写着：整条流的上限 `spill.maxBytes` 被超过时，"a lar
 - **P4 的 Figma 端到端未做**：需要目标机开着 Figma 桌面 App 并在 Dev Mode 启用 MCP server。转发机制本身已验证，最后一段是配置与实测
 - executor 授权：**端点与登录链路均已验证**（`pilot-auth` 里走通 `/auth/login` → cookie → `/client-auth/login` → 签发 token → 该 token 可用）。配置 token 仍可用
 - **executor 本地配置页已完成并验证**（登录 → 签发 token → 选工作区 → 绑定 / 解绑；只绑 127.0.0.1，token 落盘以便重启免登录）
-- **admin 强制解绑已完成并验证**（`/client-admin/bindings` + `/client-admin/unbind`，非 admin 403）。**界面未做** —— 上述是接口层，Web UI 上的入口还没有
+- **admin 强制解绑已完成并验证**（`/client-admin/bindings` + `/client-admin/unbind`，非 admin 403），**界面也已补上**并在真实浏览器里点过（设置 → 工作区绑定，见 §1）
 - 账号上的工作区授权字段：未做（`workspaces` 目前复用 `roleMap`）
 - 转发端点的鉴权边界：**路径密钥**（`relayTokens`：secret → 账号）+ 账号在线 + 持有活跃绑定 + 端口在白名单。未知密钥一律 403（见 §1 的 P4 追加）。**这不替代 DSH 会话门禁** —— 它是一条自带凭据的通道，所以必须同时把它的前缀列入 `publicPrefixes` 才能绕过门禁
 - `local_binding` 只读工具未做 —— 计划 §2.6 把它与提示词段列为"或"关系，提示词段已覆盖
@@ -998,6 +1025,7 @@ P0-2 通了之后，跨机验证具备条件了（第二台机器 `SUNDA` / 192.
 2. **`ctx.plugin()` 不同步发布服务** —— 返回 `Fiber & PromiseLike<Fiber>`，必须 `await` 后再 `get()`
 3. **`spawn()` 同步 vs `resolveByPath()` 异步** —— 决策不能放在 spawn 里；本实现用一张同步路由索引 + 后台刷新。另：`resolveByPath` 对不存在的路径会 **reject**
 4. **Windows 环境变量名大小写不敏感，但"复制出来的普通对象"不是** —— 介质里写的是 `Path` 不是 `PATH`；把 `process.env` 复制进普通对象后按 `.PATH` 读会得到 `undefined`，PATH 搜索**静默空转**。本次 `argv[0]` 解析第一版就栽在这里（引擎在 `packages/subprocess/subprocess/src/index.ts:53-55` 同样警告过这一点）。所有环境变量查找必须大小写不敏感。
+5. **清理进程时不要用宽泛的匹配** —— 本轮收尾时用 `*chromium*` 过滤 `node.exe`，杀掉的不只是自己起的无头 Chromium，还有**四个早就存在的 Playwright MCP 服务进程**（父进程已不在，没人会重启它们）。规则：**只杀自己起的东西** —— 用 job id，或记下确切的 pid；非要用命令行子串匹配，先把会命中的清单打印出来看一眼。这条与本项目其它几次操作失误同源（端口没释放就重启、`job_kill` 连带整棵进程树），都是「图省事的一次性清理动作」。
 
 ### 一个时序事实
 
