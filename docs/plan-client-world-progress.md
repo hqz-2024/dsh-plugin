@@ -2198,6 +2198,42 @@ if (previous) this.dropConnection(username, 'superseded…')  // 每账号只允
 
 **P2 未做（下一轮）**：绑定/解绑/SMB 凭据的入口从会话标题栏迁到 `folder-tree-sh-local` 的文件树面板；会话标题栏那个控件据用户反馈"点击没反应"，迁移时一并处理。
 
+#### D-9. 工作区共享／绑定整层撤除（2026-09-17，用户决定）
+
+**用户的原话**：「这个功能不行，问题太多了，你将这个工作区共享的功能全部删除掉吧，只保留executor。」范围经确认取 **A：只删「共享/绑定」这一层**，已建好的共享与 `dshtest` 账号**先留着不删**。
+
+**为什么撤**：这套机制在真实使用里连续暴露四类问题，每一类都不是单点 bug 而是结构性的 ——
+
+1. **机器与账号被混为一谈**（§7-D-8 的根因）：执行器按账号注册 → 一台机器只能属于一个账号 → 换个账号就用不了。
+2. **两个权限体系互相纠缠**：授权（能看到哪个工作区）与绑定（命令在哪跑）本是两件事，实现里却让绑定成为授权的一部分，`role-map.workspaces` 那个字段名不匹配因此**静默失效了很久**。
+3. **共享这件事绕不开提权**：实测 `New-SmbShare` 与 `net share` 在普通身份下都是 `Access denied`，所以「admin 在 Web UI 里建工作区 → 服务器顺手建共享」**做不到**，每个新工作区都要人工跑一次提权命令。
+4. **路径规则与共享是两套真相**：服务器按目录推路径、Windows 管共享，两边互不知情 —— 结果是"按钮可点、绑上了、命令却起不来"（用户实测到的正是这个）。
+
+**撤掉的东西**：
+
+| 位置 | 删了什么 |
+|---|---|
+| 文件树面板（`folder-tree-sh-local/lib/client.js`） | 执行位置标签与「本地模式／解绑」按钮、`/client-web/state` 轮询、`execState/execBusy/execNote/runExec/execCall` 全部状态与逻辑（51 行） |
+| 会话标题栏（`dsh-subprocess-dispatch/lib/client.js`） | `ExecutionBadge` 组件（102 行）、它在 `conversation.session.header.actions` 的注册、`dot()` 辅助、`webCall()`，以及 `noShareRule` 等词条 |
+| 服务端（`dsh-subprocess-dispatch/lib/client-transport.js`） | `startWeb()`、`serveWeb()`（131 行）、`webState()`、`generatePaths()`、`machineList()`、`webPath`/`webDisposer` 字段、`CLIENT_DEFAULT_STAGING`、`sameOrInside` |
+| 组合挂载（`lib/index.js`） | `this.transport.startWeb()` 那一行 |
+| 启动脚本（`dsh-remote-local/lib/client.js`） | 改回**显式传凭据**：无凭据时 exe 既不连也不报错（静默空转），必须给 `--server/--token` |
+| 本地脚本 | 删掉 9 个只测这套接口的检查/探针脚本（保留 `cut-ftree-exec.mjs`、`patch-ftree-css.mjs` 作为 fork 记录） |
+
+**保留的东西（刻意的）**：
+
+- **执行器全部**：machineId、部署密钥、`hello` 自报、`--self-test`、分发端点、本机状态页 —— 用户明确要求只保留 executor。
+- **分派行继续启用**（`subprocess-dispatch: disabled: false`）。理由：它把 `subprocess` 指向服务器运行时（`serverRuntime: '@deepseek-ai/dsh-subprocess-local'`），是命令能跑的前提；停掉它会**失去整个 subprocess 能力**，那不是"退回纯服务器形态"。
+- **`/client-admin/bindings` 与设置页的「工作区绑定」**：这是管理员的**手动释放**出口（占用人走人时唯一能做的事），保留；Admin UI 不是绑定入口。
+- **`visiblePathHints` / `noShareRoots` 配置项**：已标注为「当前没有消费者」，原样留着以便恢复。`suggestVisiblePath()` 本身仍被管理端列表使用，`noShareRoots` 的排除逻辑因此**仍然生效**（它保证 `~\.dsh` 永远不会被"建议共享"）。
+- **已建的共享与 `dshtest` 账号**：按用户要求先留着。
+- **授权（role-map `workspaces`）**：仍然生效 —— 它决定账号能看到哪些工作区，与绑定无关。
+
+**撤除后的行为**：所有工作区的命令都在服务器上执行；工作区内容照常可读可写；账号授权照常限制可见范围。`storages/client_binding.json` 里的历史绑定记录保留（都已有 `endedAt`）。
+
+**如果以后要恢复**：README 记了三步（加回接口与控件 → 建共享 → 重启），并指向本节，让人先看到上面四类问题再决定。
+
+
 
 
 

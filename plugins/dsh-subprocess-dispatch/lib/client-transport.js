@@ -24,21 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Readable, Writable } from 'node:stream'
 
-/**
- * The staging directory a client machine uses when nobody named one.
- *
- * Written as a variable rather than resolved here: the directory belongs to the client
- * machine's own profile, which this process cannot read. The executor expands it, so the
- * binding record and the path a person would type by hand are the same string.
- */
-const CLIENT_DEFAULT_STAGING = '%USERPROFILE%\\.dsh-staging'
 
-/** Whether `path` is `root` itself or sits inside it, case-insensitively on Windows. */
-function sameOrInside(path, root) {
-	const a = path.toLowerCase()
-	const b = root.replace(/[\\/]+$/, '').toLowerCase()
-	return a === b || a.startsWith(`${b}\\`) || a.startsWith(`${b}/`)
-}
 
 /** Bounded tail of one output stream, addressed by whole-stream byte offsets. */
 class TailBuffer {
@@ -451,12 +437,6 @@ export class ClientTransport {
 		 */
 		this.adminPath = typeof config?.adminPath === 'string' ? config.adminPath : '/client-admin'
 		/**
-		 * Web UI binding surface. Left inside the gate: its caller is a person in the
-		 * app, so the session cookie is the evidence. A prefix because `state` carries
-		 * the session's working directory as a query parameter.
-		 */
-		this.webPath = typeof config?.webPath === 'string' ? config.webPath : '/client-web'
-		/**
 		 * Deployment-level secret a machine presents to announce itself.
 		 *
 		 * A machine is hardware, not a person: it has no account to log into and no
@@ -866,236 +846,6 @@ export class ClientTransport {
 	}
 
 	/**
-	 * Mount the Web UI surface: binding state and self-service bind/unbind.
-	 *
-	 * Left inside the gate on purpose — the caller is a person in the app, and a
-	 * session cookie is exactly the right evidence for "who is this". A prefix rather
-	 * than an exact path because `state` carries the session's working directory as a
-	 * query parameter.
-	 */
-	startWeb() {
-		this.webDisposer = this.ctx.webServer.register({
-			kind: 'prefix',
-			path: this.webPath,
-			handler: (req, res) => { void this.serveWeb(req, res) },
-		})
-		this.ctx.logger?.info?.(`[client-transport] web binding surface at ${this.webPath}/…`)
-		return this.webDisposer
-	}
-
-	/**
-	 * Handle one Web UI request, for the signed-in account itself.
-	 *
-	 * Everything here is scoped to the caller's own account: the state it reads, the
-	 * binding it may create, and the binding it may release. Admin actions stay on the
-	 * admin surface, where the role check lives.
-	 */
-	async serveWeb(req, res) {
-		const url = new URL(req.url ?? '/', 'http://localhost')
-		const action = url.pathname.slice(this.webPath.length).replace(/^\//, '').split('/')[0]
-		const bindings = this.ctx.get('clientBindings')
-		if (!bindings) {
-			this.respond(res, 503, { error: 'the binding store is unavailable' })
-			return
-		}
-		const resolver = this.ctx.get('clientAuthResolver')
-		if (!resolver || typeof resolver.resolveSession !== 'function') {
-			this.respond(res, 503, { error: 'no authentication service is mounted' })
-			return
-		}
-		const session = await resolver.resolveSession(req)
-		if (!session) {
-			this.respond(res, 401, { error: 'not signed in' })
-			return
-		}
-		const username = session.username
-		// The account's workspace grant, resolved once per request and passed down. Every
-		// read and every write below filters on it: who may see or bind a workspace is the
-		// account's business, and a route that forgot to pass it would quietly hand over
-		// everything.
-		const granted = session.workspaces
-		try {
-			if (action === 'state') {
-				const cwd = url.searchParams.get('cwd') ?? ''
-				this.respond(res, 200, this.webState(username, cwd, granted))
-				return
-			}
-			// The machines a person can choose between when deciding where a workspace runs.
-			if (action === 'machines') {
-				this.respond(res, 200, {
-					machines: this.machineList(),
-					bindings: this.bindingsFor(username),
-				})
-				return
-			}
-			if (action === 'bind' || action === 'unbind') {
-				if (req.method !== 'POST') {
-					this.respond(res, 405, { error: 'use POST' })
-					return
-				}
-				const body = await this.readJson(req)
-				const workspaceId = String(body?.workspaceId ?? '')
-				if (!this.claimableWorkspaces(username, granted).some((w) => w.id === workspaceId)) {
-					this.respond(res, 404, { error: `workspace '${workspaceId}' is not available to this account` })
-					return
-				}
-				if (action === 'unbind') {
-					const released = await bindings.release({ workspaceId, username })
-					if (released.ok) this.notifyBindDrop(username, workspaceId, 'released-by-user')
-					this.respond(res, released.ok ? 200 : 409, released)
-					return
-				}
-				// Two different refusals, and saying which one it is matters: a workspace
-				// another account holds cannot be fixed by opening an executor, and a
-				// workspace nobody holds cannot be claimed without one.
-				// Which machine runs this workspace. The browser names one; with none named,
-				// the only sensible default is the single machine this account is connected
-				// through, and ambiguity is refused rather than guessed at.
-				const requested = String(body?.machineId ?? '')
-				const online = this.machineIds()
-				let machineId = requested
-				if (machineId === '') {
-					if (online.length !== 1) {
-						this.respond(res, 409, {
-							error: online.length === 0
-								? 'no machine is connected'
-								: `${online.length} machines are connected; name one`,
-							reason: online.length === 0 ? 'no-executor' : 'ambiguous-machine',
-							machines: this.machineList(),
-							remedy: online.length === 0
-								? 'open the client executor on the machine that should run this workspace, then try again'
-								: undefined,
-						})
-						return
-					}
-					machineId = online[0]
-				}
-				if (!this.machineConnected(machineId)) {
-					this.respond(res, 409, {
-						error: `machine '${machineId}' is not connected`,
-						reason: 'no-such-machine',
-						machines: this.machineList(),
-					})
-					return
-				}
-				const occupant = bindings.activeFor(workspaceId)
-				if (occupant !== undefined && occupant.machineId !== machineId) {
-					this.respond(res, 409, {
-						error: `'${workspaceId}' is bound to ${occupant.machineId ?? occupant.machine ?? 'another machine'}`,
-						reason: 'occupied',
-						occupiedBy: occupant.machineId ?? occupant.username,
-					})
-					return
-				}
-				const registry = this.ctx.get('workspaceRegistry')
-				const workspace = this.claimableWorkspaces(username, granted).find((w) => w.id === workspaceId)
-				const generated = this.generatePaths(workspace?.path ?? '')
-				const facts = this.describe(machineId)
-				const claimed = await bindings.claim({
-					workspaceId,
-					workspaceTitle: registry?.get?.(workspaceId)?.title ?? '',
-					// The machine is the occupant; the account is who asked for it.
-					machineId,
-					username,
-					machine: body?.machine ?? facts?.host ?? '',
-					visiblePath: String(body?.visiblePath ?? '') || generated.visiblePath,
-					stagingDir: String(body?.stagingDir ?? '') || generated.stagingDir,
-				})
-				if (claimed.ok) this.notifyBindApply(machineId, claimed.binding, bindings.heartbeatMs)
-				const refused = String(claimed.reason ?? '').startsWith('invalid-') ? 400 : 409
-				this.respond(res, claimed.ok ? 200 : refused, { ...claimed, generated })
-				return
-			}
-			this.respond(res, 404, { error: `unknown action '${action}'` })
-		} catch (error) {
-			this.ctx.logger?.warn?.(`[client-transport] web binding action failed: ${String(error?.message ?? error)}`)
-			this.respond(res, 400, { error: String((error && error.message) || error) })
-		}
-	}
-
-	/**
-	 * The binding facts the session header needs, for one working directory.
-	 *
-	 * The workspace is resolved from the session's own `cwd` rather than from an id the
-	 * caller supplies: that is the fact the dispatcher itself uses to decide where a
-	 * command runs, so showing it is showing the routing rather than a parallel guess.
-	 * @param username - The signed-in account.
-	 * @param cwd - The session's working directory, or `''` for no session.
-	 * @param granted - The account's workspace grant, or `undefined` for no restriction.
-	 * @returns State payload for the client's header control.
-	 */
-	webState(username, cwd, granted) {
-		const bindings = this.ctx.get('clientBindings')
-		const registry = this.ctx.get('workspaceRegistry')
-		const workspaces = this.claimableWorkspaces(username, granted)
-		const base = {
-			username,
-			connected: this.machineIds().length > 0,
-			machines: this.machineList(),
-			workspaces,
-			// Every binding this account created, so a UI can show what it has already set
-			// up without asking per workspace.
-			bindings: this.bindingsFor(username),
-		}
-		if (cwd === '') return { ...base, workspace: null }
-		// Longest matching prefix wins, so a workspace nested inside another still
-		// resolves to the inner one — the same rule the routing index applies.
-		let matched
-		for (const workspace of registry?.list?.() ?? []) {
-			const path = String(workspace.path ?? '')
-			if (path === '' || !sameOrInside(cwd, path)) continue
-			if (matched === undefined || path.length > String(matched.path).length) matched = workspace
-		}
-		if (matched === undefined) return { ...base, workspace: null }
-		const id = String(matched.id)
-		const record = bindings.get(id)
-		const workspace = workspaces.find((w) => w.id === id) ?? null
-		const live = record !== undefined && bindings.isLive(record)
-		return {
-			...base,
-			workspace: {
-				id,
-				title: matched.title ?? '',
-				path: String(matched.path ?? ''),
-				// Same rule the account's own authorization applies: a workspace this
-				// account may not use is not bindable from here either.
-				allowed: workspace !== null,
-				...this.generatePaths(String(matched.path ?? '')),
-				binding: live
-					? {
-						machine: record.machine ?? '',
-						machineHost: record.machineHost ?? null,
-						visiblePath: record.visiblePath ?? '',
-						stagingDir: record.stagingDir ?? '',
-						mine: record.username === username,
-						occupiedBy: record.username,
-						boundAt: record.boundAt ?? null,
-					}
-					: null,
-			},
-		}
-	}
-
-	/**
-	 * The two paths a binding needs, computed rather than typed.
-	 *
-	 * The visible path comes from the deployment's own share rules, so it matches what
-	 * a person would otherwise have to type by hand. The staging directory is named as
-	 * `%USERPROFILE%\.dsh-staging` rather than resolved: that directory is on the
-	 * *client* machine, and no amount of server-side knowledge can name another
-	 * machine's user profile. The executor expands the variable when it applies the
-	 * binding, so the record and the directory a person would choose by hand agree.
-	 * @param serverPath - The workspace's path on the server.
-	 * @returns Suggested `visiblePath` (may be empty) and `stagingDir`.
-	 */
-	generatePaths(serverPath) {
-		return {
-			visiblePath: this.suggestVisiblePath(serverPath) ?? '',
-			stagingDir: CLIENT_DEFAULT_STAGING,
-		}
-	}
-
-	/**
 	 * Mount the admin surface (plan §2.1's second manual exit).
 	 *
 	 * The occupant's own page covers the common case, but not the one this exists
@@ -1281,10 +1031,10 @@ export class ClientTransport {
 					heartbeatMs: bindings.heartbeatMs,
 					machine: this.describe(username) ?? null,
 					bindings: this.bindingsFor(username),
-					// No grant is applied on this path, and none can be: a token authenticates
-					// a machine, not a person, so there is no signed-in account here whose
-					// workspaces could be checked. Binding an account's workspaces is decided
-					// in the Web UI (`/client-web`), where the caller is that account.
+					// A token authenticates a machine, not a person, so no account grant is
+					// applied here: there is no signed-in caller whose workspaces could be
+					// checked. The list is what this machine may bind, bounded by whatever the
+					// deployment granted the account the token was issued to.
 					workspaces: this.claimableWorkspaces(username, undefined),
 				})
 				return
@@ -1597,25 +1347,6 @@ export class ClientTransport {
 		return [...this.connections.values()]
 			.map((connection) => connection.machineId)
 			.filter((id) => typeof id === 'string' && id !== '')
-	}
-
-	/**
-	 * Every connected machine, as the binding UI needs to show it.
-	 *
-	 * A person choosing where a workspace runs needs to recognize the computer, so this
-	 * carries the facts the machine reported about itself rather than only its id.
-	 * @returns one entry per connected machine.
-	 */
-	machineList() {
-		return this.machineIds().map((machineId) => {
-			const facts = this.describe(machineId) ?? {}
-			return {
-				machineId,
-				host: facts.host ?? '',
-				platform: facts.platform ?? '',
-				release: facts.release ?? '',
-			}
-		})
 	}
 
 	/** Facts the connected executor reported at `hello`, by machine id or account. */
@@ -1940,7 +1671,6 @@ export class ClientTransport {
 		for (const username of [...this.connections.keys()]) this.dropConnection(username, 'transport disposing')
 		try { this.relayDisposer?.() } catch { /* already released */ }
 		try { this.adminDisposer?.() } catch { /* already released */ }
-		try { this.webDisposer?.() } catch { /* already released */ }
 		try { this.authDisposer?.() } catch { /* already released */ }
 		try { this.downloadDisposer?.() } catch { /* already released */ }
 		try { this.packDisposer?.() } catch { /* already released */ }
