@@ -62,9 +62,15 @@
     authPath: '/client-auth'
     # 「可见路径建议」的测试样例：服务器目录 → 客户端看到的共享路径，绑定页拿它预填。
     # 真实部署的规则在 profiles/web-client/cordis.patch.yml。
+    #
+    # 第二条覆盖 `~\.dsh` 之外的所有探针工作区：Web UI 的绑定按钮在「服务器给不出可见
+    # 路径」时是**禁用**的（那是一个真实的上线障碍，不是缺陷），所以要在 UI 上验"能绑"
+    # 这条路，就得有一个落在共享规则下的工作区。规则按顺序匹配，第一条优先。
     visiblePathHints:
       - serverRoot: 'C:\Users\bestarc\Desktop'
         uncPrefix: '\\192.168.28.239\ws-'
+      - serverRoot: 'C:\Users\bestarc\docs'
+        uncPrefix: '\\192.168.28.239\docs-'
 
 - id: client-bindings
   config:

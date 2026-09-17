@@ -24,6 +24,22 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Readable, Writable } from 'node:stream'
 
+/**
+ * The staging directory a client machine uses when nobody named one.
+ *
+ * Written as a variable rather than resolved here: the directory belongs to the client
+ * machine's own profile, which this process cannot read. The executor expands it, so the
+ * binding record and the path a person would type by hand are the same string.
+ */
+const CLIENT_DEFAULT_STAGING = '%USERPROFILE%\\.dsh-staging'
+
+/** Whether `path` is `root` itself or sits inside it, case-insensitively on Windows. */
+function sameOrInside(path, root) {
+	const a = path.toLowerCase()
+	const b = root.replace(/[\\/]+$/, '').toLowerCase()
+	return a === b || a.startsWith(`${b}\\`) || a.startsWith(`${b}/`)
+}
+
 /** Bounded tail of one output stream, addressed by whole-stream byte offsets. */
 class TailBuffer {
 	constructor(maxBytes) {
@@ -434,6 +450,12 @@ export class ClientTransport {
 		 * session gate is exactly the right place to establish who that is.
 		 */
 		this.adminPath = typeof config?.adminPath === 'string' ? config.adminPath : '/client-admin'
+		/**
+		 * Web UI binding surface. Left inside the gate: its caller is a person in the
+		 * app, so the session cookie is the evidence. A prefix because `state` carries
+		 * the session's working directory as a query parameter.
+		 */
+		this.webPath = typeof config?.webPath === 'string' ? config.webPath : '/client-web'
 		/** Where the executor program is downloadable from; gated like the admin surface. */
 		this.downloadPath = typeof config?.downloadPath === 'string' ? config.downloadPath : '/dsh-subprocess-dispatch/executor.mjs'
 		/**
@@ -766,6 +788,195 @@ export class ClientTransport {
 		})
 		this.ctx.logger?.info?.(`[client-transport] client distribution download at ${this.packPath}`)
 		return this.packDisposer
+	}
+
+	/**
+	 * Mount the Web UI surface: binding state and self-service bind/unbind.
+	 *
+	 * Left inside the gate on purpose — the caller is a person in the app, and a
+	 * session cookie is exactly the right evidence for "who is this". A prefix rather
+	 * than an exact path because `state` carries the session's working directory as a
+	 * query parameter.
+	 */
+	startWeb() {
+		this.webDisposer = this.ctx.webServer.register({
+			kind: 'prefix',
+			path: this.webPath,
+			handler: (req, res) => { void this.serveWeb(req, res) },
+		})
+		this.ctx.logger?.info?.(`[client-transport] web binding surface at ${this.webPath}/…`)
+		return this.webDisposer
+	}
+
+	/**
+	 * Handle one Web UI request, for the signed-in account itself.
+	 *
+	 * Everything here is scoped to the caller's own account: the state it reads, the
+	 * binding it may create, and the binding it may release. Admin actions stay on the
+	 * admin surface, where the role check lives.
+	 */
+	async serveWeb(req, res) {
+		const url = new URL(req.url ?? '/', 'http://localhost')
+		const action = url.pathname.slice(this.webPath.length).replace(/^\//, '').split('/')[0]
+		const bindings = this.ctx.get('clientBindings')
+		if (!bindings) {
+			this.respond(res, 503, { error: 'the binding store is unavailable' })
+			return
+		}
+		const resolver = this.ctx.get('clientAuthResolver')
+		if (!resolver || typeof resolver.resolveSession !== 'function') {
+			this.respond(res, 503, { error: 'no authentication service is mounted' })
+			return
+		}
+		const session = await resolver.resolveSession(req)
+		if (!session) {
+			this.respond(res, 401, { error: 'not signed in' })
+			return
+		}
+		const username = session.username
+		try {
+			if (action === 'state') {
+				const cwd = url.searchParams.get('cwd') ?? ''
+				this.respond(res, 200, this.webState(username, cwd))
+				return
+			}
+			if (action === 'bind' || action === 'unbind') {
+				if (req.method !== 'POST') {
+					this.respond(res, 405, { error: 'use POST' })
+					return
+				}
+				const body = await this.readJson(req)
+				const workspaceId = String(body?.workspaceId ?? '')
+				if (!this.claimableWorkspaces(username, undefined).some((w) => w.id === workspaceId)) {
+					this.respond(res, 404, { error: `workspace '${workspaceId}' is not available to this account` })
+					return
+				}
+				if (action === 'unbind') {
+					const released = await bindings.release({ workspaceId, username })
+					if (released.ok) this.notifyBindDrop(username, workspaceId, 'released-by-user')
+					this.respond(res, released.ok ? 200 : 409, released)
+					return
+				}
+				// Two different refusals, and saying which one it is matters: a workspace
+				// another account holds cannot be fixed by opening an executor, and a
+				// workspace nobody holds cannot be claimed without one.
+				const occupant = bindings.activeFor(workspaceId)
+				if (occupant !== undefined && occupant.username !== username) {
+					this.respond(res, 409, {
+						error: `'${workspaceId}' is bound by ${occupant.username} on ${occupant.machine || 'another machine'}`,
+						reason: 'occupied',
+						occupiedBy: occupant.username,
+					})
+					return
+				}
+				const machine = this.describe(username)
+				if (!this.connected(username)) {
+					this.respond(res, 409, {
+						error: 'no executor is connected for this account',
+						reason: 'no-executor',
+						remedy: 'open the client executor on the machine that should run this workspace, then try again',
+					})
+					return
+				}
+				const registry = this.ctx.get('workspaceRegistry')
+				const workspace = this.claimableWorkspaces(username, undefined).find((w) => w.id === workspaceId)
+				const generated = this.generatePaths(workspace?.path ?? '')
+				const claimed = await bindings.claim({
+					workspaceId,
+					workspaceTitle: registry?.get?.(workspaceId)?.title ?? '',
+					username,
+					machine: body?.machine ?? machine?.host ?? '',
+					visiblePath: String(body?.visiblePath ?? '') || generated.visiblePath,
+					stagingDir: String(body?.stagingDir ?? '') || generated.stagingDir,
+				})
+				if (claimed.ok) this.notifyBindApply(username, claimed.binding, bindings.heartbeatMs)
+				const refused = String(claimed.reason ?? '').startsWith('invalid-') ? 400 : 409
+				this.respond(res, claimed.ok ? 200 : refused, { ...claimed, generated })
+				return
+			}
+			this.respond(res, 404, { error: `unknown action '${action}'` })
+		} catch (error) {
+			this.ctx.logger?.warn?.(`[client-transport] web binding action failed: ${String(error?.message ?? error)}`)
+			this.respond(res, 400, { error: String((error && error.message) || error) })
+		}
+	}
+
+	/**
+	 * The binding facts the session header needs, for one working directory.
+	 *
+	 * The workspace is resolved from the session's own `cwd` rather than from an id the
+	 * caller supplies: that is the fact the dispatcher itself uses to decide where a
+	 * command runs, so showing it is showing the routing rather than a parallel guess.
+	 * @param username - The signed-in account.
+	 * @param cwd - The session's working directory, or `''` for no session.
+	 * @returns State payload for the client's header control.
+	 */
+	webState(username, cwd) {
+		const bindings = this.ctx.get('clientBindings')
+		const registry = this.ctx.get('workspaceRegistry')
+		const workspaces = this.claimableWorkspaces(username, undefined)
+		const base = {
+			username,
+			connected: this.connected(username),
+			machine: this.describe(username) ?? null,
+			workspaces,
+		}
+		if (cwd === '') return { ...base, workspace: null }
+		// Longest matching prefix wins, so a workspace nested inside another still
+		// resolves to the inner one — the same rule the routing index applies.
+		let matched
+		for (const workspace of registry?.list?.() ?? []) {
+			const path = String(workspace.path ?? '')
+			if (path === '' || !sameOrInside(cwd, path)) continue
+			if (matched === undefined || path.length > String(matched.path).length) matched = workspace
+		}
+		if (matched === undefined) return { ...base, workspace: null }
+		const id = String(matched.id)
+		const record = bindings.get(id)
+		const workspace = workspaces.find((w) => w.id === id) ?? null
+		const live = record !== undefined && bindings.isLive(record)
+		return {
+			...base,
+			workspace: {
+				id,
+				title: matched.title ?? '',
+				path: String(matched.path ?? ''),
+				// Same rule the account's own authorization applies: a workspace this
+				// account may not use is not bindable from here either.
+				allowed: workspace !== null,
+				...this.generatePaths(String(matched.path ?? '')),
+				binding: live
+					? {
+						machine: record.machine ?? '',
+						machineHost: record.machineHost ?? null,
+						visiblePath: record.visiblePath ?? '',
+						stagingDir: record.stagingDir ?? '',
+						mine: record.username === username,
+						occupiedBy: record.username,
+						boundAt: record.boundAt ?? null,
+					}
+					: null,
+			},
+		}
+	}
+
+	/**
+	 * The two paths a binding needs, computed rather than typed.
+	 *
+	 * The visible path comes from the deployment's own share rules, so it matches what
+	 * a person would otherwise have to type by hand. The staging directory is named as
+	 * `%USERPROFILE%\.dsh-staging` rather than resolved: that directory is on the
+	 * *client* machine, and no amount of server-side knowledge can name another
+	 * machine's user profile. The executor expands the variable when it applies the
+	 * binding, so the record and the directory a person would choose by hand agree.
+	 * @param serverPath - The workspace's path on the server.
+	 * @returns Suggested `visiblePath` (may be empty) and `stagingDir`.
+	 */
+	generatePaths(serverPath) {
+		return {
+			visiblePath: this.suggestVisiblePath(serverPath) ?? '',
+			stagingDir: CLIENT_DEFAULT_STAGING,
+		}
 	}
 
 	/**
@@ -1526,6 +1737,7 @@ export class ClientTransport {
 		for (const username of [...this.connections.keys()]) this.dropConnection(username, 'transport disposing')
 		try { this.relayDisposer?.() } catch { /* already released */ }
 		try { this.adminDisposer?.() } catch { /* already released */ }
+		try { this.webDisposer?.() } catch { /* already released */ }
 		try { this.authDisposer?.() } catch { /* already released */ }
 		try { this.downloadDisposer?.() } catch { /* already released */ }
 		try { this.packDisposer?.() } catch { /* already released */ }

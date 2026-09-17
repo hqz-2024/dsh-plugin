@@ -132,6 +132,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 			this.transport.start(WebSocketServer)
 			this.transport.startAuth()
 			this.transport.startAdmin()
+			this.transport.startWeb()
 			this.transport.startRelay()
 			this.transport.startDownload()
 			this.transport.startPackDownload()

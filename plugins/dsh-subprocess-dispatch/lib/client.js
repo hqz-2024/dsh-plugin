@@ -60,6 +60,24 @@ window.__ModuleLoader__.load({
 				connected: "在线",
 				offline: "离线",
 				heldSince: "自",
+				// Session-header control: the execution location of the open session.
+				bindLocal: "本地模式",
+				bindLocalHint: "在这个工作区里执行命令的机器上打开执行器，然后点这里绑定。",
+				boundHere: "本地模式",
+				boundHereHint: "这个工作区的命令在本机执行",
+				boundElsewhere: "已被占用",
+				boundElsewhereHint: "这个工作区被别的账号占着，命令会在服务器上执行。",
+				unbind: "解绑",
+				unbinding: "解绑中…",
+				binding: "绑定中…",
+				bound: "已绑定",
+				unbound: "已解绑",
+				serverMode: "服务器",
+				serverModeHint: "这个工作区没有绑定，命令在服务器上执行。",
+				noExecutor: "本机执行器不在线：先在那台机器上打开执行器，再点绑定。",
+				notAllowed: "这个账号无权使用该工作区。",
+				noWorkspace: "当前会话不属于任何工作区，命令在服务器上执行。",
+				noShareRule: "这个工作区不在共享规则覆盖的目录里，服务器给不出本机可见路径，因此无法绑定。把工作区放到共享目录下（或让管理员补一条 visiblePathHints 规则）即可。",
 			},
 			en: {
 				title: "Workspace bindings",
@@ -82,6 +100,23 @@ window.__ModuleLoader__.load({
 				connected: "online",
 				offline: "offline",
 				heldSince: "since",
+				bindLocal: "Local mode",
+				bindLocalHint: "Open the executor on the machine that should run this workspace, then click here to bind.",
+				boundHere: "Local mode",
+				boundHereHint: "This workspace's commands run on this machine",
+				boundElsewhere: "Taken",
+				boundElsewhereHint: "Another account holds this workspace, so its commands run on the server.",
+				unbind: "Unbind",
+				unbinding: "Unbinding…",
+				binding: "Binding…",
+				bound: "Bound",
+				unbound: "Unbound",
+				serverMode: "Server",
+				serverModeHint: "This workspace is not bound, so its commands run on the server.",
+				noExecutor: "No executor is online: open it on that machine first, then bind.",
+				notAllowed: "This account may not use that workspace.",
+				noWorkspace: "This session belongs to no workspace, so its commands run on the server.",
+				noShareRule: "This workspace is outside every shared directory, so the server cannot name a path this machine would see and the binding cannot be created. Move the workspace under a shared root, or ask an admin to add a visiblePathHints rule.",
 			},
 		};
 
@@ -132,6 +167,127 @@ window.__ModuleLoader__.load({
 			} catch (error) {
 				return { status: 0, payload: { error: String((error && error.message) || error) } };
 			}
+		}
+
+		/** One Web UI request; never throws, so a rendering caller can always report something. */
+		async function webCall(path, body) {
+			try {
+				const response = await fetch(`/client-web${path}`, body === undefined
+					? { headers: { accept: "application/json" } }
+					: { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+				let payload = null;
+				try { payload = await response.json(); } catch { payload = null; }
+				return { status: response.status, payload };
+			} catch (error) {
+				return { status: 0, payload: { error: String((error && error.message) || error) } };
+			}
+		}
+
+		const dot = (color) => ({
+			display: "inline-block", width: "7px", height: "7px", borderRadius: "999px",
+			background: color, marginRight: "5px", verticalAlign: "middle",
+		});
+
+		/**
+		 * The open session's execution location, with a one-click way to change it.
+		 *
+		 * It asks the server about the session's own working directory rather than about
+		 * a workspace id it looked up itself: `cwd` is the fact the dispatcher uses to
+		 * decide where a command runs, so the badge describes the routing instead of a
+		 * parallel guess that could disagree with it.
+		 *
+		 * Registered into `conversation.session.header.actions` — a session-scope `list`
+		 * slot, so this adds a control beside the existing header actions and the session
+		 * id arrives as a framework prop.
+		 */
+		function ExecutionBadge(props) {
+			const sessions = props.useSessions((state) => state);
+			const sessionId = props.sessionId;
+			const summary = sessionId === undefined ? undefined : sessions.byId[sessionId];
+			const cwd = typeof summary?.cwd === "string" ? summary.cwd : "";
+			const [view, setView] = react.useState({ phase: "loading", workspace: null, connected: false });
+			const [note, setNote] = react.useState("");
+			const [busy, setBusy] = react.useState(false);
+
+			const load = react.useCallback(async () => {
+				if (cwd === "") return setView({ phase: "ready", workspace: null, connected: false });
+				const { status, payload } = await webCall(`/state?cwd=${encodeURIComponent(cwd)}`);
+				// 403 is the gate answering, 503 means this instance has no such surface:
+				// both mean "say nothing" rather than showing a broken control.
+				if (status === 403 || status === 503 || status === 0) return setView({ phase: "hidden", workspace: null, connected: false });
+				if (status !== 200) return setView({ phase: "hidden", workspace: null, connected: false });
+				setView({ phase: "ready", workspace: payload?.workspace ?? null, connected: payload?.connected === true });
+			}, [cwd]);
+
+			react.useEffect(() => { load(); }, [load]);
+			// Refreshed on a timer because the facts move without this component acting:
+			// another machine can take the workspace, or this machine's executor can drop.
+			react.useEffect(() => {
+				const timer = setInterval(() => { load(); }, 10000);
+				return () => clearInterval(timer);
+			}, [load]);
+
+			const act = async (path, workspaceId, paths) => {
+				setBusy(true);
+				setNote(t(path === "bind" ? "binding" : "unbinding"));
+				// The paths the badge is already showing are sent back, so what gets bound is
+				// what the tooltip said — the server's own generation is the fallback for a
+				// caller that has none, not a second opinion that could disagree with it.
+				const body = { workspaceId, ...(paths ?? {}) };
+				const { status, payload } = await webCall(`/${path}`, body);
+				setBusy(false);
+				if (status === 200 && payload?.ok) setNote(t(path === "bind" ? "bound" : "unbound"));
+				else if (payload?.reason === "no-executor") setNote(t("noExecutor"));
+				else setNote(String(payload?.error ?? `HTTP ${status}`));
+				await load();
+			};
+
+			if (view.phase !== "ready" || view.workspace === null) return null;
+			if (view.workspace.allowed === false) {
+				return h("span", { style: { ...chip, marginRight: "6px" }, title: t("notAllowed") },
+					h("span", { style: dot("#8b949e") }), t("serverMode"));
+			}
+			const binding = view.workspace.binding;
+			const mine = binding !== null && binding.mine === true;
+			const other = binding !== null && binding.mine !== true;
+			// A workspace outside every configured share rule has no visible path, and a
+			// binding cannot be created without one. Saying that here is the difference
+			// between a disabled button and a request that is certain to be refused.
+			const noPath = (view.workspace.visiblePath ?? "") === "";
+			const text = mine ? t("boundHere") : (other ? t("boundElsewhere") : t("serverMode"));
+			const hint = mine
+				? t("boundHereHint") + (binding.machineHost || binding.machine ? `（${binding.machineHost || binding.machine}）` : "")
+				: (other
+					? `${t("boundElsewhereHint")}（${binding.occupiedBy}）`
+					: (noPath
+						? t("noShareRule")
+						: t("serverModeHint") + (view.connected ? "" : ` — ${t("noExecutor")}`)));
+			const color = mine ? "#1a7f37" : (other ? "#b08800" : "#8b949e");
+
+			return h("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", marginRight: "6px" } }, [
+				h("span", { key: "chip", style: chip, title: hint }, [
+					h("span", { key: "d", style: dot(color) }),
+					text,
+				]),
+				// Only the two actionable cases get a button: binding what another account
+				// holds would be refused, and a refusal the server already explains does not
+				// belong behind a click.
+				mine
+					? h("button", {
+						key: "act", type: "button", style: { ...button, fontSize: "12px", padding: "2px 8px" },
+						disabled: busy, onClick: () => act("unbind", view.workspace.id),
+					}, t("unbind"))
+					: (other ? null : h("button", {
+						key: "act", type: "button", style: { ...button, fontSize: "12px", padding: "2px 8px" },
+						disabled: busy || !view.connected || noPath,
+						title: noPath ? t("noShareRule") : (view.connected ? t("bindLocalHint") : t("noExecutor")),
+						onClick: () => act("bind", view.workspace.id, {
+							visiblePath: view.workspace.visiblePath ?? "",
+							stagingDir: view.workspace.stagingDir ?? "",
+						}),
+					}, t("bindLocal"))),
+				note === "" ? null : h("span", { key: "note", style: muted }, note),
+			]);
 		}
 
 		function BindingsSection() {
@@ -231,6 +387,16 @@ window.__ModuleLoader__.load({
 				label: () => t("title"),
 				inject: () => ({}),
 			}, BindingsSection));
+
+			// The open session's execution location. A `list` slot, so this sits beside the
+			// shipped header actions instead of replacing them, and the session id arrives
+			// as a framework prop rather than being threaded through.
+			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
+				name: "conversation.session.header.actions",
+				id: "execution-location",
+				order: 10,
+				inject: () => ({}),
+			}, ExecutionBadge));
 		}
 
 		exports.apply = apply;

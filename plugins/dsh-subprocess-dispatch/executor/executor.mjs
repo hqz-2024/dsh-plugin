@@ -825,6 +825,20 @@ function defaultStagingDir() {
 }
 
 /**
+ * Expand `%NAME%` references in one path.
+ *
+ * The server names the client's default staging directory as `%USERPROFILE%\.dsh-staging`
+ * because it cannot read another machine's profile; expanding it here is what makes the
+ * stored value and the directory this machine actually uses the same path. An unknown
+ * name is left as written, so a path that genuinely contains percent signs survives.
+ * @param value - Raw path text.
+ * @returns The path with every known variable replaced.
+ */
+function expandEnvVars(value) {
+	return value.replace(/%([^%]+)%/g, (whole, name) => envValue(process.env, name) ?? whole)
+}
+
+/**
  * Serve the enrollment page on this machine's loopback.
  *
  * Bound to 127.0.0.1 only: the page handles a password, so nothing else on the
@@ -1539,7 +1553,12 @@ function connect(server, token, label) {
 			}
 			case 'bind.apply': {
 				const intervalMs = Number.isInteger(message.heartbeatMs) ? message.heartbeatMs : 15000
-				held.set(String(message.workspaceId), { visiblePath: message.visiblePath, stagingDir: message.stagingDir })
+				// A binding created from the Web UI names the staging directory as
+				// `%USERPROFILE%\.dsh-staging`: that directory is on *this* machine, so the
+				// variable is expanded here rather than guessed by the server. An empty
+				// value still means the same thing, for callers that send one.
+				const stagingDir = expandEnvVars(String(message.stagingDir ?? '').trim()) || defaultStagingDir()
+				held.set(String(message.workspaceId), { visiblePath: message.visiblePath, stagingDir })
 				console.log(`[executor] holding ${message.workspaceId} at ${message.visiblePath}`)
 				// Plan §2.0 puts the SMB credential in the executor's own job. The
 				// host is read from the binding the server just sent, so the user
@@ -1556,9 +1575,9 @@ function connect(server, token, label) {
 				// Plan §2.6: leftovers from a task that never wrote back are surfaced
 				// when the machine next binds, because this is the only side that can
 				// see the staging directory.
-				const leftovers = stagingLeftovers(message.stagingDir)
+				const leftovers = stagingLeftovers(stagingDir)
 				if (leftovers.length > 0) {
-					console.log(`[executor] 注意：暂存目录 ${message.stagingDir} 里有 ${leftovers.length} 项上次未回写的残留：`)
+					console.log(`[executor] 注意：暂存目录 ${stagingDir} 里有 ${leftovers.length} 项上次未回写的残留：`)
 					for (const item of leftovers) {
 						console.log(`[executor]   ${item.directory ? '[目录]' : ''}${item.name}${item.size === undefined ? '' : ` (${item.size} B, ${item.modifiedAt})`}`)
 					}

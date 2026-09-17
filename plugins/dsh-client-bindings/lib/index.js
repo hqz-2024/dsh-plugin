@@ -126,11 +126,19 @@ const bindingDomainSpec = defineDomain({
  * Windows client can have. A relative path is refused as well as an empty one: it
  * would resolve against whatever directory the executor happens to run in, which is
  * not a decision either side can make on the user's behalf.
+ *
+ * A Windows environment reference followed by a path (`%USERPROFILE%\.dsh-staging`) is
+ * accepted too, which is how the Web UI names the default. It is validated without
+ * being resolved because this process runs on the server while the variable refers to
+ * the *client's* profile; the executor expands it against its own environment, so the
+ * accepted string can never name the wrong machine's directory.
  * @param value - The path as submitted.
  * @returns true when it is an absolute path on a Windows client.
  */
 function isClientAbsolutePath(value) {
-	return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)
+	return /^[A-Za-z]:[\\/]/.test(value)
+		|| /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)
+		|| /^%[A-Za-z_][A-Za-z0-9_]*%[\\/]/.test(value)
 }
 
 /**
