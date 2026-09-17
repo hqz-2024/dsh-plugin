@@ -1813,12 +1813,22 @@ export class ClientTransport {
 		return this.send(username, { type: 'bind.drop', workspaceId: String(workspaceId), reason: String(reason) })
 	}
 
-	/** The connection for one account, or a loud failure — never a server fallback. */
-	requireConnection(username, what) {
-		if (this.connected(username)) return username
+	/**
+	 * The connection for one machine (or, for a legacy enrollment, one account), or a
+	 * loud failure — never a server fallback.
+	 * @param key - Machine id from the binding, or an account for a legacy connection.
+	 * @param what - Operation name, for the message.
+	 * @returns the connection key, once it is known to be live.
+	 */
+	requireConnection(key, what) {
+		if (this.connections.has(String(key))) return String(key)
+		const known = this.machineIds()
 		throw new Error(
-			`client-transport: no executor is connected for '${username}'; ${what} is unavailable`
-			+ ' and the command was not run on the server instead',
+			`client-transport: no executor is connected for '${key}'; ${what} is unavailable`
+			+ ' and the command was not run on the server instead'
+			+ (known.length === 0
+				? ' (no machine is connected at all — open the executor on the machine that should run this workspace)'
+				: ` (connected machines: ${known.join(', ')})`),
 		)
 	}
 

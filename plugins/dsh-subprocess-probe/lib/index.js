@@ -182,10 +182,16 @@ export function apply(ctx, config) {
 		while (!dispatcher.transport?.connected(username) && Date.now() < executorDeadline) await sleep(250)
 		record({ event: 'executor-connected', username, connected: !!dispatcher.transport?.connected(username) })
 
+		// A binding names a machine. The probe claims on behalf of whichever machine is
+		// connected, which is how the production path works: the Web UI asks the server
+		// which machines are online and binds one of them.
+		const machineId = dispatcher.transport?.machineIds?.()[0] ?? ''
+		record({ step: 'bound-machine', machineId })
 		const claim = await bindings.claim({
 			workspaceId,
 			workspaceTitle,
 			username,
+			machineId,
 			machine: 'probe-executor',
 			visiblePath,
 			stagingDir: 'C:\\dsh-staging',
@@ -195,7 +201,7 @@ export function apply(ctx, config) {
 		// which does not exist yet, so the harness sends it. Without it the
 		// executor never heartbeats and the binding lapses mid-test.
 		if (claim.ok) {
-			const sent = dispatcher.transport.notifyBindApply(username, claim.binding, bindings.heartbeatMs)
+			const sent = dispatcher.transport.notifyBindApply(machineId || username, claim.binding, bindings.heartbeatMs)
 			record({ step: 'notify-bind-apply', sent })
 		}
 		await sleep(reindexMs)
@@ -1178,16 +1184,18 @@ export function apply(ctx, config) {
 		// LOUDLY rather than quietly run on the server -- a silent fallback would
 		// tell the agent its command ran on the user's machine when it did not.
 		if (crashMarker) {
+			const crashMachine = dispatcher.transport?.machineIds?.()[0] ?? ''
 			const crashClaim = await bindings.claim({
 				workspaceId,
 				workspaceTitle,
 				username,
+				machineId: crashMachine,
 				machine: 'probe-executor',
 				visiblePath,
 				stagingDir: 'C:\\dsh-staging',
 			})
 			if (crashClaim.ok) {
-				dispatcher.transport.notifyBindApply(username, crashClaim.binding, bindings.heartbeatMs)
+				dispatcher.transport.notifyBindApply(crashMachine || username, crashClaim.binding, bindings.heartbeatMs)
 			}
 			await sleep(reindexMs)
 
