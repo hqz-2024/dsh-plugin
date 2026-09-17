@@ -42,8 +42,11 @@
       - /client-auth
       - /client-relay
     roleMap:
+      # 单工作区授权的普通账号：验「授权真的生效」（它不该看到别的工作区），
+      # 以及「机器不属于任何账号也能被它绑定」。
       probe-admin:
-        workspaces: []
+        workspaces:
+          - 微众诉讼
 
 # ── the client-execution surface ──────────────────────────────────────────────
 - id: subprocess

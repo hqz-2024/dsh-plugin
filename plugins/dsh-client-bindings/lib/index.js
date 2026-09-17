@@ -436,21 +436,27 @@ export default class ClientBindings extends Service {
 	}
 
 	/**
-	 * Record what one account's executor reported about itself.
+	 * Record one machine's reported facts on the bindings it holds.
 	 *
-	 * The prompt section names the target OS, and the plan has that fact live in
-	 * the binding record rather than be re-asked per assembly, so it is written
-	 * when the executor says hello and re-written on every reconnect (a machine
-	 * can be re-imaged between connections).
-	 * @param username - Account whose executor reported.
-	 * @param facts - `host`, `platform`, and `release` from the `hello` frame.
-	 * @returns the workspace ids that were updated.
+	 * The prompt section names the target OS, so these facts live in the binding record
+	 * rather than being re-asked per assembly: they are written when the machine says
+	 * hello and rewritten on every reconnect, because a machine can be re-imaged between
+	 * connections. Addressed by machine id, with the account as the fallback for a
+	 * binding created before machines named themselves.
+	 * @param machineOrUsername - Machine id from `hello`, or an account for a legacy enrollment.
+	 * @param facts - Host, platform, and release as the machine reported them.
+	 * @returns the workspace ids that changed.
 	 */
-	async noteMachine(username, facts) {
+	async noteMachine(machineOrUsername, facts) {
 		return await this.enqueue(async () => {
+			const identity = String(machineOrUsername)
 			const updated = []
 			for (const [workspaceId, record] of [...(this.table?.entries() ?? [])]) {
-				if (!this.isLive(record) || record.username !== String(username)) continue
+				if (!this.isLive(record)) continue
+				const matches = record.machineId !== undefined
+					? record.machineId === identity
+					: record.username === identity
+				if (!matches) continue
 				if (record.machineHost === facts.host && record.machinePlatform === facts.platform
 					&& record.machineRelease === facts.release) continue
 				await this.table.put(workspaceId, {
@@ -504,6 +510,23 @@ export default class ClientBindings extends Service {
 	}
 
 	/**
+	 * Whether one binding is held by the identity making a request.
+	 *
+	 * A binding is a claim on a *machine*, so the machine id is the identity that counts.
+	 * `username` stays on the record as attribution — who created the binding, for the
+	 * admin list and for revocation when an account goes away — and it is also the
+	 * fallback for a binding created before machines named themselves.
+	 * @param record - The stored binding.
+	 * @param request - A request carrying `machineId` and/or `username`.
+	 * @returns true when the request speaks for this binding's occupant.
+	 */
+	isOccupant(record, request) {
+		const machineId = String(request?.machineId ?? '')
+		if (machineId !== '' && record.machineId !== undefined) return record.machineId === machineId
+		return record.username === String(request?.username ?? '')
+	}
+
+	/**
 	 * Claim a workspace for one machine. Refused while an active occupant holds it.
 	 *
 	 * The two paths are validated here rather than at the HTTP endpoint, because
@@ -513,15 +536,22 @@ export default class ClientBindings extends Service {
 	 * that does not exist, and the prompt section would tell the model its commands
 	 * run in "`…: ``". Enforcing it at the endpoint would leave every other caller
 	 * free to write the same broken record.
-	 * @param request - Workspace identity plus the claiming account, machine, and paths.
+	 *
+	 * Who may claim a workspace is NOT decided here: that is authorization, and it
+	 * belongs to the caller that can check the account's grant. This store only decides
+	 * whether the workspace is already taken, and by which machine.
+	 * @param request - Workspace identity plus the claiming machine (and optionally the account that asked).
 	 * @returns `{ ok: true, binding }`, or `{ ok: false, reason, occupant… }` when held.
 	 */
 	async claim(request) {
 		return await this.enqueue(async () => {
 			const workspaceId = String(request?.workspaceId ?? '')
 			if (!workspaceId) return { ok: false, reason: 'missing-workspace' }
+			const machineId = String(request?.machineId ?? '')
 			const username = String(request?.username ?? '')
-			if (!username) return { ok: false, reason: 'missing-username' }
+			// A binding needs an occupant to attribute it to and to check later, and a
+			// machine is the identity that actually runs the work.
+			if (!machineId && !username) return { ok: false, reason: 'missing-occupant' }
 			const visiblePath = String(request?.visiblePath ?? '').trim()
 			if (!isClientAbsolutePath(visiblePath)) {
 				return {
@@ -543,7 +573,8 @@ export default class ClientBindings extends Service {
 				return {
 					ok: false,
 					reason: 'occupied',
-					occupant: existing.username,
+					occupant: existing.machineId ?? existing.username,
+					occupiedBy: existing.username,
 					machine: existing.machine,
 					since: existing.boundAt,
 				}
@@ -552,7 +583,10 @@ export default class ClientBindings extends Service {
 			const binding = {
 				workspaceId,
 				workspaceTitle: String(request?.workspaceTitle ?? existing?.workspaceTitle ?? ''),
-				username,
+				machineId: machineId || existing?.machineId,
+				// Attribution, not identity: recorded so an admin list can say who created the
+				// binding, and so removing an account can end what it started.
+				username: username || existing?.username || '',
 				machine: String(request?.machine ?? ''),
 				visiblePath,
 				stagingDir,
@@ -577,8 +611,8 @@ export default class ClientBindings extends Service {
 			const workspaceId = String(request?.workspaceId ?? '')
 			const record = this.get(workspaceId)
 			if (!this.isLive(record)) return { ok: false, reason: 'not-held' }
-			if (record.username !== String(request?.username ?? '')) {
-				return { ok: false, reason: 'not-occupant', occupant: record.username }
+			if (!this.isOccupant(record, request)) {
+				return { ok: false, reason: 'not-occupant', occupant: record.machineId ?? record.username }
 			}
 			const next = { ...record, lastHeartbeat: new Date().toISOString() }
 			await this.table.put(workspaceId, next)
@@ -598,8 +632,8 @@ export default class ClientBindings extends Service {
 			const record = this.get(workspaceId)
 			if (!record || record.endedAt) return { ok: false, reason: 'not-bound' }
 			const force = request?.force === true
-			if (!force && record.username !== String(request?.username ?? '')) {
-				return { ok: false, reason: 'not-occupant', occupant: record.username }
+			if (!force && !this.isOccupant(record, request)) {
+				return { ok: false, reason: 'not-occupant', occupant: record.machineId ?? record.username }
 			}
 			await this.finish(workspaceId, String(request?.reason ?? (force ? 'forced-by-admin' : 'released-by-occupant')))
 			return { ok: true, workspaceId }

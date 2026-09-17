@@ -601,6 +601,22 @@ export class ClientTransport {
 		return issued.username
 	}
 
+	/**
+	 * The identity a binding should record for one connection.
+	 *
+	 * The machine id is what a binding names, so a machine that has said hello is
+	 * addressed by it. A connection authenticated by a per-account token before this
+	 * existed has none, and falls back to the account — which is exactly what the
+	 * record would have held then.
+	 * @param key - A machine id, or an account for a legacy connection.
+	 * @returns the id to store, and the account to attribute it to.
+	 */
+	occupantIdentity(key) {
+		const connection = this.connections.get(String(key))
+		const machineId = connection?.machineId ?? (this.machineConnected(String(key)) ? String(key) : '')
+		return { machineId, username: connection?.username ?? '' }
+	}
+
 	/** Write one JSON response, unless the headers already went out. */
 	respond(res, status, body) {
 		if (res.headersSent) {
@@ -698,7 +714,15 @@ export class ClientTransport {
 		return undefined
 	}
 
-	/** Current bindings an account holds, as the client page shows them. */
+	/**
+	 * Current bindings created by one account, as the Web UI shows them.
+	 *
+	 * Filtered by the account that created them, not by the machine that holds them: the
+	 * workspace belongs to the account's view of the deployment, and two accounts may
+	 * each have bound different workspaces to the same machine.
+	 * @param username - The signed-in account.
+	 * @returns one entry per binding, newest fields included.
+	 */
 	bindingsFor(username) {
 		const bindings = this.ctx.get('clientBindings')
 		if (!bindings) return []
@@ -707,6 +731,7 @@ export class ClientTransport {
 			.map((record) => ({
 				workspaceId: record.workspaceId,
 				workspaceTitle: record.workspaceTitle,
+				machineId: record.machineId ?? null,
 				visiblePath: record.visiblePath,
 				stagingDir: record.stagingDir,
 				state: bindings.isLive(record) ? 'active' : 'expired',
@@ -866,10 +891,23 @@ export class ClientTransport {
 			return
 		}
 		const username = session.username
+		// The account's workspace grant, resolved once per request and passed down. Every
+		// read and every write below filters on it: who may see or bind a workspace is the
+		// account's business, and a route that forgot to pass it would quietly hand over
+		// everything.
+		const granted = session.workspaces
 		try {
 			if (action === 'state') {
 				const cwd = url.searchParams.get('cwd') ?? ''
-				this.respond(res, 200, this.webState(username, cwd))
+				this.respond(res, 200, this.webState(username, cwd, granted))
+				return
+			}
+			// The machines a person can choose between when deciding where a workspace runs.
+			if (action === 'machines') {
+				this.respond(res, 200, {
+					machines: this.machineList(),
+					bindings: this.bindingsFor(username),
+				})
 				return
 			}
 			if (action === 'bind' || action === 'unbind') {
@@ -879,7 +917,7 @@ export class ClientTransport {
 				}
 				const body = await this.readJson(req)
 				const workspaceId = String(body?.workspaceId ?? '')
-				if (!this.claimableWorkspaces(username, undefined).some((w) => w.id === workspaceId)) {
+				if (!this.claimableWorkspaces(username, granted).some((w) => w.id === workspaceId)) {
 					this.respond(res, 404, { error: `workspace '${workspaceId}' is not available to this account` })
 					return
 				}
@@ -892,36 +930,60 @@ export class ClientTransport {
 				// Two different refusals, and saying which one it is matters: a workspace
 				// another account holds cannot be fixed by opening an executor, and a
 				// workspace nobody holds cannot be claimed without one.
-				const occupant = bindings.activeFor(workspaceId)
-				if (occupant !== undefined && occupant.username !== username) {
+				// Which machine runs this workspace. The browser names one; with none named,
+				// the only sensible default is the single machine this account is connected
+				// through, and ambiguity is refused rather than guessed at.
+				const requested = String(body?.machineId ?? '')
+				const online = this.machineIds()
+				let machineId = requested
+				if (machineId === '') {
+					if (online.length !== 1) {
+						this.respond(res, 409, {
+							error: online.length === 0
+								? 'no machine is connected'
+								: `${online.length} machines are connected; name one`,
+							reason: online.length === 0 ? 'no-executor' : 'ambiguous-machine',
+							machines: this.machineList(),
+							remedy: online.length === 0
+								? 'open the client executor on the machine that should run this workspace, then try again'
+								: undefined,
+						})
+						return
+					}
+					machineId = online[0]
+				}
+				if (!this.machineConnected(machineId)) {
 					this.respond(res, 409, {
-						error: `'${workspaceId}' is bound by ${occupant.username} on ${occupant.machine || 'another machine'}`,
-						reason: 'occupied',
-						occupiedBy: occupant.username,
+						error: `machine '${machineId}' is not connected`,
+						reason: 'no-such-machine',
+						machines: this.machineList(),
 					})
 					return
 				}
-				const machine = this.describe(username)
-				if (!this.connected(username)) {
+				const occupant = bindings.activeFor(workspaceId)
+				if (occupant !== undefined && occupant.machineId !== machineId) {
 					this.respond(res, 409, {
-						error: 'no executor is connected for this account',
-						reason: 'no-executor',
-						remedy: 'open the client executor on the machine that should run this workspace, then try again',
+						error: `'${workspaceId}' is bound to ${occupant.machineId ?? occupant.machine ?? 'another machine'}`,
+						reason: 'occupied',
+						occupiedBy: occupant.machineId ?? occupant.username,
 					})
 					return
 				}
 				const registry = this.ctx.get('workspaceRegistry')
-				const workspace = this.claimableWorkspaces(username, undefined).find((w) => w.id === workspaceId)
+				const workspace = this.claimableWorkspaces(username, granted).find((w) => w.id === workspaceId)
 				const generated = this.generatePaths(workspace?.path ?? '')
+				const facts = this.describe(machineId)
 				const claimed = await bindings.claim({
 					workspaceId,
 					workspaceTitle: registry?.get?.(workspaceId)?.title ?? '',
+					// The machine is the occupant; the account is who asked for it.
+					machineId,
 					username,
-					machine: body?.machine ?? machine?.host ?? '',
+					machine: body?.machine ?? facts?.host ?? '',
 					visiblePath: String(body?.visiblePath ?? '') || generated.visiblePath,
 					stagingDir: String(body?.stagingDir ?? '') || generated.stagingDir,
 				})
-				if (claimed.ok) this.notifyBindApply(username, claimed.binding, bindings.heartbeatMs)
+				if (claimed.ok) this.notifyBindApply(machineId, claimed.binding, bindings.heartbeatMs)
 				const refused = String(claimed.reason ?? '').startsWith('invalid-') ? 400 : 409
 				this.respond(res, claimed.ok ? 200 : refused, { ...claimed, generated })
 				return
@@ -941,17 +1003,21 @@ export class ClientTransport {
 	 * command runs, so showing it is showing the routing rather than a parallel guess.
 	 * @param username - The signed-in account.
 	 * @param cwd - The session's working directory, or `''` for no session.
+	 * @param granted - The account's workspace grant, or `undefined` for no restriction.
 	 * @returns State payload for the client's header control.
 	 */
-	webState(username, cwd) {
+	webState(username, cwd, granted) {
 		const bindings = this.ctx.get('clientBindings')
 		const registry = this.ctx.get('workspaceRegistry')
-		const workspaces = this.claimableWorkspaces(username, undefined)
+		const workspaces = this.claimableWorkspaces(username, granted)
 		const base = {
 			username,
-			connected: this.connected(username),
-			machine: this.describe(username) ?? null,
+			connected: this.machineIds().length > 0,
+			machines: this.machineList(),
 			workspaces,
+			// Every binding this account created, so a UI can show what it has already set
+			// up without asking per workspace.
+			bindings: this.bindingsFor(username),
 		}
 		if (cwd === '') return { ...base, workspace: null }
 		// Longest matching prefix wins, so a workspace nested inside another still
@@ -1197,10 +1263,10 @@ export class ClientTransport {
 					heartbeatMs: bindings.heartbeatMs,
 					machine: this.describe(username) ?? null,
 					bindings: this.bindingsFor(username),
-					// A machine enrolled by a launcher script holds a token and never
-					// signs in, so this is the only place its page can learn which
-					// workspaces it may bind. Sending it here rather than requiring the
-					// login round trip is what lets the whole bind step skip a password.
+					// No grant is applied on this path, and none can be: a token authenticates
+					// a machine, not a person, so there is no signed-in account here whose
+					// workspaces could be checked. Binding an account's workspaces is decided
+					// in the Web UI (`/client-web`), where the caller is that account.
 					workspaces: this.claimableWorkspaces(username, undefined),
 				})
 				return
@@ -1213,6 +1279,9 @@ export class ClientTransport {
 				}
 				const body = await this.readJson(req)
 				const workspaceId = String(body?.workspaceId ?? '')
+				// Legacy token path: the token names an account but carries no session, so the
+				// workspace has to exist and the occupancy check below still applies. Binding
+				// from the Web UI is the path that enforces the account's grant.
 				if (!this.claimableWorkspaces(username, undefined).some((workspace) => workspace.id === workspaceId)) {
 					this.respond(res, 404, { error: `workspace '${workspaceId}' is not available to this account` })
 					return
@@ -1225,9 +1294,13 @@ export class ClientTransport {
 				}
 				const registry = this.ctx.get('workspaceRegistry')
 				const workspaceTitle = registry?.get?.(workspaceId)?.title ?? ''
+				// The connection this request came from is the machine that will run the
+				// workspace, so its identity is what the binding records.
+				const who = this.occupantIdentity(username)
 				const claimed = await bindings.claim({
 					workspaceId,
 					workspaceTitle,
+					machineId: who.machineId,
 					username,
 					machine: String(body?.machine ?? issuedRecord?.label ?? ''),
 					visiblePath: String(body?.visiblePath ?? ''),
@@ -1236,7 +1309,7 @@ export class ClientTransport {
 				if (claimed.ok) {
 					// The executor must learn it now holds this, or it never starts
 					// heartbeating and the binding lapses on its own grace clock.
-					this.notifyBindApply(username, claimed.binding, bindings.heartbeatMs)
+					this.notifyBindApply(who.machineId || username, claimed.binding, bindings.heartbeatMs)
 				}
 				// A refused claim is the store's decision; an invalid path is the
 				// caller's mistake, and 400 says so where 409 would imply a conflict
@@ -1508,6 +1581,25 @@ export class ClientTransport {
 			.filter((id) => typeof id === 'string' && id !== '')
 	}
 
+	/**
+	 * Every connected machine, as the binding UI needs to show it.
+	 *
+	 * A person choosing where a workspace runs needs to recognize the computer, so this
+	 * carries the facts the machine reported about itself rather than only its id.
+	 * @returns one entry per connected machine.
+	 */
+	machineList() {
+		return this.machineIds().map((machineId) => {
+			const facts = this.describe(machineId) ?? {}
+			return {
+				machineId,
+				host: facts.host ?? '',
+				platform: facts.platform ?? '',
+				release: facts.release ?? '',
+			}
+		})
+	}
+
 	/** Facts the connected executor reported at `hello`, by machine id or account. */
 	describe(username) {
 		const connection = this.connections.get(String(username))
@@ -1649,7 +1741,9 @@ export class ClientTransport {
 			// is told to drop it instead of beating into the void.
 			const bindings = this.ctx.get('clientBindings')
 			if (bindings) {
-				void bindings.heartbeat({ workspaceId: message.workspaceId, username }).then((result) => {
+				// The occupant is the machine, so the heartbeat is checked against the
+				// machine id; an account is only the fallback for a legacy connection.
+				void bindings.heartbeat({ workspaceId: message.workspaceId, machineId: connection.machineId ?? '', username }).then((result) => {
 					if (!result?.ok) this.notifyBindDrop(username, message.workspaceId, result?.reason ?? 'not-held')
 				})
 			}

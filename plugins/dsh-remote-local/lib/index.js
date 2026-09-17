@@ -1003,7 +1003,16 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			const verdict = requireAuth(req);
 			if (!verdict.ok) return undefined;
 			const mapped = effectiveRoleMap()[verdict.user.username];
-			const workspaces = mapped && mapped.workspace ? [mapped.workspace] : undefined;
+			// `normalizeMapping` folds both spellings — the account form's `workspaces` array
+			// and the older singular `workspace` — into `workspaces` and does not keep the
+			// singular key. Reading `mapped.workspace` therefore returned undefined for every
+			// account, which the caller treats as "no restriction", so every grant was
+			// silently ignored and every account could bind anything. Read the normalized
+			// array; an empty one still means no restriction, which is what an unmapped
+			// admin is.
+			const workspaces = Array.isArray(mapped?.workspaces) && mapped.workspaces.length > 0
+				? mapped.workspaces
+				: undefined;
 			return { username: verdict.user.username, role: verdict.user.role, workspaces };
 		}
 	});

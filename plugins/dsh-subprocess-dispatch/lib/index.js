@@ -145,13 +145,18 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 
 		// A binding outlives the socket, so a machine that (re)connects must be
 		// told what it still holds; without this replay it would sit idle while
-		// the server kept routing its workspace's work to it.
-		this.transport.onConnect = (username) => {
+		// the server kept routing its workspace's work to it. The key is a machine id
+		// for a machine that named itself, and an account for a legacy connection.
+		this.transport.onConnect = (key) => {
 			const bindings = this.ctx.get('clientBindings')
 			if (!bindings) return
 			for (const record of bindings.list()) {
-				if (!bindings.isLive(record) || record.username !== username) continue
-				this.transport.notifyBindApply(username, record, bindings.heartbeatMs)
+				if (!bindings.isLive(record)) continue
+				const matches = record.machineId !== undefined
+					? record.machineId === key
+					: record.username === key
+				if (!matches) continue
+				this.transport.notifyBindApply(key, record, bindings.heartbeatMs)
 			}
 		}
 
@@ -187,6 +192,9 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 					title: workspace.title,
 					target: binding ? 'client' : 'server',
 					reason: binding ? 'workspace-bound' : 'workspace-unbound',
+					// The machine that runs it. `username` rides along as attribution and as
+					// the occupant for a binding created before machines named themselves.
+					machineId: binding ? (binding.machineId ?? null) : null,
 					username: binding ? binding.username : null,
 					visiblePath: binding ? binding.visiblePath : null,
 				})
@@ -245,7 +253,17 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 		const sessionId = envValue(spec.env, 'DSH_SESSION_ID')
 		if (sessionId === undefined) return route
 		const owner = this.ctx.get('sessionOwnership')?.ownerOf?.(sessionId)
-		if (owner === undefined || owner === null || owner === route.username) return route
+		if (owner === undefined || owner === null) return route
+		// A binding is a claim on a machine, not on a person: the workspace it names is one
+		// this deployment has granted to an account, and whether that account may use the
+		// workspace is decided when the session is opened and when the binding is created.
+		// So any session may use a machine-bound workspace.
+		//
+		// What still must not happen is the older shape: a binding recorded against an
+		// account — one created before machines named themselves — must not hand that
+		// workspace to a different account's session.
+		const legacy = route.machineId === undefined || route.machineId === null
+		if (!legacy || owner === route.username) return route
 		this.traceEvent({
 			event: 'foreign-session-fallback',
 			op,
@@ -331,8 +349,11 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 	 */
 	spawnOnClient(route, spec) {
 		const cwd = this.translateCwd(route, spec.cwd)
+		// Addressed by machine: that is what a binding names, and what the connection is
+		// keyed by. `username` remains the key only for a legacy token connection.
+		const key = route.machineId || route.username
 		const handle = this.transport.spawn({
-			username: route.username,
+			username: key,
 			argv: spec.argv,
 			cwd,
 			env: spec.env,
@@ -340,7 +361,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 			graceMs: spec.graceMs,
 			signal: spec.signal,
 		})
-		this.traceEvent({ event: 'client-spawn', workspaceId: route.id, username: route.username, cwd, translatedFrom: spec.cwd })
+		this.traceEvent({ event: 'client-spawn', workspaceId: route.id, machineId: route.machineId ?? null, username: route.username, cwd, translatedFrom: spec.cwd })
 		return handle
 	}
 
@@ -364,7 +385,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 		if (route?.target === 'client') {
 			const cwd = this.translateCwd(route, spec.cwd)
 			const handle = await this.transport.spawnTerminal({
-				username: route.username,
+				username: route.machineId || route.username,
 				argv: spec.argv,
 				cwd,
 				env: spec.env,
@@ -373,7 +394,7 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 				graceMs: spec.graceMs,
 				signal: spec.signal,
 			})
-			this.traceEvent({ event: 'client-terminal', workspaceId: route.id, username: route.username, cwd, translatedFrom: spec.cwd })
+			this.traceEvent({ event: 'client-terminal', workspaceId: route.id, machineId: route.machineId ?? null, username: route.username, cwd, translatedFrom: spec.cwd })
 			return handle
 		}
 		return await this.delegate().spawnTerminal(spec)
