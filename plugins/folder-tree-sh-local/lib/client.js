@@ -1799,6 +1799,33 @@ window.__ModuleLoader__.load({
 							const wsPath = workspace ? workspace.path : (cwd || null);
 							const title = workspace ? workspace.title : (cwd ? basename(cwd) : '文件树');
 							react.useEffect(() => { currentWsPath = wsPath; currentWorkspaceId = workspace ? workspace.workspaceId : null; currentWorkspaceTitle = title; setBrowsePath(null); }, [wsPath, workspace, title]);
+							// LOCAL FORK (dsh-subprocess-dispatch): ask the deployment where this
+							// workspace runs. Asked by `cwd` rather than by id, because `cwd` is the
+							// fact the dispatcher itself routes on — the badge then describes the
+							// routing instead of a second guess that could disagree with it.
+							const execCall = (path, body) => fetch('/client-web' + path, body === undefined
+								? { headers: { accept: 'application/json' } }
+								: { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+							).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+							const refreshExec = react.useCallback(() => {
+								if (!wsPath) { setExecState(null); return; }
+								execCall('/state?cwd=' + encodeURIComponent(wsPath)).then((s) => setExecState(s));
+							}, [wsPath]);
+							react.useEffect(() => { refreshExec(); }, [refreshExec]);
+							react.useEffect(() => {
+								const timer = setInterval(refreshExec, 10000);
+								return () => clearInterval(timer);
+							}, [refreshExec]);
+							const runExec = (path, body) => {
+								setExecBusy(true);
+								setExecNote(path === 'bind' ? '绑定中…' : '解绑中…');
+								execCall('/' + path, body).then((r) => {
+									setExecBusy(false);
+									setExecNote(r && r.ok ? (path === 'bind' ? '已绑定' : '已解绑')
+										: String((r && (r.error || r.reason)) || '失败'));
+									refreshExec();
+								});
+							};
 							// LOCAL FORK: admins can browse above the workspace root
 							// (the host relaxes its whitelist for admin); the listed
 							// directory is browsePath when set, else the workspace.
@@ -1814,6 +1841,13 @@ window.__ModuleLoader__.load({
 							const [gitLoading, setGitLoading] = react.useState(false);
 							const [showHidden, setShowHidden] = react.useState(lsGet('ftree.hidden', '0') === '1');
 							const [sortMode, setSortMode] = react.useState(lsGet('ftree.sort', 'name'));
+							// LOCAL FORK (dsh-subprocess-dispatch): where this workspace's commands
+							// run, and the control that changes it. Binding lives here rather than in
+							// the executor's own page because this panel already knows which workspace
+							// is open, and the person deciding is the one signed in here.
+							const [execState, setExecState] = react.useState(null);
+							const [execBusy, setExecBusy] = react.useState(false);
+							const [execNote, setExecNote] = react.useState('');
 							const dirsRef = react.useRef({});
 							const setDirsSync = (fn) => setDirs((d) => { const n = typeof fn === 'function' ? fn(d) : fn; dirsRef.current = n; return n; });
 							react.useEffect(() => {
@@ -1960,6 +1994,51 @@ window.__ModuleLoader__.load({
 								react.createElement('span', null, view === 'git' ? '🔀' : '📁'),
 								react.createElement('span', { className: 'dsh-ftree-title' }, view === 'git' ? 'Git 变更' : title),
 								react.createElement('span', { className: 'dsh-ftree-path', title: listRoot }, listRoot || ''),
+								// LOCAL FORK (dsh-subprocess-dispatch): execution location + bind control.
+								// Rendered only when the deployment answers (this plugin also runs on
+								// installations without the client world).
+								execState && execState.workspace ? (() => {
+									const wsInfo = execState.workspace;
+									const binding = wsInfo.binding;
+									const mine = binding !== null && binding.machineId && binding.machineId === (execState.machines || []).map((m) => m.machineId).find((id) => id === binding.machineId);
+									const busy = execBusy;
+									const machines = execState.machines || [];
+									const noPath = !wsInfo.visiblePath;
+									const label = binding !== null ? '本地模式' : '服务器';
+									const title = binding !== null
+										? '这个工作区的命令在「' + (binding.machineHost || binding.machineId) + '」上执行；点右侧解绑即改回服务器执行'
+										: (noPath
+											? '这个工作区不在共享目录下，服务器给不出本机可见路径，因此无法绑定到本地'
+											: (machines.length === 0
+												? '还没有机器在线：先在那台电脑上启动执行器'
+												: '绑定后，这个工作区的命令在本机执行，文件走共享同步'));
+									const bindTo = machines.length > 0 ? machines[0].machineId : '';
+									return react.createElement(react.Fragment, null,
+										react.createElement('span', {
+											className: 'dsh-ftree-exec-chip' + (binding !== null ? ' on' : ''),
+											title,
+											onClick: (ev) => ev.stopPropagation()
+										}, label),
+										binding !== null
+											? react.createElement('span', {
+												className: 'dsh-ftree-btn',
+												title: '解绑：改回在服务器上执行',
+												onClick: (ev) => { ev.stopPropagation(); if (!busy) runExec('unbind', { workspaceId: wsInfo.id }); }
+											}, busy ? '…' : '解绑')
+											: react.createElement('span', {
+												className: 'dsh-ftree-btn' + (bindTo && !noPath ? '' : ' disabled'),
+												title,
+												onClick: (ev) => {
+													ev.stopPropagation();
+													if (busy || noPath || !bindTo) return;
+													// The paths come from the server's own share rules, so the
+													// person never types a UNC path.
+													runExec('bind', { workspaceId: wsInfo.id, machineId: bindTo, visiblePath: wsInfo.visiblePath, stagingDir: wsInfo.stagingDir });
+												}
+											}, busy ? '…' : '本地模式'),
+										execNote ? react.createElement('span', { className: 'dsh-ftree-exec-note' }, execNote) : null
+									);
+								})() : null,
 								react.createElement('span', { className: 'dsh-ftree-btn' + (view === 'files' ? ' active' : ''), title: '文件树', onClick: (ev) => { ev.stopPropagation(); setView('files'); } }, '文件'),
 								react.createElement('span', { className: 'dsh-ftree-btn' + (view === 'git' ? ' active' : ''), title: 'Git 变更', onClick: (ev) => { ev.stopPropagation(); setView('git'); } }, 'Git'),
 								react.createElement('span', { className: 'dsh-ftree-btn', title: showHidden ? '隐藏 .git / node_modules / .DS_Store' : '显示 .git / node_modules / .DS_Store', onClick: (ev) => { ev.stopPropagation(); const v = !showHidden; setShowHidden(v); lsSet('ftree.hidden', v ? '1' : '0'); } }, showHidden ? '🙈' : '👁'),
