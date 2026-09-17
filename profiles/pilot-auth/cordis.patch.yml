@@ -56,6 +56,9 @@
     tracePath: !!js dshHomePath('profiles/pilot-auth/dispatch-trace.jsonl')
     tokens:
       pilot-auth-executor-token-0123456789: probe-primary
+    # 部署级机器密钥：执行器拿它注册，不需要账号。机器在 `hello` 里自报 machineId，
+    # 服务器此后按 machineId 寻址它。`tokens` 留作旧式安装的兼容路径。
+    machineSecret: 'pilot-auth-machine-secret-0123456789abcdef'
     relayPorts: [3845, 38450]
     relayTokens:
       pilot-auth-relay-secret-abcdef0123456789: probe-primary

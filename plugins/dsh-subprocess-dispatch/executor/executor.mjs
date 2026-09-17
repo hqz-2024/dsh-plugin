@@ -44,6 +44,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { homedir, hostname, platform, release } from 'node:os'
 import { delimiter, dirname, basename, extname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { getCACertificates, setDefaultCACertificates } from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
@@ -271,10 +272,11 @@ function resolveProgram(program, env) {
 }
 
 function parseArgs(argv) {
-	const out = { server: '', token: '', label: '', nodePty: '', configPort: 38460, state: '', ca: '' }
+	const out = { server: '', token: '', secret: '', label: '', nodePty: '', configPort: 38460, state: '', ca: '' }
 	for (let i = 0; i < argv.length; i += 1) {
 		if (argv[i] === '--server' && argv[i + 1]) out.server = argv[++i]
 		else if (argv[i] === '--token' && argv[i + 1]) out.token = argv[++i]
+		else if (argv[i] === '--secret' && argv[i + 1]) out.secret = argv[++i]
 		else if (argv[i] === '--label' && argv[i + 1]) out.label = argv[++i]
 		else if (argv[i] === '--node-pty' && argv[i + 1]) out.nodePty = argv[++i]
 		else if (argv[i] === '--config-port' && argv[i + 1]) out.configPort = Number(argv[++i])
@@ -304,7 +306,9 @@ function parseArgs(argv) {
 /** Where the enrolled server and token live between restarts. */
 let statePath = ''
 /** The enrollment this process is using. */
-let enrollment = { server: '', token: '', username: '', label: '', smb: { username: '', password: '' } }
+let enrollment = { server: '', token: '', secret: '', username: '', label: '', smb: { username: '', password: '' } }
+/** This computer's stable identity, created on first run. */
+let machineId = ''
 /** The most recent answer from `hello`, for the status view. */
 let lastHello = null
 /** Set when the config page is what started this process, so `/status` can say so. */
@@ -312,10 +316,40 @@ let awaitingEnrollment = false
 /** The local config server, once started. */
 let configServer = null
 
+/**
+ * This computer's stable name, kept beside the state rather than inside it.
+ *
+ * A machine is addressed by this id: bindings name it, and the server routes to it. It
+ * survives re-enrollment on purpose — pointing the program at a different server must
+ * not turn this computer into a stranger, and an id regenerated on every start would
+ * make the binding store accumulate entries for machines that are all this one.
+ * @returns The persisted id, creating it on first use.
+ */
+function loadMachineId() {
+	const path = join(dirname(statePath), 'machine-id')
+	try {
+		const existing = readFileSync(path, 'utf8').trim()
+		if (/^[a-z0-9-]{8,}$/i.test(existing)) return existing
+	} catch {
+		// First run, or the file was removed: create one below.
+	}
+	const created = `${hostname().toLowerCase().replace(/[^a-z0-9-]+/g, '-')}-${randomUUID().slice(0, 8)}`
+	try {
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, `${created}\n`, { mode: 0o600 })
+	} catch (error) {
+		console.error(`[executor] could not persist a machine id to ${path}: ${String(error?.message ?? error)}`)
+	}
+	return created
+}
+
 function loadState() {
 	try {
 		const parsed = JSON.parse(readFileSync(statePath, 'utf8'))
-		return typeof parsed?.server === 'string' && typeof parsed?.token === 'string' ? parsed : undefined
+		// A machine enrolled with the deployment secret has no account and no issued
+		// token, so a server is all that is required to reconnect.
+		if (typeof parsed?.server === 'string' && (typeof parsed?.token === 'string' || typeof parsed?.secret === 'string')) return parsed
+		return undefined
 	} catch {
 		return undefined
 	}
@@ -554,8 +588,28 @@ function httpBase(server) {
 		.replace(/\/executor$/, '')
 }
 
+/**
+ * Whether this machine has been pointed at a server.
+ *
+ * Two credentials are possible and either one is enough: the deployment secret (the
+ * intended shape, which involves no account) or a per-account token issued to an older
+ * enrollment.
+ * @returns true when a connection can be attempted.
+ */
+function isEnrolled() {
+	return enrollment.secret !== '' || enrollment.token !== ''
+}
+
+/**
+ * Per-account calls this program can still make.
+ *
+ * The executor's own token-authenticated calls — the ones that ask the server which
+ * workspaces an *account* may bind — only exist for a token enrollment. A machine that
+ * announced itself with the deployment secret has no account and no business asking, so
+ * `webEntryUrl` simply falls back to the server address.
+ */
 async function callEnrolled(action, body) {
-	if (!enrollment.token) return { ok: false, error: 'not enrolled yet' }
+	if (enrollment.token === '') return { ok: false, error: 'this machine has no account token' }
 	try {
 		const response = await fetch(`${httpBase(enrollment.server)}/client-auth/${action}`, {
 			method: body === undefined ? 'GET' : 'POST',
@@ -588,7 +642,7 @@ let webEntryResolved = false
 
 async function webEntryUrl() {
 	webEntryResolved = false
-	if (!enrollment.token) return ''
+	if (!isEnrolled()) return ''
 	// Bounded, because the status page asks for this on every refresh: an unreachable
 	// server must leave the page responsive with the plain address rather than hanging
 	// the whole panel on a fetch that will never answer.
@@ -640,34 +694,20 @@ pre{background:#f6f6f6;padding:.6rem;border-radius:6px;overflow:auto;font-size:1
 .dot.on{background:#1a7f37}.dot.off{background:#b00}
 details{margin:.4rem 0}summary{cursor:pointer;color:#444}
 </style></head><body>
-<h1>DSH 客户端执行器</h1>
-<p class="sub">这台电脑可以替服务器执行命令：绑定某个工作区之后，这个工作区里的命令就在这台电脑上运行。</p>
+<h1>DSH 本机执行器</h1>
+<p class="sub">这台电脑已经交给 agent 使用：哪个工作区在它上面执行，由 Web UI 决定。这个页面只报告状态，不需要在这里配置任何东西。</p>
 <div id="msg"></div>
 
-<fieldset><legend>当前状态</legend>
+<fieldset><legend>状态</legend>
 <div class="state"><span id="dot" class="dot"></span><span id="stateText">读取中…</span></div>
 <p class="muted" id="stateDetail"></p>
+<p class="muted" id="identity"></p>
 <button class="primary" id="openWeb" onclick="openWeb()" disabled>打开 Web UI</button>
-<p class="muted" id="webHint">配置完成后，用这个按钮在浏览器里打开工作界面。</p>
+<p class="muted" id="webHint"></p>
 </fieldset>
 
-<fieldset><legend>1. 连接服务器</legend>
-<details id="connectBox"${enrollment.token ? '' : ' open'}><summary id="connectSummary">用账号登录这台服务器</summary>
-<label>服务器地址</label><input id="server" placeholder="https://192.168.28.239:8443" value="${attr(httpBase(enrollment.server))}">
-<label>账号</label><input id="username" autocomplete="username">
-<label>密码</label><input id="password" type="password" autocomplete="current-password">
-<button onclick="signIn()">登录并连接</button>
-<p class="muted">登录成功后服务器会签发一枚只属于这台电脑的凭据，之后重启会自动连上，不用再登录。</p>
-</details>
-</fieldset>
-
-<fieldset><legend>2. 绑定工作区</legend>
-<p class="muted">绑定之后，该工作区里的命令就在这台电脑上执行。同一时刻一个工作区只能被一台电脑绑定。</p>
-<div id="workspaces">正在读取可绑定的工作区…</div>
-</fieldset>
-
-<fieldset><legend>3. 工作区共享凭据（可选）</legend>
-<p class="muted">工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在绑定工作区时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。留空则不改动本机凭据。</p>
+<fieldset><legend>工作区共享凭据</legend>
+<p class="muted">工作区文件在服务器上，本机通过共享访问它。填一次共享账号与密码，执行器会在工作区绑到本机时把它存进本机凭据库，之后 \\\\服务器\\共享 就像本地盘一样可用。<strong>只在本机保存，不会发往服务器。</strong></p>
 <label>共享账号</label><input id="smbuser" autocomplete="username">
 <label>共享密码</label><input id="smbpass" type="password" autocomplete="current-password">
 <button onclick="saveSmb()">保存并应用</button>
@@ -676,7 +716,6 @@ details{margin:.4rem 0}summary{cursor:pointer;color:#444}
 <fieldset><legend>诊断</legend>
 <pre id="status">…</pre>
 <button onclick="refresh()">刷新</button></fieldset>
-<div id="leftovers"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 // Interpolated so the page shows the directory this machine will actually use.
@@ -691,50 +730,18 @@ async function api(path, body){
   const r = await fetch(path, body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   return await r.json();
 }
-async function signIn(){
-  show('登录中…');
-  const r = await api('/login',{server:$('server').value,username:$('username').value,password:$('password').value});
-  if(!r.ok){ show(r.error||'登录失败','err'); return; }
-  show('已登录为 '+r.username,'ok'); renderWorkspaces(r.workspaces); refresh();
-}
 async function saveSmb(){
   show('保存中…');
   const r = await api('/smb',{username:$('smbuser').value,password:$('smbpass').value});
   if(!r.ok){ show(r.error||'保存失败','err'); return; }
   const hosts = Object.keys(r.applied||{});
-  const detail = hosts.length ? hosts.map((h)=>h+'：'+(r.applied[h]||'未配置')).join('；') : '还没有绑定的工作区，绑定时会自动应用';
+  const detail = hosts.length ? hosts.map((h)=>h+'：'+(r.applied[h]||'未配置')).join('；') : '还没有工作区绑到本机，绑定时会自动应用';
   show('已保存。'+detail,'ok'); refresh();
-}
-// Which workspaces this machine currently holds, so each row can say 「已绑定」 and
-// offer 解绑 instead of binding again. Filled by refresh(), read by renderWorkspaces().
-let heldIds = [];
-function renderWorkspaces(list){
-  if(!Array.isArray(list)||list.length===0){ $('workspaces').textContent='这个账号没有可绑定的工作区。'; return; }
-  $('workspaces').innerHTML = list.map((w)=>{
-    const held = heldIds.indexOf(w.id) >= 0;
-    return '<div style="margin:.5rem 0;padding:.55rem;border:1px solid '+(held?'#1a7f37':'#eee')+';border-radius:6px">'
-      + '<b>'+esc(w.title)+'</b>'+(held?' <span class="ok">已绑定到这台电脑</span>':'')+'<br><code>'+esc(w.path)+'</code><br>'
-      + '<label>本机可见路径（UNC 或盘符）</label><input id="vp-'+w.id+'" placeholder="\\\\192.168.28.239\\ws-xxx 或 C:\\某目录" value="'+esc(w.suggestedVisiblePath||'')+'">'
-      + '<label>本机暂存目录（留空则用 '+esc(DEFAULT_STAGING)+'）</label><input id="sd-'+w.id+'" placeholder="'+esc(DEFAULT_STAGING)+'" value="">'
-      + '<button onclick="bind(\\''+w.id+'\\')">'+(held?'重新绑定':'绑定')+'</button>'
-      + (held?' <button onclick="unbind(\\''+w.id+'\\')">解绑</button>':'')
-      + '</div>';
-  }).join('');
-}
-async function bind(id){
-  show('绑定中…');
-  const r = await api('/bind',{workspaceId:id,visiblePath:$('vp-'+id).value,stagingDir:$('sd-'+id).value});
-  show(r.ok?'绑定成功：这个工作区里的命令现在跑在这台电脑上':(r.error||'绑定失败'), r.ok?'ok':'err');
-  await refresh(); await loadWorkspaces();
-}
-async function unbind(id){
-  await api('/unbind',{workspaceId:id});
-  show('已解绑','ok'); await refresh(); await loadWorkspaces();
 }
 // The address is the one this machine enrolled against, so nobody types it twice.
 async function openWeb(){
   const s = await api('/status');
-  if(!s || !s.webUrl){ show('还没有连接服务器：先在下面登录一次','err'); return; }
+  if(!s || !s.webUrl){ show('这台机器还没有连上服务器','err'); return; }
   window.open(s.webUrl, '_blank');
 }
 async function refresh(){
@@ -742,51 +749,24 @@ async function refresh(){
   $('status').textContent = JSON.stringify(s, null, 2);
   const on = !!s.connected;
   $('dot').className = 'dot ' + (on ? 'on' : 'off');
-  $('stateText').textContent = on
-    ? ('已连接服务器' + (s.username ? '（'+s.username+'）' : ''))
-    : (s.enrolled ? '未连接 —— 正在重试' : '尚未配置');
+  $('stateText').textContent = on ? '已连接服务器' : (s.enrolled ? '未连接 —— 正在重试' : '尚未配置');
+  // Deliberately says nothing about which workspaces this machine holds: the page is
+  // served to whoever can reach this computer's loopback, and that list is not theirs
+  // to read. The count is enough to answer "is it doing anything".
   const heldCount = (s.heldShares||[]).length;
   $('stateDetail').textContent = on
-    ? (heldCount > 0 ? ('本机正在执行 '+heldCount+' 个工作区') : '已连接，但还没有绑定工作区：请在下面绑定一个')
+    ? (heldCount > 0 ? ('正在为 '+heldCount+' 个工作区提供本地执行') : '已连接。还没有工作区绑到本机 —— 在 Web UI 的文件树里绑定。')
     : '连不上服务器时，命令不会静默改到服务器上执行，而是明确报错。';
+  $('identity').textContent = '本机标识：' + (s.machineId || '(未生成)') + '（服务器用它把工作区绑到这台电脑）';
   $('openWeb').disabled = !s.webUrl;
   // The button carries a long one-shot URL (it includes the shell's launch token), so the
-  // hint shows the plain server origin a person recognises instead of that whole string —
-  // and says whether this address can actually get in, which is the difference between a
-  // working button and "dsh web authentication required".
+  // hint shows the plain server origin a person recognises instead of that whole string.
   let origin = s.webUrl || '';
   try { origin = new URL(s.webUrl).origin; } catch (e) { /* keep whatever it was */ }
-  if (!s.webUrl) {
-    $('webHint').textContent = '配置完成后，用这个按钮打开工作界面。';
-  } else if (s.webEntryResolved) {
-    $('webHint').textContent = '将在浏览器打开：' + origin + '（已带上登录凭据，首次会让你登录一次账号）';
-  } else {
-    $('webHint').textContent = '将在浏览器打开：' + origin + '（只拿到服务器地址，没拿到登录凭据 —— 浏览器可能报「dsh web authentication required」。'
-      + '说明这台执行器比服务器旧，或服务器没应答；重新下载一次执行器分发包即可）';
-  }
-  $('connectSummary').textContent = s.enrolled
-    ? ('已配置：'+(s.username||'(未知账号)')+' @ '+(s.server||'-')+' —— 点这里可换服务器或重新登录')
-    : '用账号登录这台服务器';
-  heldIds = (s.staging||[]).map((x)=>x.workspaceId);
-  const blocks = (s.staging||[]).filter((x)=>Array.isArray(x.leftovers) && x.leftovers.length>0);
-  $('leftovers').innerHTML = blocks.length===0 ? '' : blocks.map((x)=>
-    '<fieldset style="border-color:#e0b000"><legend>暂存目录里有未回写的文件</legend>'+
-    '<p><code>'+esc(x.stagingDir)+'</code> 里有 '+x.leftovers.length+' 项。这些可能是上次任务没写完的中间结果 —— '+
-    '请先确认它们还要不要，再决定回写、保留还是删除。<b>执行器不会替你删。</b></p>'+
-    '<pre>'+x.leftovers.map((i)=>(i.directory?'[目录] ':'')+i.name+(i.size===undefined?'':'  '+i.size+' B  '+(i.modifiedAt||''))).join('\\n')+'</pre>'+
-    '</fieldset>').join('');
-}
-// A launcher-installed machine already holds a token, so there is no login step:
-// asking the server for the workspace list directly is what lets the picker appear
-// anyway. When the machine is not enrolled this returns ok:false and the page keeps
-// its "sign in first" text.
-async function loadWorkspaces(){
-  const r = await api('/workspaces');
-  if(r && r.ok){ renderWorkspaces(r.workspaces); }
-  else { $('workspaces').textContent = r && r.error ? ('读取工作区失败：'+r.error) : '登录后显示可绑定的工作区。'; }
+  $('webHint').textContent = s.webUrl ? ('将在浏览器打开：' + origin) : '这台机器还没有连上服务器。';
 }
 refresh();
-loadWorkspaces();
+setInterval(refresh, 5000);
 </script></body></html>`
 }
 
@@ -858,21 +838,25 @@ function startConfigServer(port) {
 			try {
 				if (req.method === 'GET' && url.pathname === '/') return send(200, configPage(), 'text/html; charset=utf-8')
 				if (req.method === 'GET' && url.pathname === '/status') {
+					// Deliberately no paths and no per-workspace detail. This endpoint answers
+					// on this computer's loopback, which is shared with every process and every
+					// user session on it, so it reports what the machine is doing and nothing
+					// about where anything lives. "Which workspaces does this machine hold" is
+					// answered by the server, to whoever is signed in there.
 					return send(200, {
-						enrolled: enrollment.token.length > 0,
+						enrolled: isEnrolled(),
 						awaitingEnrollment,
-						server: enrollment.server,
-						username: enrollment.username,
+						server: httpBase(enrollment.server),
+						machineId,
 						label: enrollment.label,
-						connected: !!enrollment.token && connectionsAlive(),
+						connected: isEnrolled() && connectionsAlive(),
 						hello: lastHello,
-						statePath,
 						// The password is never echoed back, only whether one is set.
 						smb: {
 							configured: !!enrollment.smb?.username && !!enrollment.smb?.password,
 							username: enrollment.smb?.username ?? '',
 						},
-						heldShares: [...held.values()].map((entry) => entry.visiblePath),
+						heldWorkspaces: held.size,
 						// The page's "open the web UI" action needs a URL that gets a browser
 						// *in*, not just the server address: the shell refuses to serve its own
 						// index without the process launch token. Resolved per request, because
@@ -883,46 +867,12 @@ function startConfigServer(port) {
 						// outright, because the difference is invisible in the address itself and
 						// otherwise shows up only as a refusal in the browser.
 						webEntryResolved,
-						// Computed on demand rather than cached at bind time, so the page
-						// reflects the directory as it is right now.
-						staging: [...held.entries()].map(([workspaceId, entry]) => ({
-							workspaceId,
-							stagingDir: entry.stagingDir ?? '',
-							leftovers: stagingLeftovers(entry.stagingDir),
-						})),
 					})
 				}
-				if (req.method === 'GET' && url.pathname === '/workspaces') {
-					// The picker's data source for a machine that holds a token but never
-					// signed in. Proxied rather than fetched by the page: the token lives
-					// in this process, and the page must never see it.
-					if (!enrollment.token) return send(200, { ok: false, error: 'not enrolled yet' })
-					const state = await callEnrolled('state')
-					if (!state || state.ok === false || state.error) {
-						return send(200, { ok: false, error: String(state?.error ?? 'the server did not answer') })
-					}
-					return send(200, { ok: true, username: state.username ?? '', workspaces: state.workspaces ?? [] })
-				}
-				if (req.method === 'POST' && url.pathname === '/login') {
-					const body = await readJson(req)
-					if (!body.server || !body.username || !body.password) {
-						return send(400, { ok: false, error: '服务器地址、账号、密码都不能为空' })
-					}
-					return send(200, await signIn(String(body.server), String(body.username), String(body.password)))
-				}
-				if (req.method === 'POST' && url.pathname === '/bind') {
-					const body = await readJson(req)
-					const result = await callEnrolled('bind', {
-						workspaceId: String(body.workspaceId ?? ''),
-						visiblePath: String(body.visiblePath ?? ''),
-						// Blank means "use the default": the prompt section and the
-						// staging skill both need a real directory, and this machine is
-						// the only side that can pick one.
-						stagingDir: String(body.stagingDir ?? '').trim() || defaultStagingDir(),
-						machine: hostname(),
-					})
-					return send(result.ok ? 200 : 400, result)
-				}
+				// `/workspaces`, `/login`, `/bind` and `/unbind` are gone with the picker they
+				// served. Binding is decided in the Web UI, where the person is already signed
+				// in and the server can check what they are allowed to use; a machine that
+				// could bind on its own would be deciding something it cannot authorize.
 				if (req.method === 'POST' && url.pathname === '/smb') {
 					const body = await readJson(req)
 					enrollment.smb = { username: String(body.username ?? ''), password: String(body.password ?? '') }
@@ -933,11 +883,6 @@ function startConfigServer(port) {
 					const applied = {}
 					for (const host of hosts) applied[host] = await applySmbCredential(host)
 					return send(200, { ok: true, applied, hosts })
-				}
-				if (req.method === 'POST' && url.pathname === '/unbind') {
-					const body = await readJson(req)
-					const result = await callEnrolled('unbind', { workspaceId: String(body.workspaceId ?? '') })
-					return send(result.ok ? 200 : 400, result)
 				}
 				return send(404, { error: 'no such route' })
 			} catch (error) {
@@ -1430,14 +1375,14 @@ function connectionsAlive() {
 	return activeSocket !== null && activeSocket.readyState === 1
 }
 
-function scheduleReconnect(server, token, label) {
+function scheduleReconnect(server, credential, label) {
 	if (reconnectTimer) return
 	reconnectAttempt += 1
 	const delay = Math.min(1000 * reconnectAttempt, 15000)
 	console.log(`[executor] disconnected — retrying in ${delay}ms (attempt ${reconnectAttempt})`)
 	reconnectTimer = setTimeout(() => {
 		reconnectTimer = undefined
-		connect(server, token, label)
+		connect(server, credential, label)
 	}, delay)
 }
 
@@ -1480,9 +1425,21 @@ function executorEndpoint(server) {
 	}
 }
 
-function connect(server, token, label) {
+/**
+ * Credential this process presents on the endpoint.
+ *
+ * A machine that knows the deployment secret sends that; a machine enrolled the older
+ * way sends the per-account token it was issued. Only one is ever present, and the
+ * server accepts either, so this single accessor is the whole of the difference.
+ * @returns The credential string.
+ */
+function presentedCredential() {
+	return enrollment.secret || enrollment.token || ''
+}
+
+function connect(server, credential, label) {
 	const endpoint = executorEndpoint(server)
-	const url = endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+	const url = endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(credential)
 	const socket = new WebSocket(url)
 	activeSocket = socket
 
@@ -1498,7 +1455,7 @@ function connect(server, token, label) {
 		teardownConnection()
 		console.log(`[executor] ${reason}`)
 		try { socket.close() } catch { /* already closing */ }
-		scheduleReconnect(server, token, label)
+		scheduleReconnect(server, credential, label)
 	}
 
 	/**
@@ -1526,7 +1483,18 @@ function connect(server, token, label) {
 		reconnectAttempt = 0
 		lastContactAt = Date.now()
 		console.log('[executor] connected to', server)
-		lastHello = { version: VERSION, build: ownBuildTime(), label, host: hostname(), platform: platform(), release: release() }
+		lastHello = {
+			version: VERSION,
+			build: ownBuildTime(),
+			// The machine naming itself. The server addresses it by this from here on, so a
+			// binding survives a reconnect no matter which credential opened the socket or
+			// whether an account was involved at all.
+			machineId,
+			label,
+			host: hostname(),
+			platform: platform(),
+			release: release(),
+		}
 		send(socket, { type: 'hello', ...lastHello })
 		// One second is finer than any budget the server hands out (its pings are
 		// seconds apart), so a gap this observes is never the timer's granularity.
@@ -1650,7 +1618,7 @@ function connect(server, token, label) {
 		activeSocket = null
 		teardownConnection()
 		console.log('[executor] disconnected')
-		scheduleReconnect(server, token, label)
+		scheduleReconnect(server, credential, label)
 	})
 	socket.addEventListener('error', (error) => {
 		console.error('[executor] error:', String(error?.message ?? error))
@@ -1668,7 +1636,7 @@ function connect(server, token, label) {
 		// A failed handshake may deliver only this event, so it schedules too.
 		if (activeSocket !== socket) return
 		clearTimeout(handshakeTimer)
-		scheduleReconnect(server, token, label)
+		scheduleReconnect(server, credential, label)
 	})
 }
 
@@ -1678,6 +1646,7 @@ let tlsTrust = { path: '', loaded: false }
 const config = parseArgs(process.argv.slice(2))
 nodePtyPath = config.nodePty
 statePath = config.state || join(homedir(), '.dsh-executor', 'state.json')
+machineId = loadMachineId()
 tlsTrust = loadTrustedCertificate(config.ca)
 if (tlsTrust.path !== '') {
 	console.log(`[executor] trusted certificate ${tlsTrust.loaded ? 'loaded' : 'NOT loaded'} from ${tlsTrust.path}`)
@@ -1718,23 +1687,23 @@ if (config.selfTest) {
 	void runSelfTest()
 }
 
-if (config.token) {
-	// Enrolled on the command line — the shape a launcher script uses, and the one the
-	// verification harnesses use. The configuration page still starts (below) because
-	// the machine may hold a token and still have work to do on that page: choosing a
-	// workspace to bind, saving the share credential, seeing why it is not connected.
-	if (!config.server) {
-		console.error('Usage: node executor.mjs --server <url> --token <token> [--label <name>] [--node-pty <path>] [--smb-user <account> --smb-password <password>]')
-		process.exit(2)
-	}
+if (config.server && (config.secret || config.token)) {
+	// Enrolled on the command line, which is the whole configuration this program has:
+	// a server and one credential. `--secret` is the deployment's shared secret and is
+	// the intended shape — the machine needs no account, so nothing about who uses this
+	// computer is decided here. `--token` remains for a machine enrolled earlier.
 	enrollment = {
 		server: config.server,
 		token: config.token,
+		secret: config.secret,
 		username: '',
 		label: config.label || hostname(),
 		smb: { username: config.smbUser ?? '', password: config.smbPassword ?? '' },
 	}
-	connect(config.server, config.token, enrollment.label)
+	connect(config.server, presentedCredential(), enrollment.label)
+} else if (config.server) {
+	console.error('Usage: executor --server <url> --secret <deployment secret> [--label <name>] [--ca <path>]')
+	process.exit(2)
 } else {
 	const saved = loadState()
 	if (saved) {
@@ -1750,11 +1719,11 @@ if (config.token) {
 			}
 			saveState()
 		}
-		console.log(`[executor] resuming enrollment as ${saved.username || '(unknown)'} from ${statePath}`)
-		connect(enrollment.server, enrollment.token, enrollment.label)
+		console.log(`[executor] resuming enrollment on ${machineId} from ${statePath}`)
+		connect(enrollment.server, presentedCredential(), enrollment.label)
 	} else {
 		awaitingEnrollment = true
-		console.log('[executor] not enrolled yet — open the configuration page to sign in')
+		console.log('[executor] not enrolled yet — open the configuration page')
 	}
 }
 

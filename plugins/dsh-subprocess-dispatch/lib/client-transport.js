@@ -456,6 +456,18 @@ export class ClientTransport {
 		 * the session's working directory as a query parameter.
 		 */
 		this.webPath = typeof config?.webPath === 'string' ? config.webPath : '/client-web'
+		/**
+		 * Deployment-level secret a machine presents to announce itself.
+		 *
+		 * A machine is hardware, not a person: it has no account to log into and no
+		 * per-machine token to be issued, and asking for one was what made "give the agent
+		 * hands on this computer" require a configuration ceremony. The secret lives in
+		 * this deployment's configuration (like `relayTokens`) and is the same on every
+		 * machine; the machine id it announces is what the server addresses it by. Empty
+		 * disables the path, and per-account tokens keep working, so a machine enrolled
+		 * before this existed is not cut off.
+		 */
+		this.machineSecret = typeof config?.machineSecret === 'string' ? config.machineSecret : ''
 		/** Where the executor program is downloadable from; gated like the admin surface. */
 		this.downloadPath = typeof config?.downloadPath === 'string' ? config.downloadPath : '/dsh-subprocess-dispatch/executor.mjs'
 		/**
@@ -500,37 +512,57 @@ export class ClientTransport {
 	start(WebSocketServer) {
 		const wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (socket, request) => {
-			let token = ''
+			let params
 			try {
-				token = new URL(request.url || '', 'http://localhost').searchParams.get('token') || ''
+				params = new URL(request.url || '', 'http://localhost').searchParams
 			} catch {
-				token = ''
+				params = new URLSearchParams()
 			}
-			const username = this.usernameForToken(token)
-			if (!username) {
+			// Two credentials open this endpoint, and they mean different things. A machine
+			// that presents the deployment secret is announcing hardware, not a person: it
+			// is `pending` until its `hello` names it, and only then is it acknowledged.
+			// A per-account token still works — it names its account up front — so a machine
+			// enrolled before the secret existed keeps running through its own upgrade.
+			const presented = params.get('token') ?? ''
+			const legacyAccount = this.usernameForToken(presented)
+			const secretOk = this.machineSecret !== '' && presented === this.machineSecret
+			if (!legacyAccount && !secretOk) {
 				socket.close(4001, 'unauthorized')
 				return
 			}
-			const previous = this.connections.get(username)
-			// One executor per account: a second connection supersedes the first,
-			// and the superseded connection's processes are settled as failed.
-			if (previous) this.dropConnection(username, 'superseded by a newer connection')
-			const connection = { socket, host: null, platform: null, lastMessageAt: Date.now(), lastPingAt: 0 }
-			this.connections.set(username, connection)
-			this.ctx.logger?.info?.(`[client-transport] executor connected for ${username}`)
-			// A reconnecting machine must be told which bindings it still holds:
-			// the binding outlives the socket, and without this it would sit idle
-			// while the server kept routing work to it.
-			void this.onConnect?.(username)
+			if (legacyAccount) {
+				const previous = this.connections.get(legacyAccount)
+				if (previous) this.dropConnection(legacyAccount, 'superseded by a newer connection')
+			}
+			const connection = {
+				socket,
+				username: legacyAccount ?? '',
+				host: null,
+				platform: null,
+				lastMessageAt: Date.now(),
+				lastPingAt: 0,
+			}
+			// Keyed by the socket until `hello` arrives: one connection per *machine*, and
+			// nothing before `hello` knows which machine this is.
+			const pendingKey = `pending:${randomUUID()}`
+			this.connections.set(pendingKey, connection)
+			connection.pendingKey = pendingKey
+			this.ctx.logger?.info?.(legacyAccount
+				? `[client-transport] executor connected for ${legacyAccount}`
+				: '[client-transport] a machine connected with the deployment secret')
+			if (legacyAccount) void this.onConnect?.(legacyAccount)
 			socket.on('message', (raw) => {
 				// Every frame counts as a sign of life, whatever it carries: the
 				// keepalive deadline is only meaningful if ordinary traffic
 				// refreshes it too.
 				connection.lastMessageAt = Date.now()
-				this.onMessage(username, raw)
+				this.onMessage(connection, raw)
 			})
 			socket.on('close', () => {
-				if (this.connections.get(username)?.socket === socket) this.dropConnection(username, 'socket closed')
+				const key = connection.machineId ?? connection.pendingKey
+				if (this.connections.get(key)?.socket === socket) {
+					this.dropConnection(key, 'socket closed')
+				}
 			})
 			socket.on('error', () => { /* the close event owns cleanup */ })
 		})
@@ -1459,16 +1491,33 @@ export class ClientTransport {
 		try { connection?.socket.close() } catch { /* already closing */ }
 	}
 
-	/** Whether one account currently has a live executor. */
+	/** Whether one account currently has a live executor (legacy token connections). */
 	connected(username) {
 		return this.connections.has(String(username))
 	}
 
-	/** Facts the connected executor reported at `hello`. */
+	/** Whether one machine is currently connected. */
+	machineConnected(machineId) {
+		return this.connections.has(String(machineId))
+	}
+
+	/** The machine ids currently connected, in no particular order. */
+	machineIds() {
+		return [...this.connections.values()]
+			.map((connection) => connection.machineId)
+			.filter((id) => typeof id === 'string' && id !== '')
+	}
+
+	/** Facts the connected executor reported at `hello`, by machine id or account. */
 	describe(username) {
 		const connection = this.connections.get(String(username))
 		if (!connection) return undefined
-		return { host: connection.host, platform: connection.platform, release: connection.release }
+		return {
+			machineId: connection.machineId ?? null,
+			host: connection.host,
+			platform: connection.platform,
+			release: connection.release,
+		}
 	}
 
 	/**
@@ -1511,7 +1560,16 @@ export class ClientTransport {
 		}
 	}
 
-	onMessage(username, raw) {
+	/**
+	 * Handle one frame from a machine.
+	 *
+	 * The first argument is the whole connection rather than a key, because `hello` is
+	 * what *establishes* the key: a machine that presented the deployment secret is
+	 * acknowledged here, and everything after this frame is addressed by its machine id.
+	 * @param connection - The live connection record.
+	 * @param raw - The frame payload.
+	 */
+	onMessage(connection, raw) {
 		let message
 		try {
 			message = JSON.parse(String(raw))
@@ -1519,43 +1577,66 @@ export class ClientTransport {
 			return
 		}
 		if (message?.type === 'hello') {
-			const connection = this.connections.get(username)
-			if (connection) {
-				connection.host = message.host ?? null
-				connection.platform = message.platform ?? null
-				connection.release = message.release ?? null
+			connection.host = message.host ?? null
+			connection.platform = message.platform ?? null
+			connection.release = message.release ?? null
+			// The machine names itself here, which is the moment a secret-authenticated
+			// connection stops being anonymous and becomes addressable.
+			const announced = typeof message.machineId === 'string' ? message.machineId.trim() : ''
+			if (announced !== '' && connection.machineId !== announced) {
+				const previousKey = connection.machineId ?? connection.pendingKey
+				const previous = this.connections.get(announced)
+				// One executor per machine: a second connection for the same machine
+				// supersedes the first, and the superseded one's processes settle as failed.
+				if (previous && previous !== connection) {
+					this.dropConnection(announced, 'superseded by a newer connection')
+				}
+				this.connections.delete(previousKey)
+				connection.machineId = announced
+				this.connections.set(announced, connection)
+				connection.pendingKey = undefined
 			}
-			// The prompt section names the target OS, and the plan keeps that fact in
-			// the binding record rather than re-asking per assembly.
+			// Facts land on the binding records that name this machine. The account is
+			// recorded too when the connection carries one, which is all a legacy
+			// token-authenticated machine has.
+			const key = connection.machineId ?? connection.username
 			const bindings = this.ctx.get('clientBindings')
 			if (bindings && typeof bindings.noteMachine === 'function') {
-				void bindings.noteMachine(username, {
+				void bindings.noteMachine(key, {
 					host: message.host ?? 'unknown',
 					platform: message.platform ?? 'unknown',
 					release: message.release ?? '',
 				}).then((updated) => {
 					if (updated.length > 0) {
-						this.ctx.logger?.info?.(`[client-transport] ${username} machine facts recorded on ${updated.length} binding(s)`)
+						this.ctx.logger?.info?.(`[client-transport] ${key} machine facts recorded on ${updated.length} binding(s)`)
 					}
 				})
 			}
-			this.ctx.logger?.info?.(`[client-transport] ${username} executor: host=${message.host} platform=${message.platform}`)
+			this.ctx.logger?.info?.(`[client-transport] ${key} executor: host=${message.host} platform=${message.platform}`)
+			// A reconnecting machine must be told which bindings it still holds: the
+			// binding outlives the socket, and without this it would sit idle while the
+			// server kept routing work to it. Machines that only just named themselves
+			// need this exactly as much as ones that reconnected.
+			if (connection.machineId !== undefined) void this.onConnect?.(connection.machineId)
 			// An executor older than the keepalive answers neither ping nor, when
 			// it holds nothing, anything else — so this server would retire it for
 			// silence every few seconds and the machine would look like it keeps
 			// flapping. Naming the remedy here is the difference between that and
 			// an hour of guessing; the program is downloadable from this server.
 			if (typeof message.version === 'string' && olderThan(message.version, KEEPALIVE_MIN_EXECUTOR)) {
-				this.ctx.logger?.warn?.(`[client-transport] ${username} runs executor ${message.version}, which predates the keepalive (needs ${KEEPALIVE_MIN_EXECUTOR}): re-download ${this.downloadPath} on that machine, or it will be dropped whenever it is idle`)
+				this.ctx.logger?.warn?.(`[client-transport] ${key} runs executor ${message.version}, which predates the keepalive (needs ${KEEPALIVE_MIN_EXECUTOR}): re-download ${this.downloadPath} on that machine, or it will be dropped whenever it is idle`)
 			}
 			// Plan §6.2 item 5's update channel, in the form a LAN deployment can act on
 			// without a version feed: the machine reports when its own program was built,
 			// and the server knows when the copy it hands out was built. A machine running
 			// an older one is named in the log, with the remedy, instead of being left to
 			// discover the mismatch as a capability that quietly does not work.
-			this.noteStaleBuild(username, message)
+			this.noteStaleBuild(key, message)
 			return
 		}
+		// Every frame after `hello` is addressed to a machine, so the lookup key is the
+		// machine id; a legacy token connection keeps its account as the key.
+		const username = connection.machineId ?? connection.username
 		// Relayed HTTP frames carry a requestId, not a procId, so they are routed
 		// before the process-handle lookup below.
 		if (typeof message?.type === 'string' && message.type.startsWith('http.')) {
