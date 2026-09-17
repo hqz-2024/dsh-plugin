@@ -1,0 +1,17 @@
+# dsh-machine-probe bundle patch — evidence for the machine tools.
+#
+# Inserted DISABLED: only a profile that opts in runs the scenario, and it needs
+# an executor to connect (the tools refuse loudly without one).
+- insert:
+    - id: machine-probe
+      name: 'dsh-machine-probe'
+      disabled: true
+      config:
+        # Every step is appended here as one JSON line.
+        resultPath: ''
+        # Seconds to wait for a machine to connect before giving up.
+        waitMs: 45000
+        # The environment marker the executor under test was launched with. The
+        # probe asserts a child sees it, which is a fact no server-side spawn can
+        # produce while the executor runs on another machine.
+        marker: ''

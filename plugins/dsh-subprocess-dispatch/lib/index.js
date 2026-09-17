@@ -17,6 +17,11 @@
  * index that is rebuilt out of band. Only workspaces matter (not every
  * directory), so the index stays small.
  *
+ * This provider also mounts the two machine tools (`machine_list`, `machine_run`
+ * in `./machine-tools.js`). They are the direct route onto a machine: the model
+ * names the machine, so nothing has to be inferred from a path. A binding routes
+ * the built-in shell and terminals; the tools need no binding at all.
+ *
  * The engine checkout stays untouched: the base class and the server-side
  * delegate are both resolved from the running profile's dependency surface.
  */
@@ -26,6 +31,7 @@ import { join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { ClientTransport } from './client-transport.js'
+import { registerMachineTools } from './machine-tools.js'
 
 /** Resolve one engine package from the running profile's dependency surface. */
 function resolveEnginePackage(specifier) {
@@ -123,6 +129,24 @@ export default class DispatchSubprocess extends SubprocessRuntime {
 		// The executor endpoint. `ws` is resolved from the same profile surface as
 		// the engine packages; the endpoint only starts once that import lands.
 		this.transport = new ClientTransport(ctx, config)
+		// The model's own way onto a machine: these tools name the machine instead of
+		// inferring it from a path, so they need no binding and no share. Registration
+		// waits for the tools registry through `inject` rather than reading it once —
+		// a profile whose registry publishes later must still get the tools — and it
+		// runs independently of the socket below: a call that arrives before the
+		// endpoint is up gets the transport's own "no executor is connected" error.
+		ctx.inject(['tools'], (scope) => {
+			void registerMachineTools({
+				ctx: scope,
+				resolve: resolveEnginePackage,
+				transport: this.transport,
+				logger: ctx.logger,
+			}).then((registered) => {
+				if (registered.length > 0) this.traceEvent({ event: 'machine-tools-registered', tools: registered })
+			}).catch((error) => {
+				this.traceEvent({ event: 'machine-tools-failed', error: String((error && error.message) || error) })
+			})
+		})
 		const wsEntry = resolveEnginePackage('ws')
 		const wsMounting = import(pathToFileURL(wsEntry).href).then((mod) => {
 			const WebSocketServer = mod.WebSocketServer ?? mod.default?.WebSocketServer ?? mod.default

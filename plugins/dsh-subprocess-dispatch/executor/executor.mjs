@@ -41,7 +41,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
-import { homedir, hostname, platform, release } from 'node:os'
+import { homedir, hostname, platform, release, userInfo } from 'node:os'
 import { delimiter, dirname, basename, extname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
@@ -506,6 +506,27 @@ function describeSpawnFailure(error, cwd) {
 	return `${message} — the working directory ${cwd} is not reachable from this machine`
 		+ ' (a network share may be offline, or its credential may have lapsed;'
 		+ ' re-save the share credential in this machine\'s executor page)'
+}
+
+/**
+ * The working directory one request runs in.
+ *
+ * A request that names none gets this machine's home directory rather than the
+ * directory the executor itself was launched from: the server cannot know a path on
+ * this machine, so "unspecified" has to mean something the person at this machine
+ * would recognize — and a command run in the unpacked executor folder is a surprise
+ * every time.
+ * @param value - The request's `cwd`, if any.
+ * @returns A directory that exists on this machine.
+ */
+function requestedCwd(value) {
+	if (typeof value === 'string' && value !== '') return value
+	try {
+		return homedir()
+	} catch {
+		// A machine whose home is unresolvable still has a working directory.
+		return process.cwd()
+	}
 }
 
 /**
@@ -1228,9 +1249,10 @@ function startProcess(socket, request) {
 		: undefined
 	/** `'pipe'` only for the two shapes that need a writable stdin; everything else gets an EOF. */
 	const stdinDisposition = stdinIsPipe || stdinPayload !== undefined ? 'pipe' : 'ignore'
+	const cwd = requestedCwd(request.cwd)
 	try {
 		child = spawn(program.path, argv.slice(1), {
-			cwd: typeof request.cwd === 'string' && request.cwd ? request.cwd : undefined,
+			cwd,
 			env,
 			detached: platform() !== 'win32',
 			windowsHide: true,
@@ -1257,7 +1279,7 @@ function startProcess(socket, request) {
 	})
 	child.on('error', (error) => {
 		running.delete(procId)
-		send(socket, { type: 'proc.error', procId, error: describeSpawnFailure(error, request.cwd) })
+		send(socket, { type: 'proc.error', procId, error: describeSpawnFailure(error, cwd) })
 	})
 	for (const stream of ['stdout', 'stderr']) {
 		child[stream]?.on('data', (chunk) => {
@@ -1318,7 +1340,7 @@ async function startTerminal(socket, request) {
 			name: 'xterm-256color',
 			cols: Number.isInteger(request.cols) ? request.cols : 80,
 			rows: Number.isInteger(request.rows) ? request.rows : 24,
-			cwd: typeof request.cwd === 'string' && request.cwd ? request.cwd : undefined,
+			cwd: requestedCwd(request.cwd),
 			env,
 		})
 	} catch (error) {
@@ -1513,6 +1535,12 @@ function connect(server, credential, label) {
 			host: hostname(),
 			platform: platform(),
 			release: release(),
+			// Where this machine's files are and who is running this program. Both are
+			// facts only this side can know, and a server-side caller that wants to run
+			// something here needs a starting directory that exists on THIS machine
+			// rather than one carried over from the server's own filesystem.
+			home: homedir(),
+			user: userInfo().username,
 		}
 		send(socket, { type: 'hello', ...lastHello })
 		// One second is finer than any budget the server hands out (its pings are
@@ -1661,6 +1689,49 @@ function connect(server, credential, label) {
 
 /** Whether a certificate for this deployment's proxy was trusted, and from where. */
 let tlsTrust = { path: '', loaded: false }
+
+/**
+ * node-pty's console-list agent, when THIS program is the copy that was forked.
+ *
+ * `WindowsPtyAgent._getConsoleProcessList` starts that helper with
+ * `child_process.fork`, and fork runs `process.execPath`. For a packaged
+ * executable that is this program, so ending one terminal used to start a SECOND
+ * executor: it registers with the same machine id, the server treats a second
+ * connection from one machine as that machine reconnecting and retires the first,
+ * and every process and terminal the machine was running dies with it. Measured on
+ * this deployment: `terminal-python-repl` failed with "lost its executor
+ * connection" immediately after the previous terminal was terminated, and the
+ * packaged client's log showed a second startup banner plus `EADDRINUSE` on the
+ * configuration port.
+ *
+ * The helper is a CommonJS file on disk beside node-pty, so running it and exiting
+ * is the whole of the fix. Resolving it through `createRequire` is what makes that
+ * work inside a single executable, whose own `require` reaches built-ins only.
+ *
+ * Both `argv[1]` and `argv[2]` are checked because the two launch modes lay the
+ * arguments out differently: a packaged executable sees its user arguments from
+ * index 1, while `node executor.mjs ...` keeps the script at index 1 and starts the
+ * user's arguments at index 2.
+ *
+ * node-pty names the helper WITHOUT the `.js` extension (`fork(path.join(__dirname,
+ * 'conpty_console_list_agent'), …)`), so the extension is resolved here rather than
+ * required: an `existsSync` on the literal argument was false on every real fork,
+ * which sent the child straight back into starting an executor.
+ */
+const forkedAgent = [process.argv[1], process.argv[2]]
+	.find((value) => typeof value === 'string' && /(^|[\\/])conpty_console_list_agent(\.js)?$/i.test(value)) ?? ''
+if (forkedAgent !== '') {
+	const agentFile = [forkedAgent, `${forkedAgent}.js`].find((candidate) => existsSync(candidate))
+	try {
+		if (agentFile === undefined) throw new Error(`the console-list agent is not on disk at ${forkedAgent}`)
+		createRequire(resolveRequireBase())(agentFile)
+	} catch (error) {
+		console.error(`[executor] console-list agent failed: ${String(error?.message ?? error)}`)
+	}
+	// Whatever happened above, this process was forked as the helper: starting an
+	// executor here is what registers a second machine and retires the real one.
+	process.exit(0)
+}
 
 const config = parseArgs(process.argv.slice(2))
 nodePtyPath = config.nodePty

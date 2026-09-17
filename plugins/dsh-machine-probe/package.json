@@ -1,0 +1,13 @@
+{
+  "name": "dsh-machine-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Probe for the machine tools (machine_list / machine_run): calls them through the real tools registry against a connected executor, and records what the process itself reported about the machine it ran on.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

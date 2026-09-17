@@ -110,3 +110,16 @@
     # writes this marker, and the harness then kills the executor.
     crashMarker: !!js dshHomePath('profiles/pilot-auth/crash-armed.marker')
     resultPath: !!js dshHomePath('profiles/pilot-auth/probe-result.jsonl')
+
+# ── machine tools（机器工具）──────────────────────────────────────────────────
+# 直接用 machine_list / machine_run 在指定机器上跑命令，不经过工作区绑定。
+# 这一段是本轮新增功能的取证：断言落在「进程自己报出来的事实」上——
+# 执行器的环境变量标记（服务器侧 spawn 不可能有）、机器在 hello 里自报的主目录、
+# 超时之后那台机器上有没有留下进程。
+- id: machine-probe
+  disabled: false
+  config:
+    resultPath: !!js dshHomePath('profiles/pilot-auth/machine-probe.jsonl')
+    waitMs: 60000
+    # 起 executor 时必须带上这个变量（不要用 DSH_ 前缀：执行器会把它过滤掉）。
+    marker: 'from-executor-env'

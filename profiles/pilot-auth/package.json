@@ -5,7 +5,8 @@
     "@xgone/dsh-remote": "link:../../plugins/dsh-remote-local",
     "dsh-client-bindings": "link:../../plugins/dsh-client-bindings",
     "dsh-subprocess-dispatch": "link:../../plugins/dsh-subprocess-dispatch",
-    "dsh-subprocess-probe": "link:../../plugins/dsh-subprocess-probe"
+    "dsh-subprocess-probe": "link:../../plugins/dsh-subprocess-probe",
+    "dsh-machine-probe": "link:../../plugins/dsh-machine-probe"
   },
   "dsh": {
     "profile": {
@@ -15,7 +16,8 @@
         "@xgone/dsh-remote",
         "dsh-client-bindings",
         "dsh-subprocess-dispatch",
-        "dsh-subprocess-probe"
+        "dsh-subprocess-probe",
+        "dsh-machine-probe"
       ],
       "patchReload": "live"
     }

@@ -1358,7 +1358,32 @@ export class ClientTransport {
 			host: connection.host,
 			platform: connection.platform,
 			release: connection.release,
+			home: connection.home ?? null,
+			user: connection.user ?? null,
 		}
+	}
+
+	/**
+	 * Every machine an executor is connected from, with the facts each reported.
+	 *
+	 * A machine that has not said `hello` yet is not listed: it has no id to be
+	 * addressed by, and a list whose entries cannot be used is worse than none.
+	 * @returns One record per connected machine, in connection order.
+	 */
+	machines() {
+		const found = []
+		for (const connection of this.connections.values()) {
+			if (typeof connection.machineId !== 'string' || connection.machineId === '') continue
+			found.push({
+				machineId: connection.machineId,
+				host: connection.host ?? null,
+				platform: connection.platform ?? null,
+				release: connection.release ?? null,
+				home: connection.home ?? null,
+				user: connection.user ?? null,
+			})
+		}
+		return found
 	}
 
 	/**
@@ -1421,6 +1446,11 @@ export class ClientTransport {
 			connection.host = message.host ?? null
 			connection.platform = message.platform ?? null
 			connection.release = message.release ?? null
+			// Facts about the machine's own filesystem and login, which no server-side
+			// caller can derive: an operation sent here has to start somewhere this
+			// machine recognizes, and the operator wants to know whose account it is.
+			connection.home = typeof message.home === 'string' && message.home !== '' ? message.home : null
+			connection.user = typeof message.user === 'string' && message.user !== '' ? message.user : null
 			// The machine names itself here, which is the moment a secret-authenticated
 			// connection stops being anonymous and becomes addressable.
 			const announced = typeof message.machineId === 'string' ? message.machineId.trim() : ''

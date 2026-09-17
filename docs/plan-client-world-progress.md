@@ -2233,9 +2233,73 @@ if (previous) this.dropConnection(username, 'superseded…')  // 每账号只允
 
 **如果以后要恢复**：README 记了三步（加回接口与控件 → 建共享 → 重启），并指向本节，让人先看到上面四类问题再决定。
 
+#### D-10. agent 直接操作客户端电脑：两个机器工具（2026-09-17，用户提问后实现）
 
+**用户的问题**：「为什么一定要绑定才能操作客户端电脑呢？agent 直接通过 executor 插件控制不可以吗？」
 
+**答案：可以，而且绑定从来不是技术前提。** 绑定之所以存在，是因为**引擎的 shell 工具不指名机器** —— `ctx.subprocess.spawn(spec)` 只带 `cwd`，分派器必须同步地从这个路径推出"跑在哪台机器"，那张映射表就是绑定（顺带白送了服务器路径 ↔ 客户端 SMB 路径的翻译）。而**模型工具可以指名机器**：一旦指名，既不需要映射表，也不需要路径翻译。
 
+**做出来的东西**（`plugins/dsh-subprocess-dispatch/lib/machine-tools.js`，随分派器一起注册）：
 
+| 工具 | 作用 |
+|---|---|
+| `machine_list` | 列出**执行器在线**的机器：machineId、主机名、平台、登录用户、主目录；没有机器时明确说"需要在目标电脑上打开执行器" |
+| `machine_run` | 在指定机器上跑一条命令，返回 stdout / stderr / 退出码；`command` 用那台机器自己的 shell（Windows 上是 `powershell.exe`，并强制 UTF-8 控制台编码），或给 `argv` 精确控制；超时（默认 120s，上限 600s）会终止那台机器上的进程树 |
 
+**为它加的三个事实**：① 执行器 `hello` 现在多报 `home`（用户主目录）与 `user`（登录用户名）—— 服务器不可能知道另一台机器上的路径，省略 `cwd` 时必须有个那台机器认得的地方；② `proc.spawn`/终端在 `cwd` 缺省时用**该机器的用户主目录**（原来是"执行器进程的当前目录"，即解压出来的文件夹 —— 每次都是个意外）；③ 传输层多一个 `machines()`，以及 `describe()` 里的 `home`/`user`。
 
+**授权口径（当前，写进 AGENTS.md）**：任何**已登录本部署的账号**都能寻址任何**在线**机器；一台机器能被寻址的前提是有人在那台机器上**把执行器打开**（本地动作）。按账号限制机器是个未做的开关。
+
+**取证（`plugins/dsh-machine-probe`，挂在 `pilot-auth`，产物 `machine-probe.jsonl`）**：探针**通过真实工具注册表按名字调用**（`ctx.tools.execute`），断言全部落在"那台机器上的进程自己报出来的事实"上：
+
+| 步骤 | 断言 | 结果 |
+|---|---|---|
+| `tools-registered` | 两个工具都在注册表里 | ✅ |
+| `machine-list` | 在线机器带 `home`/`user`（本轮新加的事实真的过线了） | ✅ |
+| `machine-run-identity` | 子进程自报的 `cwd` **等于执行器 `hello` 里报的主目录**，且能看到**执行器进程的环境变量标记**（服务器侧 spawn 不可能有这个标记） | ✅ |
+| `machine-run-cwd` | 显式 `cwd` 被采纳 | ✅ |
+| `machine-run-command` | 命令串由那台机器自己的 shell 解释（`shell-ok 5`） | ✅ |
+| `machine-run-timeout` | 1.5s 超时后 `timedOut=true`，**8 秒后那台机器上那个本该写文件的后继动作没有留下文件** —— 进程树真的被终止了 | ✅ |
+| `machine-run-unknown` | 指名不存在的机器 → 明确报错并列出在线机器 | ✅ |
+
+> **同机测试的证伪力**：本轮执行器与服务器同机，`hostname`、`cwd` 这类断言都证明不了跨机。**环境变量标记**是这里唯一有效的判据：`CLIENT_MACHINE_PROBE_MARKER` 只存在于执行器进程的环境里，服务器侧 spawn 出来的子进程不可能继承它。（注意不能用 `DSH_` 前缀 —— 执行器会按 `DSH_`/`*KEY*`/`*TOKEN*` 规则清洗环境变量。）
+
+**已知缺口**：共享停用之后，**服务器工作区里的文件不会自动出现在客户端机器上**，`machine_run` 只能操作那台机器本地已有的东西。同一条通道上加 `machine_read_file` / `machine_write_file` 是自然的下一步，还没做。
+
+#### D-11. 打包的 exe 每结束一个终端就冒出一个"第二个自己"（2026-09-17，本轮最值钱的发现）
+
+**症状**：用**解压形态的 exe** 跑完整冒烟时，`terminal-interactive` 通过，紧跟着的 `terminal-python-repl` 与 `terminal-signals` 双双失败，报 `remote terminal is closed`。用**源码形态**（`node executor.mjs --node-pty …`）跑同一份代码，全部通过。
+
+**分诊过程（值得复刻）**：
+
+1. 我先给探针的失败路径补了 `terminalOutcome`，它说出真正的原因：`rejected: remote terminal term-… lost its executor connection before exit` —— **连接断了**，不是终端坏了。
+2. 用 `--self-test` 排除 node-pty 缺失；用一份隔离实验（`probe-python-pty.mjs`，直接 `pty.spawn(python.exe, ['-i'])`）证明**这台机器上 python 在 ConPTY 里完全正常**（banner、marker、`os.getcwd()` 全对）。
+3. 起一个进程监视器，每 2 秒打印 `dsh-executor.exe` 的 pid 与**父进程**：看到 `n=2`、`n=3` 的记录，**子进程的父进程就是执行器自己**，存活 4–6 秒 —— 与 node-pty 那个 5 秒超时吻合。
+
+**根因**：`node-pty/lib/windowsPtyAgent.js:221` 用 `child_process.fork()` 起它的 console-list 助手，而 **fork 跑的是 `process.execPath`** —— 打包成单文件可执行之后，`process.execPath` 就是执行器自己。于是**每次结束一个终端**：
+
+```
+执行器（真实） ── fork ──▶ dsh-executor.exe <…>\conpty_console_list_agent <pid>
+                              └─ 忽略未知参数，当成正常启动
+                                 → 连上服务器、报同一个 machineId
+                                 → 服务器把"同一台机器的第二条连接"判为掉线重连
+                                 → retire 掉第一条连接
+                                 → 那条连接上所有进程/终端句柄全部失效
+```
+
+日志里的指纹是：**同一份日志出现第二次启动横幅** + `configuration page unavailable on port 38460: listen EADDRINUSE`（第二个自己抢不到本机状态页端口）。5 秒后 node-pty 的超时把它杀掉，连接恢复 —— 所以症状是"偶尔断一下"，很容易被当成网络抖动。
+
+**修复**（`executor/executor.mjs` 顶部，进主流程之前）：发现自己是被 fork 出来的 console-list 助手时，**跑助手然后退出**，绝不启动执行器。两个细节都是踩出来的：
+
+- 助手路径**不带 `.js`**（`fork(path.join(__dirname, 'conpty_console_list_agent'), …)`）。第一版守卫写了 `existsSync(argv)`，在真实 fork 下**永远是 false**，于是又掉回"启动执行器"；现在按 `[path, path + '.js']` 找。
+- 参数位置两种形态不同：打包形态从 `argv[1]` 开始是用户参数，`node executor.mjs …` 的 `argv[1]` 是脚本本身。两个位置都查。
+
+**验收证据**：
+
+| 检查 | 结果 |
+|---|---|
+| `check-conpty-agent-fork.mjs`（新） | 精确复现 node-pty 的调用 `fork(agent, [pid], { execPath: exe })`（**不带扩展名**）：父进程收到 `{consoleProcessList: []}`，且子进程**没有**打印执行器启动横幅 → 退出 0 |
+| 进程监视器 | 修复前 `n=2`、`n=3` 且父进程是执行器；修复后**整轮 n=1** |
+| 完整冒烟（解压形态的 exe，机器工具同时挂载） | `terminal-python-repl` **✅ True**（修复前 False）、`terminal-signals` 走完全程、`terminal-interactive` ✅、`client-execution` 的 `executedOn=client`；失败项**只有刻意负例** `argv0-unresolvable` |
+
+**这条经验**：**单文件打包（SEA）会把"fork 自己"变成"再启动一个自己"**。任何依赖 `process.execPath` 的第三方原生模块（node-pty 只是其中一个）在打包形态下都要重新检查一次；`--self-test` 通不过的排查方向、以及"同机 vs 跨机"的区分，都在 D-8/D-11 里各踩了一次。

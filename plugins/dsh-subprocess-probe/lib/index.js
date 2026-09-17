@@ -94,6 +94,27 @@ export function apply(ctx, config) {
 	}
 	const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
+	/**
+	 * Why one terminal ended, in the words of whoever ended it.
+	 *
+	 * A terminal that is already settled makes every later `write()` fail with the
+	 * same "remote terminal is closed", whatever actually happened: a program this
+	 * machine could not resolve, a program that exited at once, and a lost executor
+	 * link are three different diagnoses behind one message. This reports which.
+	 * @param handle - The terminal handle, or undefined when the spawn itself threw.
+	 * @returns a short outcome label.
+	 */
+	const terminalOutcome = async (handle) => {
+		if (handle === undefined) return 'never-spawned'
+		return await Promise.race([
+			handle.done.then(
+				(outcome) => `exited ${JSON.stringify(outcome ?? null)}`,
+				(error) => `rejected: ${String((error && error.message) || error)}`,
+			),
+			sleep(1500).then(() => 'still-running'),
+		])
+	}
+
 	/** Spawn through the real dispatcher and report what came back. */
 	const attemptSpawn = async (label, cwd, argv, env, expectation = {}) => {
 		const started = Date.now()
@@ -469,15 +490,22 @@ export function apply(ctx, config) {
 		// proves interactive stdin really reaches the remote program. `os.getcwd()`
 		// is read by Python itself from the OS, so it reports the cwd the child was
 		// actually started with rather than anything the harness passed along.
+		//
+		// `replText` is hoisted so the failure path can report what the terminal
+		// actually printed before it ended: `write()` on a settled terminal says only
+		// "remote terminal is closed", which covers an unresolved program, an
+		// immediate exit, and a lost executor link alike — three different diagnoses
+		// that one message cannot tell apart.
+		let replText = ''
+		let repl
 		try {
-			const repl = await ctx.subprocess.spawnTerminal({
+			repl = await ctx.subprocess.spawnTerminal({
 				argv: [pythonPath, '-i'],
 				cwd: serverCwd,
 				rows: 24,
 				cols: 100,
 				graceMs: 3000,
 			})
-			let replText = ''
 			repl.output.on('data', (chunk) => { replText += chunk.toString('utf8') })
 			await sleep(3500)
 			await repl.write('import os; print("REPL-MARKER", os.getcwd())\r')
@@ -495,7 +523,16 @@ export function apply(ctx, config) {
 			await repl.terminate()
 			record({ step: 'terminal-python-terminated', settled: await repl.waitForExit() })
 		} catch (error) {
-			record({ step: 'terminal-python-repl', ok: false, error: String((error && error.message) || error) })
+			record({
+				step: 'terminal-python-repl',
+				ok: false,
+				error: String((error && error.message) || error),
+				// Why the terminal ended, and what it printed first: without these the
+				// single message above is the same for every cause.
+				terminalOutcome: await terminalOutcome(repl),
+				bytes: replText.length,
+				tail: replText.slice(-260),
+			})
 		}
 
 		// ── 3e. stdin reaches the remote child ────────────────────────────────
