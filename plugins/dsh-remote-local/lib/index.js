@@ -1013,17 +1013,18 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	//
 	// The Web UI's shell has its own door: its index is served only to a browser holding
 	// this process's launch token (the one `dsh web` prints) or the cookie that token
-	// mints, and everything else gets "dsh web authentication required; reopen the URL
-	// printed by dsh web". An executor credential opens nothing there — it is a different
-	// gate — so the client's "open the web UI" action has to come back through this
-	// service for a URL that carries the launch token.
+	// mints, and an executor credential opens nothing there. So the client's "open the
+	// web UI" action comes back through this service for an address that carries that
+	// token.
 	//
-	// The URL points straight at the shell root with the token, NOT through
-	// `/auth/login`: that route answers POST only, and this deployment renders its login
-	// page from the unauthenticated GET fallback. The root token exchange is what does
-	// the work, and it does both halves at once — it mints the shell cookie for this
-	// authority, then answers 303 to clean `/`, where the fallback then finds a valid
-	// app session and serves the app rather than the login page.
+	// The address goes through `/auth/login` on purpose. Pointing straight at
+	// `/?token=…` looked equivalent — the token exchange mints the shell cookie and
+	// redirects to a clean `/` — but it depends on this deployment's fallback seat being
+	// the shell's own static handler, and a deployment that renders something else there
+	// answers the exchange with its own page instead. That is the failure this replaced:
+	// sign in, get sent to the token URL, and land back on the sign-in page. The named
+	// route renders the page every time, and its `next` is what continues into the
+	// exchange afterwards.
 	const disposeBrowserEntry = ctx.provide("clientBrowserEntry", {
 		/**
 		 * @param req - The client's own request, for Host and forwarded protocol.
@@ -1037,7 +1038,9 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			const host = String(req?.headers?.host ?? "");
 			if (host.length === 0) throw new Error("missing Host header");
 			const proto = String(req?.headers?.["x-forwarded-proto"] ?? "http").split(",")[0].trim() || "http";
-			return connection.authenticatedUrl(proto + "://" + host);
+			const target = new URL(connection.authenticatedUrl(proto + "://" + host));
+			const next = encodeURIComponent(target.pathname + target.search);
+			return `${proto}://${host}/auth/login?next=${next}`;
 		}
 	});
 	ctx.effect(() => () => { disposeBrowserEntry(); }, "remote: clientBrowserEntry");
@@ -1572,7 +1575,41 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	const unwrap = (handler) => wrappedOriginals.get(handler) ?? handler;
 
 	// ── routes ──────────────────────────────────────────────────────────────────
+	/**
+	 * The sign-in page, also reachable by name.
+	 *
+	 * The page was reachable only through the unauthenticated GET fallback, which made
+	 * `/auth/login` answer 405 to a browser. That mattered once the client executor
+	 * needed to hand a browser an address that renders the page deterministically: the
+	 * fallback is a deployment's last seat, and a deployment that also serves something
+	 * else there renders that instead — which is exactly how the token-bearing entry URL
+	 * ended up showing the sign-in page again instead of exchanging its token.
+	 *
+	 * `next` is emitted only when it is an absolute path on this origin; the renderer
+	 * escapes it, and this keeps an absolute URL from turning the page into an open
+	 * redirect.
+	 */
+	const signInPage = (req, res) => {
+		const requested = new URL(req.url ?? "/", "http://dsh.internal").searchParams.get("next");
+		const next = typeof requested === "string" && requested.startsWith("/") && !requested.startsWith("//")
+			? requested
+			: "/";
+		res.writeHead(200, {
+			"Content-Type": "text/html; charset=utf-8",
+			"Cache-Control": "no-store"
+		});
+		res.end(renderLoginPage({
+			bootstrap: !store.hasAccounts,
+			next,
+			lang: readLocalePreference()
+				?? (/^zh/i.test(req.headers?.["accept-language"] ?? "") ? "zh" : "en")
+		}));
+	};
 	const handleLogin = async (req, res) => {
+		if (req.method === "GET" || req.method === "HEAD") {
+			signInPage(req, res);
+			return;
+		}
 		if (req.method !== "POST") {
 			denyJson(res, 405, "method not allowed");
 			return;

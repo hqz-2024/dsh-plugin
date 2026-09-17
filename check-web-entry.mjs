@@ -40,8 +40,12 @@ const record = (name, ok, detail) => {
 
 /** The launch token the shell requires, as the client page received it. */
 const status = await (await fetch(`${page}/status`)).json()
-record('客户端已连接并有入口地址', !!status.webUrl, status.webUrl || '(空)')
-record('入口地址带 launch token', /[?&]token=/.test(status.webUrl || ''), (status.webUrl || '').slice(0, 110))
+const entry = status.webUrl || ''
+record('客户端已连接并有入口地址', !!entry, entry || '(空)')
+// A named route of this deployment, not whatever its fallback seat happens to render.
+record('入口是部署自己的登录路由', /\/auth\/login\?next=/.test(entry), entry.slice(0, 130))
+// The token travels percent-encoded inside `next`, so accept either spelling.
+record('入口里带着 shell 的 launch token', /token%3D|[?&]token=/.test(entry), entry.slice(0, 130))
 
 const chromium = await loadChromium()
 const browser = await chromium.launch()
@@ -65,16 +69,18 @@ try {
 		await tab.fill('#username', user)
 		await tab.fill('#password', password)
 		await tab.click('#submit')
-		// The page signs in through fetch, then navigates to its own `next` — the
-		// token-bearing root — whose exchange answers 303 to clean '/' and mints the shell
-		// cookie. Waiting for the address to leave the token is waiting for that exchange.
-		await tab.waitForFunction(() => !/[?&]token=/.test(location.href), { timeout: 30000 }).catch(() => {})
-		// Accounts without two-factor are offered binding first; skipping is what a person
-		// who does not want it does, and it is what continues into the app.
+		// An account without two-factor is offered binding first, and the page does not
+		// continue until that offer is answered — so wait for it, then skip it. Clicking
+		// before it appears does nothing, which is a mistake this check made once.
 		const skip = tab.locator('#offer-skip')
-		if (await skip.count() > 0 && await skip.isVisible().catch(() => false)) await skip.click()
+		await skip.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
+		if (await skip.isVisible().catch(() => false)) await skip.click()
+		// The page now navigates to its own `next`: the token-bearing root, whose exchange
+		// mints the shell cookie and answers 303 to a clean '/'. Leaving the token behind is
+		// what proves the exchange ran rather than a page merely being re-rendered.
+		await tab.waitForFunction(() => !/[?&]token=/.test(location.href), { timeout: 30000 }).catch(() => {})
+		await tab.waitForFunction(() => !!window.__DSH_BOOT__, { timeout: 30000 }).catch(() => {})
 		await tab.waitForLoadState('networkidle').catch(() => {})
-		await tab.waitForTimeout(1500)
 		body = await tab.content().catch(() => '')
 		url = tab.url()
 		const stillGated = /dsh web authentication required/.test(body)
