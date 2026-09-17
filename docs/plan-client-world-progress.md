@@ -2159,6 +2159,46 @@ pnpm dsh --profile web-client --patch "$env:USERPROFILE\.dsh\profiles\web-client
 - **一个工作区可能天生绑不了**：不在任何共享规则覆盖范围内的工作区**没有客户端可见路径**，而 `claim()` 要求路径非空。所以按钮该禁用并说清楚，而不是发一个注定 400 的请求（这条正是 UI 第一版的问题）。
 - **徽标要等它自己那次请求回来**再断言。切换会话时组件复用同一个实例，`useEffect` 依赖 `cwd` 变化才重新拉取；切完立刻读 DOM 会读到**上一个会话**的状态 —— 我的测试因此连错两次。
 
+#### D-8. 重构：执行器是「机器能力」，不是「账号的机器」（2026-09-17）
+
+**用户实测反馈**：「我用一个新账号 AAAA 在 sunda 上登录，无法访问服务器」+「executor 使用起来还是很多问题，你很可能要重构这个功能了」。
+
+**根因（能力模型错了，不是配置错了）**：执行器按**账号**登记和连接 ——
+
+```js
+const username = this.usernameForToken(token)      // token → 账号
+this.connections.set(username, connection)          // 按账号存连接
+if (previous) this.dropConnection(username, 'superseded…')  // 每账号只允许一个执行器
+```
+
+所以 SUNDA 上的执行器**属于它注册时用的那个账号**；AAAA 登进来时，服务器上根本不存在"AAAA 的机器"。换任何账号都救不了。
+
+**用户拍板的三条**：① 执行器用**部署级共享密钥**注册；② **只按工作区授权** —— 授权决定"能不能看到工作区的内容"，**绑定只决定"在这台设备上建本地 SMB 工作区，让 agent 本地操作时能同步文件"**；③ 直接改第三方插件 `folder-tree-sh-local`。
+
+**这一轮做完的（P1，三个提交）**：
+
+| 改动 | 说明 |
+|---|---|
+| 机器自报身份 | 执行器首次运行生成并落盘 `machine-id`（与 state 同目录，**重新注册不换 id**），`hello` 里带上它；服务器此后按 machineId 寻址。`--secret` 用部署共享密钥，**旧式 token 仍可用**，已装好的机器不会被切断 |
+| 本机页面只报状态 | 去掉工作区选择器、登录表单、`/bind`、`/unbind`、`/workspaces`。`/status` 也**不再返回** `statePath` / 可见路径 / 暂存残留 —— 只给 machineId、连接状态、`heldWorkspaces` 计数。理由：这个页面在**本机环回**上应答，同机任何进程和任何用户会话都能访问；"这台机器持有哪些工作区"由服务器回答给已登录的人 |
+| 绑定记机器 | `claim` 记 `machineId`，`username` 降为**归属**（审计与"删账号连带解绑"用）。占用判定、心跳、释放全部改按机器 |
+| 授权真的生效 | **两个 bug**：① `resolveSession` 读的是 `mapped.workspace`（单数），而 `normalizeMapping` 只产出 `workspaces`（复数）并把单数字段丢掉 —— 于是每个账号的授权都变成 `undefined` = "不限制"，**授权从来没生效过**；② 我加 `/client-web` 时传了 `undefined`，等于在 Web 路径上把检查整个跳过。现在按请求解析一次并贯穿每次读写 |
+| 分派规则 | 机器绑定的工作区**任何会话都能用**（授权管"谁能碰"，绑定管"在哪跑"）；**按账号记录的旧绑定**保持原来的严格规则，不放松 |
+| 失败消息 | 找不到执行器时列出**在线的机器**，不再说"没有某账号的执行器" |
+
+**实测证据**：
+
+| 检查 | 结果 |
+|---|---|
+| `check-machine-binding.mjs`（新） | **11/11**：单工作区授权的账号**只看到 1 个工作区**（修复前是 4 个）；一台**不属于任何账号**的机器（部署密钥注册）可被它绑定、状态里能看到、可解绑 |
+| 完整冒烟（机器模式 + 解压形态的 exe） | **69 用例**：`client-execution` 的 `executedOn=client`（`cwd=C:\dsh-executor-root`）、`terminal-interactive` / `terminal-python-repl` 的 `sawMarker`+`sawTranslatedPath` 双 true 且 `sawServerPath=false`；**失败项只有刻意负例 `argv0-unresolvable`** |
+| 执行审计 | `client-spawn` 行现在是 `machineId=desktop-lcls51r-… username=probe-primary` —— 机器是执行者，账号只是归属 |
+
+**这条排查经验值得记住**：**机器模式的首次冒烟里终端全挂，看起来像重构回归 —— 其实是我把 exe 直接从 `dist/` 跑，那个目录里没有 `node-pty`**（分发包才带）。`--self-test` 一跑就分清：解压形态通过，`dist/` 形态没有兄弟目录。**所以"终端不可用"的第一个分诊动作永远是 `--self-test`，而不是去读调度器。**
+
+**P2 未做（下一轮）**：绑定/解绑/SMB 凭据的入口从会话标题栏迁到 `folder-tree-sh-local` 的文件树面板；会话标题栏那个控件据用户反馈"点击没反应"，迁移时一并处理。
+
+
 
 
 
