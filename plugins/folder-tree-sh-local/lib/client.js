@@ -2008,10 +2008,15 @@ window.__ModuleLoader__.load({
 									const title = binding !== null
 										? '这个工作区的命令在「' + (binding.machineHost || binding.machineId) + '」上执行；点右侧解绑即改回服务器执行'
 										: (noPath
-											? '这个工作区不在共享目录下，服务器给不出本机可见路径，因此无法绑定到本地'
+											// Says what is missing and what fixes it. A disabled button with only
+											// "cannot bind" leaves the operator with nowhere to go.
+											? '无法绑定：这个工作区不在共享根里，服务器给不出客户端能看到的路径。'
+												+ '把它放到 C:\\dsh-workspaces 下（并在服务器上建同名共享 ws-<名字>），'
+												+ '或让管理员在 visiblePathHints 里加一条覆盖它的规则。'
+												+ '工作区在当前路径下照常可见可用，只是命令跑在服务器上。'
 											: (machines.length === 0
-												? '还没有机器在线：先在那台电脑上启动执行器'
-												: '绑定后，这个工作区的命令在本机执行，文件走共享同步'));
+												? '还没有机器在线：先在那台电脑上启动执行器（双击 dsh-executor.exe）'
+												: '绑定后，这个工作区的命令在这台机器上执行，文件走共享同步'));
 									const bindTo = machines.length > 0 ? machines[0].machineId : '';
 									return react.createElement(react.Fragment, null,
 										react.createElement('span', {

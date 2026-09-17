@@ -35,7 +35,24 @@ param(
     # 刻意**不给默认值**：写死在脚本里的密码会被提交进 git，而它对一个真实存在的
     # 本机账号有效 —— 本脚本的第一版就是这么泄的（已从工作副本里去掉，历史里仍有，
     # 见 README 的运维提示）。
-    [string]$SmbPassword = ''
+    [string]$SmbPassword = '',
+
+    # 就地共享这些已存在的工作区目录（共享名 = ws-<目录名>）。
+    # 上面的 -Workspaces 只认「根目录 + 子目录」的布局；真实部署里的工作区常常已经在
+    # 桌面上或别处的既有工程里，把它们搬进受管根目录不是脚本该替人做的决定。这一项
+    # 按「工作区在哪就共享哪」补齐：只建共享与 ACL，不移动、不复制、不改动内容。
+    [string[]]$SharePaths = @(),
+
+    # 从部署的工作区注册表里读出所有工作区并逐个共享（只读那个文件）。
+    # 线上路径：%USERPROFILE%\.dsh\storages\workspace.json
+    [switch]$ShareWorkspacesFromRegistry,
+
+    # -ShareWorkspacesFromRegistry 用到的文件；留空则用当前 DSH_HOME 的默认位置。
+    [string]$WorkspaceFile = '',
+
+    # 排除项：这些目录永远不共享。默认排除部署自己的数据目录 —— 规则或注册表一旦
+    # 覆盖到它，共享出去就是把 API key、会话日志、账号库发给每台客户端机器。
+    [string[]]$NeverShare = @()
 )
 
 if (-not $SmbPassword) {
@@ -151,4 +168,89 @@ Write-Host '  账号       : ' -NoNewline; Write-Host $SmbUser -ForegroundColor 
 Write-Host '  密码       : ' -NoNewline; Write-Host $SmbPassword -ForegroundColor White
 foreach ($ws in $Workspaces) {
     Write-Host "  UNC 路径   : " -NoNewline; Write-Host "\\$server\ws-$ws" -ForegroundColor White
+}
+
+# ── 6. 就地共享既有工作区（可选）────────────────────────────────
+# 上面那一段按「工作区根目录 + 子目录」的布局建共享。真实部署里的工作区通常已经在
+# 别的目录下过日子（桌面上、或别处的既有工程），所以这一段按「工作区在哪就共享哪」
+# 补齐。共享名仍是 `ws-<目录名>`，与 profile 的 `visiblePathHints` 约定一致 ——
+# 客户端看到的路径写法因此与受管根目录下的工作区相同。
+if ($SharePaths.Count -gt 0 -or $ShareWorkspacesFromRegistry) {
+
+    Step '6. 就地共享既有工作区'
+
+    if ($NeverShare.Count -eq 0) {
+        # 部署自己的数据目录：规则或注册表一旦覆盖到它，共享出去就是把凭据发给客户端。
+        $NeverShare = @((Join-Path $env:USERPROFILE '.dsh'))
+        Ok "默认排除: $($NeverShare -join ', ')"
+    }
+    $neverFolded = $NeverShare | ForEach-Object { $_.ToLower().TrimEnd('\') }
+
+    $targets = @()
+    foreach ($p in $SharePaths) { $targets += [pscustomobject]@{ title = Split-Path -Leaf $p; path = $p } }
+
+    if ($ShareWorkspacesFromRegistry) {
+        if (-not $WorkspaceFile) { $WorkspaceFile = Join-Path $env:USERPROFILE '.dsh\storages\workspace.json' }
+        $registry = @()
+        try {
+            $json = Get-Content -LiteralPath $WorkspaceFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($prop in $json.tables.workspaces.PSObject.Properties) {
+                $w = $prop.Value
+                if ($w -and $w.title -and $w.path) { $registry += [pscustomobject]@{ title = $w.title; path = $w.path } }
+            }
+            Ok "从注册表读到 $($registry.Count) 个工作区: $WorkspaceFile"
+        }
+        catch {
+            Warn "读不出工作区注册表: $WorkspaceFile（$($_.Exception.Message)）"
+        }
+        $targets += $registry
+    }
+
+    $shared = 0
+    foreach ($t in $targets) {
+        $path = $t.path
+        $folded = $path.ToLower().TrimEnd('\')
+        $skip = $false
+        foreach ($n in $neverFolded) {
+            if ($n -and ($folded -eq $n -or $folded.StartsWith("$n\"))) { $skip = $true; break }
+        }
+        if ($skip) { Warn "拒绝共享（在排除列表里）: $path"; continue }
+
+        # 共享名取目录名；Windows 共享名允许中文与空格，这里只去掉路径分隔符。
+        $name = "ws-" + (Split-Path -Leaf $path)
+        if ($name -match '[\\/]' -or $name.Length -le 3) { Warn "无法从路径推出共享名: $path"; continue }
+
+        if (-not (Test-Path -LiteralPath $path)) { Warn "跳过（目录不存在）: $path"; continue }
+        $resolved = (Resolve-Path -LiteralPath $path).Path
+
+        $existingShare = Get-SmbShare -Name $name -ErrorAction SilentlyContinue
+        if ($existingShare) {
+            if ($existingShare.Path -ne $resolved) {
+                Warn "共享名冲突: $name 已指向 $($existingShare.Path)，本次要的是 $resolved —— 跳过，请手工决定用哪个名字"
+                continue
+            }
+            Ok "共享已存在: $name -> $resolved"
+        }
+        else {
+            New-SmbShare -Name $name -Path $resolved -ChangeAccess $SmbUser `
+                -Description "DSH workspace '$($t.title)'" | Out-Null
+            Ok "已创建共享: \\$server\$name -> $resolved"
+            $shared++
+        }
+
+        # 共享权限之外还需要 NTFS 权限，否则客户端能看见目录却读写失败。
+        $acl = (& icacls $resolved) -join "`n"
+        if ($acl -match [regex]::Escape($SmbUser)) {
+            Ok "  NTFS 权限已含 $SmbUser"
+        }
+        else {
+            & icacls $resolved /grant "${SmbUser}:(OI)(CI)M" /T | Out-Null
+            Ok "  已授予 NTFS Modify: $SmbUser"
+        }
+    }
+
+    Write-Host ''
+    Warn "共享会一直保留（SMB 共享本身是持久设置）。要撤销某一条：Remove-SmbShare -Name <共享名> -Force"
+
+    if ($shared -eq 0) { Warn '本次没有新建任何共享。若期望有，请检查上面的拒绝/冲突行。' }
 }

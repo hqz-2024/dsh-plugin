@@ -503,6 +503,13 @@ export class ClientTransport {
 		 * `{ serverRoot: 'C:\dsh-workspaces', uncPrefix: '\\192.168.28.239\ws-' }`.
 		 */
 		this.visiblePathHints = Array.isArray(config?.visiblePathHints) ? config.visiblePathHints : []
+		/**
+		 * Directories that must never be offered as a bindable share, whatever the rules
+		 * reach. This is a safety net for rule shapes that are broader than intended — the
+		 * deployment's own data directory sits inside the user profile, so a rule covering
+		 * the profile would otherwise advertise it for sharing.
+		 */
+		this.noShareRoots = Array.isArray(config?.noShareRoots) ? config.noShareRoots : []
 		/** Set by the dispatcher: replay live bindings onto a (re)connected account. */
 		this.onConnect = undefined
 		this.server = undefined
@@ -694,11 +701,22 @@ export class ClientTransport {
 	 * `C:\dsh-workspaces\smbtest` as `\\<host>\ws-smbtest`, and that convention
 	 * lives in the deployment, not in the path. The first matching rule wins; the
 	 * last path segment becomes the share name suffix.
+	 *
+	 * A directory under `noShareRoots` is refused before any rule is consulted. That list
+	 * exists because the rules are directory-shaped: covering `C:\Users\<user>` reaches the
+	 * profile's workspaces *and* the deployment's own data directory, and sharing the
+	 * latter would hand credentials and session logs to every client machine.
 	 * @param serverPath - Absolute directory on this server.
 	 * @returns The suggested client-side path, or undefined when no rule matches.
 	 */
 	suggestVisiblePath(serverPath) {
 		if (typeof serverPath !== 'string' || serverPath.length === 0) return undefined
+		const folded = serverPath.toLowerCase().replace(/[\\/]+$/, '')
+		for (const excluded of this.noShareRoots) {
+			const root = String(excluded).toLowerCase().replace(/[\\/]+$/, '')
+			if (root.length === 0) continue
+			if (folded === root || folded.startsWith(`${root}\\`) || folded.startsWith(`${root}/`)) return undefined
+		}
 		for (const hint of this.visiblePathHints) {
 			const root = String(hint.serverRoot ?? '').replace(/[\\/]+$/, '')
 			if (root.length === 0) continue
