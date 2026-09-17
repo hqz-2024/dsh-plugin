@@ -57,6 +57,38 @@ function run(file, args, options = {}) {
 	execFileSync(file, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...options })
 }
 
+/**
+ * The deployment this distribution belongs to: its server URL and machine secret.
+ *
+ * Read from the profile's own configuration, which is gitignored, and injected into the
+ * bundle as defaults. That is what makes the program double-click-ready: the person who
+ * receives it has nothing to type, and the machine simply announces itself. The values
+ * are still overridable by flags, so a machine pointed at another deployment, or one
+ * enrolled the older way, keeps working.
+ * @returns `{ server, secret }`, either of which may be empty.
+ */
+function deploymentDefaults() {
+	const profile = join(home, 'profiles', 'web-client', 'cordis.patch.yml')
+	try {
+		const text = readFileSync(profile, 'utf8')
+		// A targeted read rather than a YAML parse: this script has no YAML dependency and
+		// the two values are single-line scalars in a file whose structure it does not own.
+		const secret = /^\s*machineSecret:\s*'([^']+)'/m.exec(text)?.[1] ?? ''
+		const serverUrl = /^\s*serverUrl:\s*'([^']+)'/m.exec(text)?.[1] ?? ''
+		return { server: serverUrl, secret }
+	} catch (error) {
+		console.warn(`[build] 读不到 ${profile}：${String(error?.message ?? error)}`)
+		return { server: '', secret: '' }
+	}
+}
+
+const defaults = deploymentDefaults()
+if (defaults.secret === '') {
+	console.warn('[build] 警告：web-client profile 里没有 machineSecret —— 构建出的 exe 将需要 --secret 才能注册')
+} else {
+	console.log(`[build] 注入部署默认值：server=${defaults.server || '(未配置)'} secret=已设置(${defaults.secret.length} 字符)`)
+}
+
 rmSync(work, { recursive: true, force: true })
 mkdirSync(work, { recursive: true })
 mkdirSync(distDir, { recursive: true })
@@ -79,6 +111,12 @@ run(esbuild, [
 	// node-pty is a native addon: bundling it would inline a .node file into the blob,
 	// which cannot work. It stays a runtime require next to the program.
 	'--external:node-pty',
+	// The deployment this archive belongs to, so a double-click connects with nothing
+	// typed. Defined as *globals* because that is the form the executor reads: a bare
+	// identifier would be a ReferenceError when the same source is run directly by Node,
+	// and evaluating the name in a string cannot see a define at all.
+	`--define:globalThis.DEPLOYMENT_SERVER=${JSON.stringify(defaults.server)}`,
+	`--define:globalThis.DEPLOYMENT_SECRET=${JSON.stringify(defaults.secret)}`,
 	`--outfile=${bundle}`,
 ])
 if (!existsSync(bundle)) {

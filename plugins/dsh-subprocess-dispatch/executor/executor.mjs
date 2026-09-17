@@ -49,6 +49,25 @@ import { getCACertificates, setDefaultCACertificates } from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
 const VERSION = '0.3.0'
+
+/**
+ * The deployment this copy belongs to, or `''` when it was built without one.
+ *
+ * Injected by `build-executor-exe.mjs` from the profile's own (gitignore) configuration,
+ * which is what makes the distributed executable double-click-ready: the machine knows
+ * which server to join and presents the deployment's secret, so nobody types a URL or a
+ * credential. The build script defines these as globals, so the references below are
+ * replaced with literals and the values end up inside the executable.
+ *
+ * Read as global properties rather than as bare identifiers: a plain `node executor.mjs`
+ * run has no build step, so a bare reference would be a ReferenceError at load, while a
+ * missing global property is simply `undefined`. (Evaluating the name in a string, e.g.
+ * through `new Function`, does not work either — that code runs in the global scope and
+ * never sees a module-level definition, which silently produced empty values.)
+ */
+const DEPLOYMENT_SERVER = globalThis.DEPLOYMENT_SERVER ?? ''
+const DEPLOYMENT_SECRET = globalThis.DEPLOYMENT_SECRET ?? ''
+
 /**
  * How long a WebSocket handshake may stay unanswered before this side retries.
  *
@@ -1687,44 +1706,38 @@ if (config.selfTest) {
 	void runSelfTest()
 }
 
-if (config.server && (config.secret || config.token)) {
-	// Enrolled on the command line, which is the whole configuration this program has:
-	// a server and one credential. `--secret` is the deployment's shared secret and is
-	// the intended shape — the machine needs no account, so nothing about who uses this
-	// computer is decided here. `--token` remains for a machine enrolled earlier.
-	enrollment = {
-		server: config.server,
-		token: config.token,
-		secret: config.secret,
-		username: '',
-		label: config.label || hostname(),
-		smb: { username: config.smbUser ?? '', password: config.smbPassword ?? '' },
-	}
-	connect(config.server, presentedCredential(), enrollment.label)
-} else if (config.server) {
-	console.error('Usage: executor --server <url> --secret <deployment secret> [--label <name>] [--ca <path>]')
-	process.exit(2)
+// Where to connect and what to present, in precedence order: an explicit flag, then this
+// machine's saved enrollment, then the deployment the executable was built for. The last
+// one is what makes a double-click work — no flags, no page, nothing to type.
+const savedEnrollment = loadState()
+const server = config.server || savedEnrollment?.server || DEPLOYMENT_SERVER
+const secret = config.secret || savedEnrollment?.secret || DEPLOYMENT_SECRET
+const token = config.token || savedEnrollment?.token || ''
+
+if (server === '' || (secret === '' && token === '')) {
+	// Nothing to join and nothing to present. Say exactly what is missing rather than
+	// starting a program that will retry forever against nowhere.
+	awaitingEnrollment = true
+	console.error(server === ''
+		? '[executor] no server to join: this copy was built without a deployment and no --server was given'
+		: '[executor] no credential: this copy was built without a deployment secret and no --secret was given')
 } else {
-	const saved = loadState()
-	if (saved) {
-		// A machine that has already enrolled reconnects on its own: nobody is
-		// watching a service that starts at boot.
-		enrollment = { ...saved, label: saved.label || hostname() }
-		// Flags win over the saved copy, so an unattended rollout can set the share
-		// credential without touching the page.
-		if (config.smbUser !== undefined || config.smbPassword !== undefined) {
-			enrollment.smb = {
-				username: config.smbUser ?? enrollment.smb?.username ?? '',
-				password: config.smbPassword ?? enrollment.smb?.password ?? '',
-			}
-			saveState()
-		}
-		console.log(`[executor] resuming enrollment on ${machineId} from ${statePath}`)
-		connect(enrollment.server, presentedCredential(), enrollment.label)
-	} else {
-		awaitingEnrollment = true
-		console.log('[executor] not enrolled yet — open the configuration page')
+	enrollment = {
+		server,
+		secret,
+		token,
+		username: savedEnrollment?.username ?? '',
+		label: config.label || savedEnrollment?.label || hostname(),
+		smb: {
+			username: config.smbUser ?? savedEnrollment?.smb?.username ?? '',
+			password: config.smbPassword ?? savedEnrollment?.smb?.password ?? '',
+		},
 	}
+	// Persisted so a restart reconnects without needing the flags again, and so a machine
+	// that switches deployment keeps the new one.
+	if (config.server !== undefined || config.secret !== undefined) saveState()
+	console.log(`[executor] ${machineId} joining ${enrollment.server}${DEPLOYMENT_SECRET !== '' && secret === DEPLOYMENT_SECRET ? ' (built-in deployment)' : ''}`)
+	connect(enrollment.server, presentedCredential(), enrollment.label)
 }
 
 // The page stays available after enrollment so a user can bind another workspace,

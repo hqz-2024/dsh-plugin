@@ -1399,16 +1399,18 @@ window.__ModuleLoader__.load({
 						+ ")\r\n"
 						+ "set NODE_EXTRA_CA_CERTS=%~dp0caddy-root.crt\r\n"
 						+ "echo.\r\n"
-						+ "echo [i] 本机配置页（要在本机绑定工作区就打开它）： http://127.0.0.1:38460\r\n"
+						+ "echo [i] 本机状态页： http://127.0.0.1:38460\r\n"
+						+ "echo [i] 工作区绑定在 Web UI 的文件树面板里做，不在本机页面上。\r\n"
 						+ "echo [i] 命令要在这台电脑上跑，建议再装这两个（装过就忽略）：\r\n"
 						+ "echo     winget install Microsoft.PowerShell\r\n"
 						+ "echo     winget install BurntSushi.ripgrep.MSVC\r\n"
 						+ "echo.\r\n"
 						+ "if exist \"%~dp0dsh-executor.exe\" (\r\n"
-						// --ca is explicit even though the executable also looks for
-						// caddy-root.crt beside itself: the script knows the path, and being
-						// told is one less thing that has to be discovered at runtime.
-						+ "  \"%~dp0dsh-executor.exe\" --server " + bundle.server + " --token " + bundle.token + " --ca \"%~dp0caddy-root.crt\"\r\n"
+						// No credential is passed: the distributed executable already carries the
+						// deployment's server and secret, so it joins with no arguments at all. The
+						// token this script was minted with is the older enrollment path and stays
+						// only as the fallback for a copy built without a deployment.
+						+ "  \"%~dp0dsh-executor.exe\" --ca \"%~dp0caddy-root.crt\"\r\n"
 						+ "  goto done\r\n"
 						+ ")\r\n"
 						+ "where node >nul 2>nul\r\n"
