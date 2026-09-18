@@ -12,11 +12,11 @@
 | **旧对话列表** | ✅ 全在（宝单科技资料 6 条、deepseek-harness 4 条、微众诉讼 1 条，含 7–10 天前的） |
 | **打开旧会话** | ✅ 内容完整渲染（9-17 那段跨机 hostname 对话原文都在，含工具调用与用量） |
 | 工作区 / 文件树 | ✅ 5 个工作区、文件树正常 |
-| 我们的插件 | ✅ 9/10 挂载；❌ `dsh-usage-panel-local`（行 `usage-stats`）：新版 `connection.rpc.handle()` 把路由注册在 **connection 服务自己的 ctx** 上，那条 ctx 没有 `webServer` → `cannot get property "webServer" without inject`。**待移植**（非核心功能） |
+| 我们的插件 | ✅ **9/9 挂载**；`dsh-usage-panel-local`（消耗统计）按用户要求**已删除**（插件目录 + 两个 profile 的依赖/bundles + junction 全清），删后演练**0 警告启动** |
 | 网关（阶段 1 插件） | ✅ 3091 上 `/llm/v1/models` 200 |
 | 预设 | ⚠️ 279/286 引用了被删的包 → **已修**（见 C） |
 
-3. **C 修**：✅ 预设 279 个已脚本化替换（`fix-preset-workflow-row.mjs`：`@deepseek-ai/dsh-workflow-worker-thread` → `@deepseek-ai/dsh-workflow-ptc`，行 id 同步改），复查后**0 处缺失引用**；⬜ `dsh-usage-panel-local` 待移植；⬜ 全绿后重跑一次演练。
+3. **C 修**：✅ 预设 279 个已脚本化替换（`fix-preset-workflow-row.mjs`：`@deepseek-ai/dsh-workflow-worker-thread` → `@deepseek-ai/dsh-workflow-ptc`，行 id 同步改），复查后**0 处缺失引用**；✅ 消耗统计面板已删除；✅ 删后演练**0 警告启动**（3090）。
 4. **D 切线上**：⬜ **待用户确认** —— 停 3080 → 切版本 → 起 → 体检全绿 → 观察；出问题切回 `hqz-dsh-pre-upgrade` 重建。
 >
 > 最后更新：**2026-09-18**（升级到 0.1.6-alpha.2 之前）
@@ -47,7 +47,7 @@
 
 ---
 
-## 3. 插件清单（10 个，全部在 `plugins/`）
+## 3. 插件清单（9 个，全部在 `plugins/`）
 
 每个插件都是独立的 `link:` 包，通过 profile 的 `dsh.profile.bundles` 挂载；**新增插件必须三处齐全**（插件目录 + profile `package.json` 的 `link:` 依赖 + bundles 列表），少一处会静默不挂载。
 
@@ -59,7 +59,6 @@
 | **dsh-local-bridge** | 本机桥接 sidecar（`local_run` 工具）——**逃生口**，用户本机需装 sidecar 才可用 | `local-bridge` | 线上 |
 | **folder-tree-sh-local** | Web UI 工作区文件树（上传/下载/拖拽、xlsx 网格、Office 写回）。绑定按钮已退休 | `folder-tree-sh` | 线上 |
 | **dsh-video-studio-local** | 视频剪辑（内嵌 FFmpeg + 11 个模型工具）与 manifest 校对工具的分发 | `dsh-video-studio` | 线上 |
-| **dsh-usage-panel-local** | 设置页「消耗统计」（token/会话用量） | `usage-stats` | 线上 |
 | **dsh-llm-gateway-local** | **模型网关**（阶段 1 新增）：`/llm/v1/chat/completions`(SSE) + `/llm/v1/models`，按 Bearer 网关 token 认证，带部署凭据转发到真 AI 接口；含封闭模型清单、每账号并发/日额度、用量入账、取消贯穿 | `llm-gateway` | 仅 `pilot-auth`（**尚未上线上**） |
 | **dsh-subprocess-probe** | 验证探针：分派冒烟（cwd→工作区→绑定、终端、断线、权限一致性） | `subprocess-probe` | 仅 `pilot-auth` |
 | **dsh-machine-probe** | 验证探针：机器工具六步（含超时不留残进程、执行器环境标记） | `machine-probe` | 仅 `pilot-auth` |
