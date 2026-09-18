@@ -84,7 +84,22 @@
 - **可证伪的判据**（三条都要）：
   1. 本地起 `dsh web`（回环 + 一次性 token），浏览器能开会话、能聊一句；
   2. 让 agent 跑一条 `pwsh` 命令，**子进程自报的 hostname/cwd 证明命令真的在本机执行**；
-  3. 把 `llm` 指向一个**假网关端点**，确认请求真的打过去（假端点打印收到的请求体）。
+  3. 把 `llm` 指向一个**假网关端点**，确认请求真的打过去（假端点打印请求体）。
+
+#### 阶段 0 进展（2026-09-18，已测到的数字与坑）
+
+| 观察 | 数字 / 结论 |
+|---|---|
+| `apps/web/dist`（前端产物） | 12.3 MB，`index.html` + `assets/` |
+| 工作区 `node_modules` | **2.2 GB**（开发用的 pnpm store，不能直接分发） |
+| `packages/`（源码 + lib） | 94.6 MB |
+| `pnpm --filter @deepseek-ai/dsh deploy --prod --legacy <dir>` | 产出 **242 MB**，但 **CLI 起不来**：`Cannot find package '@deepseek-ai/cordis-plugin-group'` —— 该包是 `dsh-app-boot` 的 **peerDependency**，住在 `vendor/group`，`--prod` 部署不带 peer |
+| 前端产物在部署树里的位置 | `node_modules/.pnpm/@deepseek-ai+dsh-web-frontend@…/dist/` —— **跟着 web-frontend 包走，不用另外拷** |
+| 引擎自带的发布流水线 | `pnpm run release:pack --family <dsh\|vendor> --out <dir>` + `release:verify-packed-install --from <dir>…`：把整个家族打成 tarball，再在临时消费者目录里**用普通 Node** 装起来跑 —— 这正是客户端分发要的形状 |
+| 打包闸门 | `release:pack` 会校验客户端产物的**构建环境**：必须是用 official profile 构建的（`DSH_CLIENT_BUILD_PROFILE=official` + `DSH_CLIENT_TITLE='DeepSeek Harness'`），否则报 "client build environment differs"。支持的命令：`pnpm run build:official` |
+| 构建产物是否弄脏引擎 checkout | 不会：`apps/web/dist/`、`lib/`、`.dsh-build/` 都在 `.gitignore` 里 |
+
+**当前结论**：**放弃 `pnpm deploy` 这条捷径**，走引擎自己的 `release:pack`（vendor + dsh 两个家族）+ 消费者安装。下一步：`pnpm run build:official` → 两个家族各 pack 一次 → 装进临时消费者 → 量体积/启动时间 → 跑那三条判据。**估计全量包最终落在 500–600MB 档**（引擎 242MB+ + Electron ~150–200MB + ffmpeg 157MB）。
 
 ### 阶段 1：模型网关 + 客户端 profile（1～1.5 天）
 
