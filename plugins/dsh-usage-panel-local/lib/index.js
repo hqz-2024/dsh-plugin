@@ -594,7 +594,7 @@ async function scanFallback(deps, now) {
 
 // src/host/index.ts
 var name = "dsh-usage-panel";
-var inject = ["timer", "connection"];
+var inject = ["timer", "connection", "webServer"];
 var STALE_MS = 10 * 60 * 1e3;
 var RESCAN_MS = 10 * 60 * 1e3;
 function apply(ctx) {

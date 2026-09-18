@@ -1,7 +1,23 @@
 # STATE.md — hqz-dsh 部署现状与交接说明
+5. 线上 3080 **重启会切断用户当前对话** —— 需要重启先确认。
+4. **断言要落在只有当事者才能产生的事实上**（子进程自报的 cwd/hostname、执行器环境里的标记），不要落在中间变量的说法上。
+**升级顺序与进度（2026-09-18）**：
 
-> **这份文件回答三个问题：现在是什么、怎么跑、坏了怎么修。**
-> 任何人（包括下一个 agent）接手这个部署时，先读这一份，再按需下钻。
+1. **A 备份与基线**：✅ **已完成** —— `backup/dsh-backup-20260918-134233.zip`（33.7 MB，含 sessions/storages/auth/凭据）＋ `backup/dsh-backup-20260918-134233-files/`（补上备份脚本没带的 `profiles/web-client/cordis.patch.yml`）；引擎回滚分支 **`hqz-dsh-pre-upgrade` = `94c528137c`**。
+2. **B 无风险演练**：✅ **已完成**。演练 home = `~/.dsh-upgrade-check`（线上数据的副本 + junction 复用 plugins/profiles）；新版 worktree = `C:\Users\bestarc\Desktop\dsh-0.1.6`（不动主 checkout）；起在 3090（web-client）与 3091（pilot-auth）。结果：
+
+| 判据 | 结果 |
+|---|---|
+| 新版本带我们的组合能起来 | ✅ 两个 profile 都起得来 |
+| **旧对话列表** | ✅ 全在（宝单科技资料 6 条、deepseek-harness 4 条、微众诉讼 1 条，含 7–10 天前的） |
+| **打开旧会话** | ✅ 内容完整渲染（9-17 那段跨机 hostname 对话原文都在，含工具调用与用量） |
+| 工作区 / 文件树 | ✅ 5 个工作区、文件树正常 |
+| 我们的插件 | ✅ 9/10 挂载；❌ `dsh-usage-panel-local`（行 `usage-stats`）：新版 `connection.rpc.handle()` 把路由注册在 **connection 服务自己的 ctx** 上，那条 ctx 没有 `webServer` → `cannot get property "webServer" without inject`。**待移植**（非核心功能） |
+| 网关（阶段 1 插件） | ✅ 3091 上 `/llm/v1/models` 200 |
+| 预设 | ⚠️ 279/286 引用了被删的包 → **已修**（见 C） |
+
+3. **C 修**：✅ 预设 279 个已脚本化替换（`fix-preset-workflow-row.mjs`：`@deepseek-ai/dsh-workflow-worker-thread` → `@deepseek-ai/dsh-workflow-ptc`，行 id 同步改），复查后**0 处缺失引用**；⬜ `dsh-usage-panel-local` 待移植；⬜ 全绿后重跑一次演练。
+4. **D 切线上**：⬜ **待用户确认** —— 停 3080 → 切版本 → 起 → 体检全绿 → 观察；出问题切回 `hqz-dsh-pre-upgrade` 重建。
 >
 > 最后更新：**2026-09-18**（升级到 0.1.6-alpha.2 之前）
 > 相关文档：用户手册 `README.md`｜当前状态与决策 `docs/memory.md`｜计划与进度 `docs/plan-two-paths.md`｜实施与验收证据 `docs/plan-client-world-progress.md`｜**铁律与实现级陷阱 `AGENTS.md`（必读）**
