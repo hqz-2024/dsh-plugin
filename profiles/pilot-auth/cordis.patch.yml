@@ -34,13 +34,15 @@
     #   /executor      WebSocket upgrade, authenticated by the executor token
     #   /client-auth   Bearer executor token, or the session for `login` only
     #   /client-relay  path secret
-    # All three verify their own caller, so the gate must let them through. The
+    #   /llm           Bearer gateway token (the client application's model hop)
+    # All of them verify their own caller, so the gate must let them through. The
     # upgrade gate needed this too — without it the executor could never connect
     # and the whole feature was unreachable behind a real login gate.
     publicPrefixes:
       - /executor
       - /client-auth
       - /client-relay
+      - /llm
     roleMap:
       # 单工作区授权的普通账号：验「授权真的生效」（它不该看到别的工作区），
       # 以及「机器不属于任何账号也能被它绑定」。
@@ -123,3 +125,22 @@
     waitMs: 60000
     # 起 executor 时必须带上这个变量（不要用 DSH_ 前缀：执行器会把它过滤掉）。
     marker: 'from-executor-env'
+
+# ── 模型网关（阶段 1）─────────────────────────────────────────────────────────
+# 客户端应用在本机跑 agent 循环，却**不能持有 API key**：key 属于部署，
+# 桌面应用是密钥会泄漏的地方。这一行让客户端打到服务器，由服务器带着部署的
+# 凭据转发到真 AI 接口；模型清单是封闭的，按账号限额并入账。
+- id: llm-gateway
+  disabled: false
+  config:
+    path: '/llm'
+    upstream: 'https://api.deepseek.com'
+    apiKeyEnv: 'DEEPSEEK_API_KEY'
+    models:
+      - deepseek-v4-flash
+      - deepseek-v4-pro
+    tokens:
+      pilot-gateway-token-0123456789abcdef: probe-admin
+    maxConcurrentPerAccount: 4
+    dailyTokenLimit: 0
+    usagePath: !!js dshHomePath('profiles/pilot-auth/llm-gateway-usage.jsonl')

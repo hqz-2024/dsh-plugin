@@ -1,0 +1,36 @@
+# dsh-llm-gateway-local bundle patch — the deployment's model gateway.
+#
+# Inserted DISABLED. A profile opts in by enabling this row and filling the
+# config below, AND by letting the gate pass the paths through (the `remote`
+# row's `publicPrefixes`) — a client application holds a token, not a session
+# cookie, so the session gate cannot be what authenticates it.
+- insert:
+    - id: llm-gateway
+      name: 'dsh-llm-gateway-local'
+      disabled: true
+      config:
+        # Mount point. The gateway serves:
+        #   POST <path>/v1/chat/completions   (streaming or not)
+        #   GET  <path>/v1/models
+        path: '/llm'
+        # The real AI endpoint this deployment pays for. The client never sees it.
+        upstream: 'https://api.deepseek.com'
+        # Credential reference resolved through the deployment's credential store
+        # (`~/.dsh/.credentials.yaml`), falling back to this process's environment.
+        apiKeyEnv: 'DEEPSEEK_API_KEY'
+        # Client-facing model ids this gateway will forward. Anything else is 404,
+        # so a client cannot reach a model the deployment did not open.
+        models:
+          - deepseek-v4-flash
+          - deepseek-v4-pro
+        # Gateway token -> account. Same shape as the executor tokens: a client
+        # presents one of these as `Authorization: Bearer <token>`.
+        tokens: {}
+        # Per-account concurrent in-flight requests. 0 disables the limit.
+        maxConcurrentPerAccount: 4
+        # Per-account daily token budget (prompt + completion). 0 disables it.
+        dailyTokenLimit: 0
+        # Largest request body the gateway will forward.
+        maxRequestBytes: 33554432
+        # One JSON line per completed request: account, model, tokens, outcome.
+        usagePath: ''

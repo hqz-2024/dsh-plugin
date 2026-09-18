@@ -3,7 +3,7 @@
 > **这份文件是"现在是什么状态、下一步做什么"的唯一入口。** 每次重要变更后更新它（改完顺手把"最后更新"时间改掉）。
 > 细节分流：实现与验收证据 → `docs/plan-client-world-progress.md`；两条路线的完整评估 → `docs/plan-two-paths.md`；用户手册 → `README.md`；铁律与实现级陷阱 → `AGENTS.md`。
 >
-> 最后更新：**2026-09-18 11:20（+08:00）**（阶段 0 完成，结论见 §5）
+> 最后更新：**2026-09-18 11:05（+08:00）**（阶段 1 完成，结论见 §5）
 
 ---
 
@@ -125,6 +125,24 @@
   必须做进去：流式取消贯穿（客户端断开 → 立刻 abort 上游）、用量入账、每用户额度与并发上限、模型白名单、上游错误映射。
 - 客户端 profile：base + web-app + 本地工具 + `llm` 指向网关；**不带任何 key**，不给模型选择界面；**默认全权限**（用户已定）。
 - 判据：一次真实对话走通（工具在本地执行 + 模型在服务器）；网关侧能看到用量；中途关掉页面时上游连接被 abort。
+
+#### 阶段 1 结论（2026-09-18，**已完成**：网关可用，真实模型跑通）
+
+新插件 **`plugins/dsh-llm-gateway-local/`**（host 行 `llm-gateway`，插进 profile 时默认 `disabled: true`）：`POST <path>/v1/chat/completions`（流式/非流式）+ `GET <path>/v1/models`，按 **Bearer 网关 token** 认证，带部署的凭据转发到真 AI 接口。已验证（全部在 `pilot-auth`，3084）：
+
+| 项 | 证据 |
+|---|---|
+| 认证 | 无 token → **401**（网关自己的文本，不是门禁的 403）；带 token → 200 |
+| 封闭模型清单 | `/v1/models` 只返回配置里的两个；请求白名单外的模型 → **404** |
+| 真实上游 | 200 + 真模型回答；**流式** 27 个 SSE 事件字节级透传 |
+| 用量入账 | `profiles/pilot-auth/llm-gateway-usage.jsonl`：账号 / 模型 / prompt+completion+total tokens / 耗时 / 结果 |
+| 取消贯穿 | 客户端收到第一个 chunk 就断连 → 记录 **`outcome: client-cancelled`**，上游 fetch 被 abort |
+| 日额度 | 把 `dailyTokenLimit` 压到 100：花到 108 之后下一请求 **429** |
+| **客户端本地循环 + 服务器模型** | 打包树里跑一次性任务：真模型回答，**工具在本机执行**（输出里是 `DESKTOP-LCLS51R` 与本地工作目录），客户端**没有任何 API key** |
+
+**尚未做（下一阶段或以后）**：① 网关 token 的**签发**（现在只有配置里写死的 token；真实客户端要"登录 → 拿 token"，并能在管理台吊销）；② 并发上限实现了但没实测；③ 客户端凭据存储（Electron `safeStorage`）属于阶段 2。
+
+**两个数字值得记住**：一次客户端请求的 prompt 就有 **约 24k tokens**（引擎的完整系统提示词）；上游对 `deepseek-v4-flash` 的响应里 `model` 字段回的是 `deepseek-flash`。
 
 ### 阶段 2：Electron 外壳（双模式；用户已定用 Electron）
 

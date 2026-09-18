@@ -82,3 +82,5 @@ profiles/web-client/dispatch-trace.jsonl
 profiles/web-client/probe-result.jsonl
 # 误生成的 0 字节杂项文件（同 /3080：某次命令里裸写的地址被当成了重定向目标）
 /127.0.0.1
+profiles/pilot*/machine-probe.jsonl
+profiles/pilot*/llm-gateway-usage.jsonl

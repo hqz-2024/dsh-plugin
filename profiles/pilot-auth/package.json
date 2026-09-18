@@ -6,7 +6,8 @@
     "dsh-client-bindings": "link:../../plugins/dsh-client-bindings",
     "dsh-subprocess-dispatch": "link:../../plugins/dsh-subprocess-dispatch",
     "dsh-subprocess-probe": "link:../../plugins/dsh-subprocess-probe",
-    "dsh-machine-probe": "link:../../plugins/dsh-machine-probe"
+    "dsh-machine-probe": "link:../../plugins/dsh-machine-probe",
+    "dsh-llm-gateway-local": "link:../../plugins/dsh-llm-gateway-local"
   },
   "dsh": {
     "profile": {
@@ -17,7 +18,8 @@
         "dsh-client-bindings",
         "dsh-subprocess-dispatch",
         "dsh-subprocess-probe",
-        "dsh-machine-probe"
+        "dsh-machine-probe",
+        "dsh-llm-gateway-local"
       ],
       "patchReload": "live"
     }
