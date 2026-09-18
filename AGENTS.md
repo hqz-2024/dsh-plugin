@@ -2,18 +2,19 @@
 
 本目录 `~/.dsh`（`%USERPROFILE%\.dsh`）是**部署数据目录**，不是 dsh 引擎源码。引擎 checkout 在别处（见下），本目录放的是配置、插件、预设、skill 与运维脚本。
 
-面向使用者的手册见 `README.md`；面向实施过程的记录见 `docs/plan-client-world-progress.md`。
+面向使用者的手册见 `README.md`；**"现在是什么状态、下一步做什么"先看 `docs/memory.md`**；实施过程记录见 `docs/plan-client-world-progress.md`；两条路线评估见 `docs/plan-two-paths.md`。
 
 ---
 
 ## 一、铁律（改动前必读）
 
 1. **引擎 checkout 零改动。** 所有定制都在 `~/.dsh/{plugins,profiles,skills,.agent-presets}` 里。引擎 checkout（`C:\Users\<用户名>\Desktop\deepseek-harness`）保持只读，这样才能干净地跟官方上游。当前 checkout 里唯一未提交的改动是 `README.zh.md` 加了一行局域网启动命令，与本部署的定制无关。
-2. **线上实例不能被扰动。** 3080 上的 dsh 是用户正在用的实例。不要重启它、不要停它、不要改它的组合。
-3. **`profiles/web/cordis.patch.yml` 与 `profiles/web-client/cordis.patch.yml` 是本机机密文件。** 它们含真实的 sidecar token 与 executor token，已被 `.gitignore` 排除。要提交配置改动时，改对应的 `cordis.patch.example.yml`（占位版），并确认待提交文件里搜不到真实 token。
-4. **`profiles/web/cordis.patch.yml` 的改动会实时生效。** 该 profile 设了 `patchReload: live`，改这个文件会热重载线上实例的组合 —— 等于直接改生产。要试新组合，另建 profile。
-5. **第三方 skill 不要放进 `~/.dsh/skills`。** 该目录会同步到 GitHub。放别处，或用预设自带的 `skills/`（走 `customSkillDirs`）。
-6. **跑验证要在隔离 home 里做**，不要拿线上 home 试。现成的：`.dsh-pilot`（3082）、`.dsh-pilot-auth`（3084）、`.dsh-web-client`（3086），都用 junction 复用 `plugins`/`profiles`，各自独立的 `auth`/`sessions`/`storages`。
+2. **线上实例不能被扰动。** 3080 上的 dsh 是用户正在用的实例。不要重启它、不要停它、不要改它的组合。**注意：重启 3080 会切断用户当前正在用的那段对话（它就跑在这个进程里）** —— 需要重启时先征得同意，或让用户自己重启。
+3. **改动都提交到分支 `client-world`。** `main` 与 `origin/main` 保持一致（`73ad10f`），除非用户明确要求，**不推送、不合并、不动 main**。仓库是公开的（`github.com/hqz-2024/dsh-plugin`），push 前先跑 `check-secret-leak.mjs`。
+4. **`profiles/web/cordis.patch.yml` 与 `profiles/web-client/cordis.patch.yml` 是本机机密文件。** 它们含真实的 sidecar token 与 executor token，已被 `.gitignore` 排除。要提交配置改动时，改对应的 `cordis.patch.example.yml`（占位版），并确认待提交文件里搜不到真实 token。
+5. **`profiles/web/cordis.patch.yml` 的改动会实时生效。** 该 profile 设了 `patchReload: live`，改这个文件会热重载线上实例的组合 —— 等于直接改生产。要试新组合，另建 profile。
+6. **第三方 skill 不要放进 `~/.dsh/skills`。** 该目录会同步到 GitHub。放别处，或用预设自带的 `skills/`（走 `customSkillDirs`）。
+7. **跑验证要在隔离 home 里做**，不要拿线上 home 试。现成的：`.dsh-pilot`（3082）、`.dsh-pilot-auth`（3084）、`.dsh-web-client`（3086），都用 junction 复用 `plugins`/`profiles`，各自独立的 `auth`/`sessions`/`storages`。
 
 ---
 
