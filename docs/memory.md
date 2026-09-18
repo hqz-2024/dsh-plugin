@@ -3,7 +3,7 @@
 > **这份文件是"现在是什么状态、下一步做什么"的唯一入口。** 每次重要变更后更新它（改完顺手把"最后更新"时间改掉）。
 > 细节分流：实现与验收证据 → `docs/plan-client-world-progress.md`；两条路线的完整评估 → `docs/plan-two-paths.md`；用户手册 → `README.md`；铁律与实现级陷阱 → `AGENTS.md`。
 >
-> 最后更新：**2026-09-18 10:40（+08:00）**（用户拍板了计划 B 的四项配置，见 §6）
+> 最后更新：**2026-09-18 11:20（+08:00）**（阶段 0 完成，结论见 §5）
 
 ---
 
@@ -86,20 +86,37 @@
   2. 让 agent 跑一条 `pwsh` 命令，**子进程自报的 hostname/cwd 证明命令真的在本机执行**；
   3. 把 `llm` 指向一个**假网关端点**，确认请求真的打过去（假端点打印请求体）。
 
-#### 阶段 0 进展（2026-09-18，已测到的数字与坑）
+#### 阶段 0 结论（2026-09-18，**已完成**：可行，走目录分发）
 
-| 观察 | 数字 / 结论 |
+**三条判据全部通过**（证据在 `%TEMP%\dsh-client-spike\`，保留着给阶段 1 复用）：
+
+| 判据 | 结果 |
 |---|---|
-| `apps/web/dist`（前端产物） | 12.3 MB，`index.html` + `assets/` |
-| 工作区 `node_modules` | **2.2 GB**（开发用的 pnpm store，不能直接分发） |
-| `packages/`（源码 + lib） | 94.6 MB |
-| `pnpm --filter @deepseek-ai/dsh deploy --prod --legacy <dir>` | 产出 **242 MB**，但 **CLI 起不来**：`Cannot find package '@deepseek-ai/cordis-plugin-group'` —— 该包是 `dsh-app-boot` 的 **peerDependency**，住在 `vendor/group`，`--prod` 部署不带 peer |
-| 前端产物在部署树里的位置 | `node_modules/.pnpm/@deepseek-ai+dsh-web-frontend@…/dist/` —— **跟着 web-frontend 包走，不用另外拷** |
-| 引擎自带的发布流水线 | `pnpm run release:pack --family <dsh\|vendor> --out <dir>` + `release:verify-packed-install --from <dir>…`：把整个家族打成 tarball，再在临时消费者目录里**用普通 Node** 装起来跑 —— 这正是客户端分发要的形状 |
-| 打包闸门 | `release:pack` 会校验客户端产物的**构建环境**：必须是用 official profile 构建的（`DSH_CLIENT_BUILD_PROFILE=official` + `DSH_CLIENT_TITLE='DeepSeek Harness'`），否则报 "client build environment differs"。支持的命令：`pnpm run build:official` |
-| 构建产物是否弄脏引擎 checkout | 不会：`apps/web/dist/`、`lib/`、`.dsh-build/` 都在 `.gitignore` 里 |
+| ① 打包树自己能起 web、界面可用 | `dsh web` **1.3 秒**起监听；带 token 的首页 **200 / 24.8 KB / 含 `window.__DSH_BOOT__`**；前端 JS（441 KB）也 200 |
+| ② 本地工具真的在本地执行 | 一次性任务里 agent 调 `pwsh`，工具回执是 `SPIKE-TOOL-OK DESKTOP-LCLS51R C:\…\consumer`（**机器名 + 工作目录**，只有本机进程能报出来） |
+| ③ 模型请求真的打到配置的网关 | 本地假网关（OpenAI 兼容 SSE）收到 **3 个请求**（models 探测 + 2 次 chat），并把工具回执读了出来 |
 
-**当前结论**：**放弃 `pnpm deploy` 这条捷径**，走引擎自己的 `release:pack`（vendor + dsh 两个家族）+ 消费者安装。下一步：`pnpm run build:official` → 两个家族各 pack 一次 → 装进临时消费者 → 量体积/启动时间 → 跑那三条判据。**估计全量包最终落在 500–600MB 档**（引擎 242MB+ + Electron ~150–200MB + ffmpeg 157MB）。
+**做法（可复用）**：隔离副本里 `pnpm run build:official`（需要 `DSH_CLIENT_COMMIT_HASH`/`DSH_CLIENT_VERSION`）→ 逐包 `pnpm pack`（vendor 9 个 + dsh 248 个 = 7.7 MB tarball）→ 用 npm 装进消费者目录（`--legacy-peer-deps`）→ 用普通 Node 跑 `dsh web` / 一次性任务。**Electron 已定的前提下不需要单文件 SEA，目录分发就是答案。**
+
+**体积（阶段 4 要处理的头号问题）**：
+
+| 观察 | 数字 |
+|---|---|
+| 完整 npm 闭包 | **1059 MB** —— 其中 `@openai` **373 MB**、`@anthropic-ai` **330 MB**（外部 agent CLI，客户端根本用不到）、`@img` 27、node-pty 27、typescript 23、opentelemetry 20、rolldown 20 |
+| tarball 本身 | 7.7 MB（JS 很轻，重的是外部依赖） |
+| `pnpm deploy --prod --legacy` | 242 MB，但**缺 peer，CLI 起不来**（`@deepseek-ai/cordis-plugin-group` 是 `dsh-app-boot` 的 peer，住在 `vendor/group`）→ 这条路放弃 |
+| 前端产物 | 12.3 MB，**随 `@deepseek-ai/dsh-web-frontend` 包分发**，不用另外拷 |
+| 工作区 `node_modules` | 2.2 GB（开发 store，不可分发） |
+
+→ **客户端必须裁剪依赖集**：先查清是谁把 `@openai`/`@anthropic-ai` 拉进来的（大概率是外接 CLI 的 subagent 后端），再看能不能从客户端装包里排除。**目标：引擎部分压到 300 MB 以内**，加上 Electron 与 ffmpeg 才是"全量包"。
+
+**本轮踩到的坑（下次直接用）**：
+
+1. 引擎自带的 `release:pack` **在 Windows 上跑不起来**：它内部 `spawn('pnpm', …)`，而 pnpm 是 `.cmd` 垫片，Node 不带 shell 解析不了 → `spawn pnpm ENOENT`。绕法：按同样语义逐包经 shell 打包（`pack-family.mjs`）。
+2. `npm` / `pnpm` 都是 `.cmd`：Node 里要么 `shell: true`，要么直接 `node <node_modules\npm\bin\npm-cli.js>`。
+3. npm 安装打包家族需要 `--legacy-peer-deps`（树里混着 `0.1.3-alpha.1` 与 `alpha.2`）。
+4. 打包闸门要求产物是 **official profile** 构建的；构建要放在**副本**里做（`copy-tree.mjs`：源码复制 + `node_modules` 走 junction），否则会重写**线上正在服务**的 `apps/web/dist` 与各包 `client.js`。
+5. 客户端 profile 只需要写 `bundles`（`@deepseek-ai/dsh-base` 等），bundle 从**安装树**解析 —— 这就是"装完即用"的形状。
 
 ### 阶段 1：模型网关 + 客户端 profile（1～1.5 天）
 
