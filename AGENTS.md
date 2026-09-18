@@ -2,7 +2,7 @@
 
 本目录 `~/.dsh`（`%USERPROFILE%\.dsh`）是**部署数据目录**，不是 dsh 引擎源码。引擎 checkout 在别处（见下），本目录放的是配置、插件、预设、skill 与运维脚本。
 
-面向使用者的手册见 `README.md`；**"现在是什么状态、下一步做什么"先看 `docs/memory.md`**；实施过程记录见 `docs/plan-client-world-progress.md`；两条路线评估见 `docs/plan-two-paths.md`。
+部署现状与交接见 `STATE.md`（插件清单、运行面、故障处置）；面向使用者的手册见 `README.md`；**"现在是什么状态、下一步做什么"先看 `docs/memory.md`**；实施过程记录见 `docs/plan-client-world-progress.md`；两条路线评估见 `docs/plan-two-paths.md`。
 
 ---
 
