@@ -65,6 +65,8 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 > ⚠ **跨用户名限制**：会话日志 `session.jsonl.zstd` 是 zstd 压缩二进制，其内部 cwd 脚本不重写；跨用户名恢复旧会话可能被拒（"session outside your workspace"）。**建议新机保持同名用户**，或由维护者做 zstd 级重映射。
 
+> **备份里没有客户端源码，也没有客户端机器上的东西。** `backup.ps1` 打的是 `~\.dsh` 的状态与机密；客户端源码是**引擎仓库的一个 worktree**（见坑 5），必须跟引擎 checkout 一起走；`~\.dsh\client\dist` 里的安装包是可重建的构建产物（新机跑一次 `build-client.ps1` 就有了）。**每台客户端机器上的 `%USERPROFILE%\.dsh` 与 `%APPDATA%\@deepseek-ai\dsh-desktop` 完全不在迁移范围内** —— 服务器换了地址，就要在那些机器上重跑 `provision-client.ps1`，或者依赖安装包里烘进去的地址（这正是换地址后要重新打包的理由，见坑 7）。
+
 ---
 
 ## 三、手动迁移清单（自动化不可用时）
@@ -90,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
-| `.dsh\plugins\` | 5 个本地 fork：`dsh-remote-local`、`folder-tree-sh-local`、`dsh-local-bridge`、`dsh-usage-panel-local`、`dsh-video-studio-local` | 必须 |
+| `.dsh\plugins\` | 本部署的本地插件（认证与角色 `dsh-remote-local`、文件树 `folder-tree-sh-local`、sidecar `dsh-local-bridge`、视频 `dsh-video-studio-local`、远程 `dsh-remote-local`、以及客户端世界的 `dsh-client-bindings` / `dsh-subprocess-dispatch` / `dsh-llm-gateway-local` / `dsh-archive-local`——清单见 `README.md` §11.1） | 必须 |
 | `.dsh\.agent-presets\` | 7 个自定义角色预设（各自带 `skills\`，通过 `customSkillDirs` 接入）+ 279 个 agency 角色预设，共 286 个目录 | 必须 |
 | `.dsh\skills\` | 全局 skill 10 个：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases（rank 400，所有预设 agent 共用） | 必须（本仓库已收录，clone 即得） |
 | `%USERPROFILE%\.agents\skills\` | 同一批 skill 的第二份用户根（rank 500），让 dsh 之外的 agent（Claude Code 等）也能读到 | 建议（缺了不影响 dsh；把它当成 `.dsh\skills\` 的副本整目录拷过去即可） |
@@ -103,12 +105,17 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | `.dsh\Caddyfile` | 反代配置 | 必须 |
 | `.dsh\bin\caddy.exe` | caddy 可执行文件（或用 winget 重装后复制） | 必须 |
 | `.dsh\start-dsh-lan.cmd` | 一键启动脚本 | 必须（或由 install.ps1 重新生成） |
+| `.dsh\client\` | 客户端 provisioning（`provision-client.ps1`）、会话导出（`export-session.mjs`）、说明 | 必须（本仓库已收录，clone 即得） |
+| `.dsh\client\dist\` | 分发给局域网用户的安装包 —— 设置页「本地插件」那张卡片送的就是这里**最新的** `.exe` | 建议（约 293 MB 且可重建：跑 `build-client.ps1`） |
+| `.dsh\build-client.ps1`、`.dsh\electron-mirror-server.mjs` | 一条命令构建+发布客户端；打包用的本机 Electron 镜像服务 | 必须（本仓库已收录） |
+| `.dsh\patch-client-download.mjs` | 把「桌面客户端」那张下载卡片加进设置页的幂等补丁脚本（已应用过就跳过） | 建议（留作记录） |
 
 ### 3. 程序本体
 
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
-| `C:\Users\<用户名>\Desktop\deepseek-harness\`（不含 node_modules） | DSH 源码 checkout | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
+| `C:\Users\<用户名>\Desktop\deepseek-harness\`（不含 node_modules） | DSH 源码 checkout（分支 `hqz-dsh-0.1.6`，与上游 `master` 逐字一致） | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
+| `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，7 个提交：服务器模式/证书/模式徽标、定时归档、发布版本号、打包默认地址）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5） |
 
 ---
 
@@ -141,6 +148,40 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - `local_run` 按「当前会话归属账号」自动路由到该账号的 sidecar，绝不串到别的账号的机器；「本地插件」设置页只显示当前登录账号自己的 token，属正常。
 - 迁移时**原样保留 token**——改了 token 会让已装好的 sidecar 全部失联，需重新给每台机器下发新 token。
 
+### 坑 5：客户端源码是「引擎仓库的第二个 worktree」，不是一个独立仓库
+
+本机有两个工作树共用同一个 `.git`（`C:\Users\<用户名>\Desktop\deepseek-harness\.git`）：
+
+| 工作树 | 分支 | 是什么 |
+|---|---|---|
+| `Desktop\deepseek-harness` | `hqz-dsh-0.1.6` | 引擎本体（与上游 `master` 逐字一致，零改动 —— 这是铁律 1） |
+| `Desktop\dsh-desktop` | `hqz-desktop-client` | 客户端：在那份引擎上加了 7 个提交（服务器模式与证书、模式徽标、定时归档、发布版本号、打包默认地址、两处修复） |
+
+所以 `Desktop\dsh-desktop` 里的 `.git` **是一个文件**（内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop`），只拷目录带不走历史。新机上重建：
+
+```powershell
+# 旧机：把两个分支打成一个 bundle（比拷整个 .git 小得多）
+cd C:\Users\<用户名>\Desktop\deepseek-harness
+git bundle create dsh-branches.bundle hqz-dsh-0.1.6 hqz-desktop-client
+
+# 新机：先 clone 引擎，再从 bundle 取回两条分支，最后挂出 worktree
+git clone https://github.com/hqz-2024/hqz-dsh.git C:\Users\<用户名>\Desktop\deepseek-harness
+cd C:\Users\<用户名>\Desktop\deepseek-harness
+git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'
+git worktree add ..\dsh-desktop hqz-desktop-client
+```
+
+`dsh-desktop` 第一次使用要先 `pnpm install`（`node_modules` 不在 git 里），完整构建约 15 分钟。
+
+### 坑 6：打包要本机 Electron 镜像，而且**打包期间不要动 git**
+
+1. `prepare:runtime` 从 GitHub release 拉 150 MB 的 `electron-v44.0.0-win32-x64.zip`，在这条线路上**稳定卡死在 0 字节**（多次复现：两次超时、一次 `fetch failed`）。绕法是本机镜像：`electron-mirror-server.mjs` + `ELECTRON_MIRROR=http://127.0.0.1:8791/`，镜像目录布局必须是 `<root>\v44.0.0\{electron-v44.0.0-win32-x64.zip, SHASUMS256.txt}`（`@electron/get` 的 `customDir` 默认是 `v<版本>`），其中 `SHASUMS256.txt` 用**上游原文**、zip 用 `%LOCALAPPDATA%\electron\Cache\` 里那份已核对过哈希的。`build-client.ps1` 已把这一整套包好，正常不用手做。
+2. 客户端构建把 `DSH_CLIENT_COMMIT_HASH` 记进构件记录，`release:pack` 再读出来比对 —— **跑到一半提交 git 会让打包中止**（`client build environment differs from the required artifact profile: DSH_CLIENT_COMMIT_HASH`）。先提交完，再开跑。
+
+### 坑 7：安装包里的部署地址是**打包时**烘进去的
+
+`DSH_DESKTOP_SERVER_MODE=auto`（`apps/desktop/.env.windows`）时，打包会探测本机哪个地址真的在跑 dsh —— 逐个候选请求 `https://<地址>:8443/auth/me`，谁答就把谁写进应用清单的 `dshDesktopServerMode`。客户端装完就自带服务器模式、不需要任何配置。**所以换了服务器地址或网段，必须重新打包（`build-client.ps1`）并重新发布**，否则老安装包的服务器模式还指着旧地址。单台机器可以不改包：在它的 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-client.json` 写 `{ "server": { "origin": "https://新地址:8443", "label": "…" } }`（用户文件优先于清单默认值），或设环境变量 `DSH_DESKTOP_SERVER_MODE`。
+
 ---
 
 ## 五、验证清单
@@ -153,6 +194,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 6. 每台用户机 sidecar 能连上，`local_run` 能驱动用户本机。
 7. 安全门禁：非 admin 调 `session.search` / `session.export` 返回 403；`session.follow` 拉取他人会话被断连。
 8. 预设与 skill 就位：`.agent-presets\` 286 个目录、`skills\` 10 个 skill——直接跑 `verify.ps1`，全绿即可。
+9. **客户端下载卡片在**：设置 →「本地插件」里应当有「桌面客户端（可选）」一张卡，点「下载」能拿到 `deepseek-harness-<版本>-win-x64.exe`。**不用登录的判据**：`GET https://<服务器>:8443/auth/client-installer` 返回 **401**（处理器接管）而不是 200 + SPA 的 HTML；若是后者，说明插件还是旧代码，**整进程重启**即可。
+10. **模型网关通**：`GET https://<服务器>:8443/llm/v1/models`，带 `Authorization: Bearer <网关 token>` → 200 且列出模型；不带 token → 403。
+11. **归档端通**：`POST https://<服务器>:8443/archive/v1/sessions` 带归档 token 与空 body → **400 且错误文本是 `archive body must carry sessionId`**（处理器自己的文本 = 已过门禁；没有文本的 403 才是被门禁拦）。
+12. **客户端装机**：在客户端机器上跑 `provision-client.ps1`（`-WhatIfOnly` 先看）→ 启动应用 → 本地模式能跑一次真实任务（说明网关与 token 都对）。
 
 ---
 
@@ -167,6 +212,11 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 文件树写操作 `forbidden` / `signal time out` | 插件 fork 没装全，或 `profiles\web` 的 `pnpm install` 没重建 link 依赖 |
 | 文档预览失败 | `runtimes\dshdoc-runtime-win32-x64` 缺失，或 `cordis.patch.yml` 的 `runtimeDir` 路径不对 |
 | 打开旧会话被拒 "session outside your workspace" | 跨用户名迁移导致会话日志 cwd 与新工作区路径不一致（见「二」的跨用户名限制） |
+| 设置页「本地插件」里没有「桌面客户端」那张卡 | `$DSH_HOME\client\dist` 里没有 `.exe`（目录里没有文件时这张卡整个不出现，这是刻意的），或插件还是旧代码（判据见验证清单第 9 条） |
+| 客户端服务器模式连的是旧地址 | 安装包里的地址是打包时烘的（坑 7）：重新打包发布，或在单台机器的 `desktop-client.json` 里改指 |
+| 客户端本地模式没有模型可选 | 那台机器没跑 provisioning（`settings.yaml` / `.credentials.yaml` 缺失），或网关 token 已吊销 |
+| 打包在 `prepare:runtime` 卡住不动（0 字节） | GitHub 上那份 150 MB 的 electron zip 拉不动（坑 6）：用 `build-client.ps1`，或手工起 `electron-mirror-server.mjs` 并设 `ELECTRON_MIRROR` |
+| 打包报 `client build environment differs … DSH_CLIENT_COMMIT_HASH` | 打包期间仓库被改动了（坑 6）：提交完再重跑 |
 
 ### 手工启动命令（不用脚本时）
 ```powershell

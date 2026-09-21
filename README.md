@@ -191,6 +191,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
 | 全局 skill 库 | 10 个 skill：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`） |
 | 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
+| **模型网关** | 客户端本地模式的模型入口：`/llm/v1`（OpenAI 兼容面），按 token 认账号、限额、入账，用部署自己的 key 转发 | `~\.dsh\plugins\dsh-llm-gateway-local` |
+| **桌面客户端** | 复用上游 `apps/desktop` 加服务器模式 + 定时归档；**装完自带部署地址**，两种模式一个窗口 | 源码 worktree `C:\Users\bestarc\Desktop\dsh-desktop`（分支 `hqz-desktop-client`） |
+| **会话归档 → Obsidian** | 客户端定时导出本机会话 → 上传部署 → 部署用自己的模型精简 → 写进 `obsidian笔记\会话记录\` | `~\.dsh\client\export-session.mjs` + `~\.dsh\plugins\dsh-archive-local` |
+| **客户端安装包分发** | 设置 →「本地插件」一张卡片，`/auth/client-installer` 流式送 `~\.dsh\client\dist` 里最新的 exe | `plugins\dsh-remote-local\lib\index.js` |
 
 ### 11.2 权限模型
 
@@ -228,6 +232,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **executor 打包成单文件 exe（2026-09-16）**：装机成本从「三个 winget + 命令行 + 参数」降到「解压 + 双击」。`build-executor-exe.mjs` 把执行器打成 Node SEA 单文件 `dsh-executor.exe`（约 83 MB），再和**裁剪过的 `node-pty`**（1.6 MB，去掉 `.pdb` 与其它平台预编译）一起压成 `dsh-executor.zip`（约 32 MB），由 `/dsh-subprocess-dispatch/dsh-executor.zip` 分发（流式 + 支持 Range 续传，卡片上是 `/auth/executor-pack`）。exe **不需要客户端装 Node**；原生模块进不了 exe，就解包在它旁边，执行器自己会找（`siblingNodePty`）。**这一条修掉的是一个真 bug**：SEA 下入口按 CommonJS 跑，`import.meta.url` 是 `undefined`，于是 `createRequire` 建不出来 —— 连显式 `--node-pty` 都到不了，症状是终端一开就关（`remote terminal is closed`），而进程执行一切正常。现在 `resolveRequireBase()` 会回退到程序自身目录，并新增 `dsh-executor.exe --self-test` 让客户端机器自己能回答「我能不能开终端」。构建产物在 `plugins/dsh-subprocess-dispatch/dist/`（已 gitignore，可重建）。
 - **机器工具：agent 直接操作客户端电脑（2026-09-17）**：新增两个模型工具（由 `dsh-subprocess-dispatch` 注册）——`machine_list` 列出**执行器在线**的机器（machineId / 主机名 / 平台 / 登录用户 / 主目录），`machine_run` 在指名的那台机器上跑命令并返回 stdout / stderr / 退出码。**不需要绑定、不需要共享**：绑定原本只是「让不指名机器的 shell 工具也能落到那台机器上」的路由，工具直接指名机器，所以既不需要映射也不需要路径翻译。执行器 `hello` 增加 `home` / `user`，`cwd` 缺省时用**那台机器的用户主目录**。没有执行器在线时**明确失败**（列出在线机器），绝不静默改在服务器上跑。取证插件 `plugins/dsh-machine-probe`（挂 `pilot-auth`）与用法见 `docs/plan-client-world-progress.md` §7-D-10，用户操作见 11.6。
 - **修掉 exe 的「第二个自己」（2026-09-17）**：打包形态下**每结束一个终端**都会冒出一个重复的执行器 —— node-pty 用 `child_process.fork()` 起它的 console-list 助手，而 fork 跑的是 `process.execPath`，打包后那就是执行器自己；那个进程忽略未知参数正常启动、连上服务器、报同一个 machineId，服务器把「同一台机器的第二条连接」判为重连并 retire 掉第一条，于是**所有在飞的进程与终端句柄一起失效**（日志指纹：同一份日志出现第二次启动横幅 + `EADDRINUSE` 抢不到 38460）。现在执行器发现自己是那个助手就只跑助手然后退出。修复前后用进程监视器差分：修前 `n=2/3` 且父进程是执行器，修后整轮 `n=1`，`terminal-python-repl` 由 ❌ 转 ✅。细节见 §7-D-11。
+- **模型网关（2026-09-18，客户端世界阶段 1）**：`dsh-llm-gateway-local` 在部署上开一个 OpenAI 兼容的模型面 `/llm/v1`（`/models` 与 `/chat/completions`），**按 token 认账号**，再用部署自己的 DeepSeek key 转发，并把用量记进 `profiles/web-client/llm-gateway-usage.jsonl`。客户端因此**一个 AI key 都不需要**：`settings.yaml` 把 `llm-deepseek` 的 `baseURL` 指到 `<origin>/llm/v1`、`apiKeyEnv` 指到 `HQZ_GATEWAY_TOKEN`。门禁要放行 `/llm` 前缀（token 不是会话 cookie），见 `enable-client-features.ps1`。
+- **会话归档（2026-09-18，阶段 3）**：`~\.dsh\client\export-session.mjs` 把本机会话导成转录（只收 `user/message` 里 **source.kind === 'user'** 的部分——插件注入的上下文动辄几万字，收进来只会把"这次做了什么"淹掉），按账号上传到 `/archive/v1/sessions`；服务端 `plugins\dsh-archive-local` 先落原始转录，再用部署的模型精简成一篇笔记写进 `obsidian笔记\会话记录\`（frontmatter + 中文序号章节 + 索引一行，格式照库里已有的样本做）。同一会话重复归档是**替换**：主题变了连旧笔记一起删，不会留孤儿。台账 `$DSH_HOME\client\archive-state.json` 保证 `--pending` 只传变化过的会话——否则每 6 小时把同一个会话重传一遍，模型精简是真金白银。
+- **桌面客户端（2026-09-21，阶段 2/4）**：在**上游自带的 Electron 桌面端**（`apps/desktop`，MIT）上打补丁，而不是从零写壳——只加三样：**服务器模式**（同一窗口加载部署的 Web UI，带只能由外壳绘制、页面改不掉的模式徽标，菜单里可切换）、**证书信任**（配置了 `certificateSha256` 就只认那一张，否则接受该 origin 的自签证书并报出指纹供钉）、**定时归档**（启动 60 秒后第一次，之后每 6 小时；只认 `$DSH_HOME\client\export-session.mjs`，没这个脚本就整条链路不启用）。客户端**自带 Node 与 dsh**，装机机器不需要任何其他依赖；本地模式全权限无审批（刻意如此，装机时要向用户说明）。真机冒烟：隔离 home 里窗口加载 `dsh-app://app/`、无徽标、中文界面、客户端插件正常挂载；只写"上次选的是服务器模式"、机器上任何地方都没有地址文件时，窗口自己连上 `https://192.168.28.239:8443` 并显示徽标「服务器模式 · HQZ 局域网」。
+- **打包与分发（2026-09-21）**：**装完就自带服务器模式** —— 打包时把部署地址烘进应用清单的 `dshDesktopServerMode`。地址是"当时的部署事实"，所以是**问出来的**：`DSH_DESKTOP_SERVER_ORIGIN` → `…_HOST`(+`_PORT`) → `DSH_LAN_IP`（`start-dsh-lan.cmd` 自己就设这个变量）→ 本机网卡（私网段优先），走到最后一步时逐个候选地址请求 `https://<地址>:8443/auth/me`，**谁答用谁**，都不答就保留第一个候选并在日志里 WARNING（不因此让构建失败）。安装包上线后由设置 →「本地插件」的「桌面客户端（可选）」卡片直接分发（`$DSH_HOME\client\dist` 里最新的 `.exe`，列表每次请求现读，**发新版 = 把新 exe 丢进目录**）。服务端一条命令：`~\.dsh\build-client.ps1`（备镜像 → 构建 → 发布 → 核对哈希）。
 
 ### 11.4 运维提示
 
@@ -238,7 +246,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **回滚（executor 出问题时一键退回纯服务器形态）**：把 `profiles/<name>/cordis.patch.yml` 里的 `subprocess-dispatch` 行改回 `disabled: true`、并去掉 `subprocess` 那一行的 `disabled: true`，重启即恢复成"全部在服务器执行"，同时机器工具也随之消失（它们由这个插件注册）。数据不动，重新启用后一切照旧。**这是刻意的设计**：一个改动只碰一个组合文件，回滚不需要动数据。
 - **删除账号时留意 `tokens:`**：删账号会同时吊销它的绑定与签发的 executor token，但 `subprocess-dispatch` 配置里**写死的 token 属于配置层**，不走账号库 —— 删账号时记得把配置里对应那一行也删掉，否则那台机器仍能认证。
 - 完整迁移/备份：见 `MIGRATION.md`。
-- **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。**
+- **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。** 另外：脚本**第 21 行的用法示例**里还留着一个 22 位的真口令（`-SmbPassword '<22 字符>'`），它出现在 7 个未推送的提交里 —— push 之前一并换成占位符。
+- **客户端构建与发布（2026-09-21）**：服务端一条命令 `~\.dsh\build-client.ps1` —— 备好本机 Electron 镜像 → 跑 `pnpm run package:desktop:win:x64:unsigned` → 把新产物复制进 `~\.dsh\client\dist` 并核对哈希。**打包期间不要动 git 仓库**：客户端构建把 `DSH_CLIENT_COMMIT_HASH` 记进构件记录，`release:pack` 会再比一次，中途提交会让打包以 `client build environment differs from the required artifact profile: DSH_CLIENT_COMMIT_HASH` 中止（构建约 15 分钟，先提交完再开跑）。
+- **客户端相关的三处目录**：`~\.dsh\client\`（provisioning 脚本 + 导会话脚本 + 镜像服务器 + `dist\` 安装包，`dist` 已 gitignore）、桌面 worktree `C:\Users\bestarc\Desktop\dsh-desktop`（客户端源码与构建现场，**引擎 checkout 仍是零改动**）、`~\.dsh\plugins\dsh-remote-local`（设置页「本地插件」那张下载卡片与 `/auth/client-installer` 路由所在）。客户端机器上的数据不在这里：`%USERPROFILE%\.dsh` 与 `%APPDATA%\@deepseek-ai\dsh-desktop` 各自独立，**服务器迁移不会带上它们**。
+- **桌面 profile 由桌面应用独占**：`$DSH_HOME\profiles\desktop`（bundle 列表 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`，自包含、无 `link:` 依赖），应用启动时只创建缺失文件、**不覆盖已存在的**，CLI 也 boot 不了这个 profile。所以先放 provisioning 的文件是安全的。
 
 ### 11.5 全局 skill 与加载顺序
 
@@ -309,3 +320,27 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 
 **如果要用 Figma（MCP）**：需要**先在你自己的电脑上打开 Figma 桌面 App，并在 Dev Mode 里手动启用 MCP server**（默认端口 3845）。这一步没有 API 可以代劳，必须人工做一次；启用后 agent 才能通过服务器转发访问它。服务端的转发白名单里已经包含 3845。
+
+### 11.7 桌面客户端：局域网里那台电脑上的应用
+
+**一句话**：在那台电脑上装一个应用，它要么**当本机 agent 用**（工具直接操作那台机器上的文件和软件，模型请求打到本部署的网关），要么**当本部署的窗口用**（加载 `https://<服务器>:8443`，一切在服务器上）。两种模式是同一个窗口、同一份文档位置，菜单里切换。
+
+**怎么拿到**：在那台机器的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「桌面客户端（可选）」那张卡片** → 点「**下载**」拿到 `deepseek-harness-<版本>-win-x64.exe`（约 293 MB）。
+
+**怎么装**：双击。安装器**只装当前用户**（不需要管理员），安装目录可改，装完默认勾选"立即启动"。**装机机器不需要预装任何东西** —— Node、dsh、生产依赖全在安装包里；归档脚本也是用应用自带的 Node 跑的。
+
+**装完怎么用**：
+
+| 模式 | 跑在哪 | 模型从哪来 | 怎么认 |
+|---|---|---|---|
+| **本地模式**（默认） | **这台机器**：agent 循环在本机，工具直接操作本机文件与软件 | 本部署的模型网关（`<origin>/llm/v1`） | 没有徽标 |
+| **服务器模式** | 服务器：客户端只是一个窗口 | 服务器上的循环 | 窗口顶部黄色徽标「服务器模式 · 部署名」 |
+
+- **切到服务器模式**：菜单 **模式 → 服务器模式**（或在服务器模式里点徽标上的「切回本地」）。选中的模式记在 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-mode.json`，重启后保持。
+- **服务器模式要登录**：窗口加载的是部署自己的 Web UI，第一次会让你输账号密码 —— 跟浏览器打开 `https://<服务器>:8443` 是同一件事。
+- **装完自带部署地址**：打包时地址已经烘进应用清单，所以**不需要任何配置**就能用服务器模式。要让某一台机器连**别的**部署，在它的 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-client.json` 里写 `{ "server": { "origin": "https://…:8443", "label": "…" } }`（或设 `DSH_DESKTOP_SERVER_MODE`）。
+- **本地模式要有模型，就要 provisioning**：在那台机器上跑一次 `~\.dsh\client\provision-client.ps1`（把 `client\` 整个目录拷过去），它写四样东西到 `%USERPROFILE%\.dsh` —— `settings.yaml`（网关端点与模型清单）、`.credentials.yaml`（网关 token 与归档 token）、`archive.json`、`profiles\desktop\cordis.patch.yml` —— 外加第五样 `desktop-client.json` 把服务器模式也一并配好。**客户端没有任何 AI key**：模型请求带网关 token，网关按 token 认账号、限额、入账，再用部署自己的 key 转发。`-WhatIfOnly` 先看一遍。本地模式默认**全权限、无审批**（`danger-full-access`）—— 这是刻意的：agent 以该 Windows 用户身份直接操作这台机器，装机时要向用户说明。
+- **会话会自动归档**：应用启动约 60 秒后跑第一次，之后每 6 小时一次（菜单里也有「立即归档会话」）。启用条件是**两件事同时成立**：`%USERPROFILE%\.dsh\client\export-session.mjs` 存在（provisioning 放进去的）**且**归档地址已配 —— 只装了应用、没配归档的机器不会自己去连任何地方。归档 → 部署用模型精简 → 写进服务器的 `obsidian笔记\会话记录\`。
+- **出错了会弹一个原生框**：上面是「应用无法启动或已意外停止」与**有界的**错误末尾，按钮是 退出 / 重启 / 禁用第三方插件、备份 profile patch 并重启。看到它就照按钮做；括号里的原始错误通常已经说明是哪一行配置不对。
+
+> **客户端不连服务器也能用**（本地模式与服务器模式是两件事）：不 provisioning 就只有界面没有模型；不想让这台机器上传会话，就别给 `-ArchiveToken`。
