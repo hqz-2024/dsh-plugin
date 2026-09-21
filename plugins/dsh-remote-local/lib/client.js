@@ -957,6 +957,48 @@ window.__ModuleLoader__.load({
 							row.style.display = "";
 						}
 					}
+					// LOCAL FORK (2026-09-18): hiding only the row left the workspace's
+					// GROUP HEADER on screen (the sidebar kept listing every forbidden
+					// workspace by name), and the New-Session workspace picker — whose
+					// entries are menu rows, not tree rows — was never covered at all.
+					// Both are matched here by the titles /auth/me already marks foreign.
+					const forbidden = new Set([...foreign, ...hiddenWs]);
+					if (forbidden.size > 0) {
+						// A group section with no visible row goes with its rows.
+						for (const tree of document.querySelectorAll('[role="tree"]')) {
+							for (const section of tree.children) {
+								const text = section.textContent || "";
+								let names = false;
+								for (const title of forbidden) { if (text.includes(title)) { names = true; break; } }
+								if (!names) continue;
+								const visibleRow = [...section.querySelectorAll('[role="treeitem"]')]
+									.some((row) => row.style.display !== "none" && row.getAttribute("data-dsh-hidden") !== "1");
+								if (!visibleRow) {
+									section.style.display = "none";
+									section.setAttribute("data-dsh-hidden", "1");
+								} else if (section.getAttribute("data-dsh-hidden") === "1") {
+									section.removeAttribute("data-dsh-hidden");
+									section.style.display = "";
+								}
+							}
+						}
+						// Workspace lists outside the tree (the picker menu) name the
+						// workspace in the entry's own text; an entry that also names an
+						// allowed workspace is left alone.
+						const allowedTitles = rows.filter((w) => w.allowed !== false).map((w) => w.title);
+						for (const menu of document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"]')) {
+							for (const item of menu.querySelectorAll('[role="menuitem"], li, button, a')) {
+								const text = (item.textContent || "").trim();
+								if (text.length === 0 || text.length > 120) continue;
+								let forbiddenHit = false;
+								for (const title of forbidden) { if (text === title || text.startsWith(title)) { forbiddenHit = true; break; } }
+								if (!forbiddenHit) continue;
+								if (allowedTitles.some((title) => text.includes(title))) continue;
+								item.style.display = "none";
+								item.setAttribute("data-dsh-hidden", "1");
+							}
+						}
+					}
 				});
 			};
 			apply();

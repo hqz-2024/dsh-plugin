@@ -1,0 +1,4 @@
+# Overlay for check-module-identity.mjs: mounts the diagnostic row.
+- insert:
+    - id: module-identity-check
+      name: 'file:///C:/Users/bestarc/.dsh/check-module-identity.mjs'

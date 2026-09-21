@@ -1784,7 +1784,17 @@ window.__ModuleLoader__.load({
 							const [open, setOpen] = react.useState(panelStore.open);
 							react.useEffect(() => panelSubscribe(() => setOpen(panelStore.open)), []);
 							const sesState = props.useSessions((s) => s);
-							const currentId = sesState ? sesState.current : undefined;
+							// LOCAL FORK (2026-09-18): engine 0.1.6 removed `SessionListState.current`, so
+							// reading it left `currentId` undefined and every lookup below missed — the
+							// panel silently fell through to `items[0]`, i.e. whichever workspace the
+							// registry lists first (smbtest in this deployment), no matter which Session
+							// was open. The engine's own sidebar resolves the open Session by retention
+							// instead (packages/client/ui-workspace/src/client/tree.ts `mainSessionId`),
+							// so the same rule is applied here; `s.current` stays first so an older
+							// engine still works.
+							const currentId = sesState
+								? (sesState.current ?? Object.values(sesState.byId || {}).find((s) => s && s.retainedBy && (s.retainedBy.mainView ?? 0) > 0)?.id)
+								: undefined;
 							const currentSummary = currentId && sesState.byId ? sesState.byId[currentId] : undefined;
 							const cwd = currentSummary ? currentSummary.cwd : undefined;
 							const wsState = props.useWorkspaces((s) => s);

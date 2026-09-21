@@ -26,6 +26,7 @@
  *    `guest` is additionally read-only.
  */
 import z from "@deepseek-ai/schemastery";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
 import { createGzip } from "node:zlib";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -72,6 +73,15 @@ const GATED = Symbol("dsh-remote.gated");
  * Internal implementation detail; not a stable API.
  */
 const ORIGINAL_HOST = Symbol("dsh-remote.originalHost");
+
+/**
+ * The account an in-flight request acts as, for service wrappers that must
+ * filter by caller without depending on the Remote wire format: engine 0.1.6
+ * validates every call against its generated descriptor (undeclared argument
+ * names are rejected; unknown decoded fields are dropped), so a value stamped
+ * into the request body can never reach the service.
+ */
+const actingAccount = new AsyncLocalStorage();
 
 /** wrapped -> original, module-level so hot re-application can unwrap. */
 const wrappedOriginals = new WeakMap();
@@ -740,8 +750,12 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			const origList = controller.list.bind(controller);
 			controller.list = async (request, signal) => {
 				const result = await origList(request, signal);
-				if (request && typeof request.scopeUser === "string" && result && Array.isArray(result.items)) {
-					result.items = result.items.filter((item) => isVisible(request.scopeUser, item.sessionId, item.cwd));
+				const actor = actingAccount.getStore();
+				const owner = request && typeof request.scopeUser === "string" ? request.scopeUser : actor?.username;
+				if (typeof owner === "string" && actor?.role !== "admin" && result && Array.isArray(result.items)) {
+					const total = result.items.length;
+					result.items = result.items.filter((item) => isVisible(owner, item.sessionId, item.cwd));
+					diag("session.list filtered " + total + " -> " + result.items.length + " for " + owner);
 				}
 				return result;
 			};
@@ -1144,7 +1158,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 	// title via the workspace registry) sets the created session's workspace.
 	// Server-side authority: mapped accounts are rewritten even when the
 	// client asked for a different preset/workspace.
-		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select" && method !== "session.list") return null; 			const mapping = effectiveRoleMap()[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "session.list") { 				const request = { ...(args.request ?? {}), scopeUser: username }; 				args.request = request; 				changed = true; 			} else if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspaces.length > 0) { 				const registry = ctx.get("workspaceRegistry"); 				const allowed = registry?.list?.().filter((w) => mapping.workspaces.indexOf(w.title) !== -1) ?? []; 				if (allowed.length > 0) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					const chosen = allowed.find((w) => w.id === request.workspaceId) ?? allowed[0]; if (request.workspaceId !== chosen.id) { request.workspaceId = chosen.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
+		const mapResolver = (username, method, envelope) => { 			if (method !== "session.create" && method !== "agentPresets.select") return null; 			const mapping = effectiveRoleMap()[username]; 			diag("gate " + method + " user=" + username + " mapping=" + JSON.stringify(mapping ?? null)); 			if (mapping === undefined) return null; 			const args = { ...(envelope.payload?.args ?? {}) }; 			let changed = false; 			if (method === "agentPresets.select" && mapping.preset && args.agentPreset !== mapping.preset) { 				args.agentPreset = mapping.preset; 				changed = true; 			} else if (method === "session.create" && mapping.workspaces.length > 0) { 				const registry = ctx.get("workspaceRegistry"); 				const allowed = registry?.list?.().filter((w) => mapping.workspaces.indexOf(w.title) !== -1) ?? []; 				if (allowed.length > 0) { 					const request = { ...(args.request ?? {}) }; 					let reqChanged = false; 					const chosen = allowed.find((w) => w.id === request.workspaceId) ?? allowed[0]; if (request.workspaceId !== chosen.id) { request.workspaceId = chosen.id; delete request.cwd; reqChanged = true; } 					if (mapping.preset && request.agentPreset !== mapping.preset) { request.agentPreset = mapping.preset; reqChanged = true; } 					if (reqChanged) { args.request = request; changed = true; } 				} 			} 			if (!changed) return null; 				diag("rewritten " + method + " for " + username + ": " + JSON.stringify(args)); 			return Buffer.from(JSON.stringify({ ...envelope, payload: { ...(envelope.payload ?? {}), args } }), "utf8"); 		};
 	const roleGate = async (req, role, username) => {
 		const pathname = pathnameOf(req);
 		const body = req.method === "POST"
@@ -1204,6 +1218,20 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 			}
 			normalizeForFence(req);
 			const gatePath = pathnameOf(req);
+			// Established here; service wrappers read it (see actingAccount).
+			return actingAccount.run({ username: verdict.user.username, role: verdict.user.role },
+				() => dispatchAuthenticated(req, outRes, verdict, gatePath));
+		};
+		/**
+		 * Authenticated remainder of the gate: the original body, run inside the
+		 * acting account's context so service wrappers can identify the caller.
+		 * @param req - the inbound request, body possibly already consumed.
+		 * @param outRes - response sink (gzip-wrapped when configured).
+		 * @param verdict - resolved authentication verdict.
+		 * @param gatePath - pathname of the request.
+		 * @returns after the route handler for this request has been invoked.
+		 */
+		const dispatchAuthenticated = async (req, outRes, verdict, gatePath) => {
 			// Usage dashboard data channel is admin-only: refuse every non-admin
 			// request outright, regardless of enforceRoles. The panel's UI page
 			// already lives behind the settings gate; this hard-gates its wire
