@@ -7,7 +7,8 @@
     "dsh-subprocess-dispatch": "link:../../plugins/dsh-subprocess-dispatch",
     "dsh-subprocess-probe": "link:../../plugins/dsh-subprocess-probe",
     "dsh-machine-probe": "link:../../plugins/dsh-machine-probe",
-    "dsh-llm-gateway-local": "link:../../plugins/dsh-llm-gateway-local"
+    "dsh-llm-gateway-local": "link:../../plugins/dsh-llm-gateway-local",
+    "dsh-archive-local": "link:../../plugins/dsh-archive-local"
   },
   "dsh": {
     "profile": {
@@ -19,7 +20,8 @@
         "dsh-subprocess-dispatch",
         "dsh-subprocess-probe",
         "dsh-machine-probe",
-        "dsh-llm-gateway-local"
+        "dsh-llm-gateway-local",
+        "dsh-archive-local"
       ],
       "patchReload": "live"
     }

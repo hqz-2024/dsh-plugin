@@ -1,0 +1,36 @@
+# dsh-archive-local bundle patch — the deployment's session-archive receiver.
+#
+# Inserted DISABLED. A profile opts in by enabling this row and filling the
+# config below, AND by letting the gate pass the path through (the `remote`
+# row's `publicPrefixes`) — a client application holds a token, not a session
+# cookie, so the session gate cannot be what authenticates it.
+- insert:
+    - id: archive
+      name: 'dsh-archive-local'
+      disabled: true
+      config:
+        # Mount point. The receiver serves:
+        #   POST <path>/v1/sessions   (one exported conversation)
+        path: '/archive'
+        # The Obsidian vault. Notes and the index live under `sessionDir` only;
+        # nothing else in the vault is read or written.
+        vaultDir: 'C:\Users\bestarc\obsidian笔记'
+        sessionDir: '会话记录'
+        indexFile: '会话记录索引.md'
+        # Raw transcripts land here first, per account, before summarization —
+        # so a failed model call never loses an archive it already received.
+        storeDir: ''
+        # Summarization route, using the deployment's own credentials. The model
+        # must answer with a single JSON object; see lib/compose.js.
+        provider: 'deepseek-official'
+        model: 'deepseek-v4-flash'
+        # Client token -> account. Same shape as the gateway and executor tokens.
+        tokens: {}
+        # Longest transcript handed to the model; the middle is dropped first.
+        maxTranscriptChars: 400000
+        # Largest accepted request body.
+        maxRequestBytes: 8388608
+        # Summarization deadline.
+        timeoutMs: 180000
+        # One JSON line per accepted archive. Empty disables the journal.
+        logPath: ''

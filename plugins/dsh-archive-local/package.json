@@ -1,0 +1,13 @@
+{
+  "name": "dsh-archive-local",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Session archive receiver: stores a client-exported transcript, summarizes it through the deployment's own model route, and writes the note plus its index row into the Obsidian vault.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

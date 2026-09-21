@@ -43,6 +43,7 @@
       - /client-auth
       - /client-relay
       - /llm
+      - /archive
     roleMap:
       # 单工作区授权的普通账号：验「授权真的生效」（它不该看到别的工作区），
       # 以及「机器不属于任何账号也能被它绑定」。
@@ -144,3 +145,22 @@
     maxConcurrentPerAccount: 4
     dailyTokenLimit: 0
     usagePath: !!js dshHomePath('profiles/pilot-auth/llm-gateway-usage.jsonl')
+
+# ── 会话归档端（阶段 3）───────────────────────────────────────────────────────
+# 客户端把本机会话导出成转录上传到这里；归档端落原文、用部署的模型精简、
+# 写进 Obsidian。`/archive` 要同时在门禁的 publicPrefixes 里，否则请求在
+# 到达处理器之前就被 403 拦掉（客户端拿的是 token，不是会话 cookie）。
+- id: archive
+  disabled: false
+  config:
+    path: '/archive'
+    vaultDir: !!js dshHomePath('profiles/pilot-auth/archive-vault')
+    sessionDir: '会话记录'
+    indexFile: '会话记录索引.md'
+    storeDir: !!js dshHomePath('profiles/pilot-auth/archive-raw')
+    provider: 'deepseek-official'
+    model: 'deepseek-v4-flash'
+    tokens:
+      pilot-archive-token-0123456789abcdef: probe-admin
+    logPath: !!js dshHomePath('profiles/pilot-auth/archive-usage.jsonl')
+
