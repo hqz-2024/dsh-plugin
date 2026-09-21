@@ -84,3 +84,6 @@ profiles/web-client/probe-result.jsonl
 /127.0.0.1
 profiles/pilot*/machine-probe.jsonl
 profiles/pilot*/llm-gateway-usage.jsonl
+
+# 客户端安装包是构建产物（293 MB），由设置页「本地插件」直接分发，不进仓库
+client/dist/

@@ -2031,7 +2031,45 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		} catch { /* ignore */ }
 		json(res, 200, { ok: true, workspaces, presets });
 	};
-	const handleLocalPlugins = async (req, res) => {
+		// 设置页「本地插件」里的桌面客户端安装包。
+	//
+	// 目录和文件都由部署决定：$DSH_HOME/client/dist 下最新的那个 .exe 就是当前分发的版本，
+	// 所以"发新版本"= 把新 exe 丢进目录，不改代码、不重启进程。目录里没有 exe 时这一项整个
+	// 不出现 —— 没构建过客户端的部署不该在设置页里留一个点不动的下载按钮。
+	const CLIENT_DIST_ENV = "DSH_CLIENT_DIST";
+	const clientDistDir = () => {
+		const configured = String(process.env[CLIENT_DIST_ENV] ?? "").trim();
+		return configured === "" ? join(dshHomePath(), "client", "dist") : configured;
+	};
+	const clientInstaller = () => {
+		let names = [];
+		try { names = readdirSync(clientDistDir()); } catch { return null; }
+		let newest = null;
+		for (const name of names) {
+			if (!/\.exe$/i.test(name)) continue;
+			const path = join(clientDistDir(), name);
+			let stat = null;
+			try { stat = statSync(path); } catch { continue; }
+			if (!stat.isFile()) continue;
+			if (newest === null || stat.mtimeMs > newest.mtimeMs) newest = { path, name, size: stat.size, mtimeMs: stat.mtimeMs };
+		}
+		return newest;
+	};
+	const clientInstallerEntries = () => {
+		const found = clientInstaller();
+		if (found === null) return [];
+		return [{
+			id: "desktop-client",
+			name: "桌面客户端（可选）",
+			description: `${found.name} · ${(found.size / 1048576).toFixed(1)} MB，装在这台 Windows 电脑上。`
+				+ "自带运行时，本机不需要预装 Node 或 dsh；装完可用服务器模式（用本部署的界面）或"
+				+ "本地模式（agent 跑在本机，模型走部署的网关）。",
+			downloadUrl: "/auth/client-installer",
+			filename: found.name
+		}];
+	};
+
+const handleLocalPlugins = async (req, res) => {
 		if (req.method !== "GET") { denyJson(res, 405, "method not allowed"); return; }
 		const verdict = requireAuth(req);
 		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
@@ -2063,7 +2101,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 				description: "本地预览视频 + 人工校对/修正 manifest.json 的桌面工具（需与工作空间共享文件）。",
 				downloadUrl: "/dsh-video-studio/manifest-tool",
 				filename: "manifest-tool.exe"
-			}],
+			}, ...clientInstallerEntries()],
 			token,
 			connected
 		});
@@ -2133,6 +2171,29 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		res.on("close", () => { stream.destroy(); });
 		stream.pipe(res);
 	};
+		// 流式送安装包：293 MB 走内存会白白占一份，直接 pipe 文件流。
+	const handleClientInstaller = async (req, res) => {
+		if (req.method !== "GET" && req.method !== "HEAD") { denyJson(res, 405, "method not allowed"); return; }
+		const verdict = requireAuth(req);
+		if (!verdict.ok) { denyJson(res, 401, "unauthorized"); return; }
+		const found = clientInstaller();
+		if (found === null) {
+			denyJson(res, 404, `客户端安装包不在 ${clientDistDir()}：把 exe 放进去即可`);
+			return;
+		}
+		res.writeHead(200, {
+			"Content-Type": "application/octet-stream",
+			"Content-Disposition": `attachment; filename="${found.name}"`,
+			"Content-Length": found.size,
+			"Cache-Control": "no-store"
+		});
+		if (req.method === "HEAD") { res.end(); return; }
+		const stream = createReadStream(found.path);
+		stream.on("error", () => { res.destroy(); });
+		res.on("close", () => { stream.destroy(); });
+		stream.pipe(res);
+	};
+
 	const handleBootstrap = async (req, res) => {
 		if (req.method !== "POST") {
 			denyJson(res, 405, "method not allowed");
@@ -2637,6 +2698,7 @@ ctx.effect(() => () => { disposeOwnership(); }, "dsh-remote: sessionOwnership di
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/local-plugins", handler: handleLocalPlugins }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/executor-launcher", handler: handleExecutorLauncher }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/executor-pack", handler: handleExecutorPack }));
+		disposers.push(originalRegister({ kind: "exact", path: "/auth/client-installer", handler: handleClientInstaller }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/login", handler: handleMfaLogin }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/setup", handler: handleMfaSetup }));
 		disposers.push(originalRegister({ kind: "exact", path: "/auth/mfa/verify", handler: handleMfaVerify }));
