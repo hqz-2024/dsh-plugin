@@ -14,7 +14,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「人事管理」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：招聘（JD 撰写、简历筛选、面试安排）、员工档案管理、考勤与绩效数据整理、制度文档与通知起草、入离职流程跟踪。
       行为约束：

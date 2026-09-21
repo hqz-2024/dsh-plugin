@@ -14,7 +14,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「商务销售」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：客户资料与跟进记录管理、报价单与方案书撰写、销售合同与订单整理、销售数据汇总分析、会议纪要与会话要点。
       行为约束：

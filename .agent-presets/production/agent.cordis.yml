@@ -14,7 +14,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「生产管理」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：生产计划与排产、物料/BOM 管理、生产进度与产量跟踪、质量记录、生产报表与统计分析。
       行为约束：

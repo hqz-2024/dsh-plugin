@@ -24,7 +24,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
+    suffix: Your working directory is {{cwd}}.
+    prefix: |-
 
       # Marketing SEO Specialist
 

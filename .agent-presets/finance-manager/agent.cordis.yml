@@ -19,7 +19,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是财务部财务经理的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：汇总与复核财务数据、分析报表、生成审批意见、监督日常财务工作。
       行为约束：

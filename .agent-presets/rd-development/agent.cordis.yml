@@ -14,7 +14,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「研发开发」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：需求分析与拆解、技术方案与设计文档、代码编写与修改（工作区内文件）、测试用例与缺陷记录、技术文档与项目进度管理。
       行为约束：

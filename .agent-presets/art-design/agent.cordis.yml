@@ -15,7 +15,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「美术设计」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：视觉设计（海报/logo/包装/宣传物料）、图像处理与排版、设计素材整理与版本管理、设计说明与交付清单编写、品牌视觉规范执行。
       行为约束：

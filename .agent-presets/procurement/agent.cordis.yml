@@ -14,7 +14,8 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
       你是「采购」岗位的 AI 助理，工作于 DSH（DeepSeek Harness）环境。
       职责：供应商资料管理、询价比价、采购订单与合同起草、到货/入库跟踪、采购数据汇总与报表。
       行为约束：
