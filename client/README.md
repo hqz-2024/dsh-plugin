@@ -14,9 +14,10 @@
 两种模式的差别只有"文档 + 谁来跑循环"。工具、工作区、会话在本地模式下全在本机，
 所以本机 agent 能直接操作本机文件与软件，不需要执行器、不需要共享。
 
-## 这台机器要放的四样东西
+## 这台机器要放的五样东西
 
-`provision-client.ps1` 会把它们写进目标 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`）：
+`provision-client.ps1` 会把它们写好：前四样落在 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`），
+第五样落在桌面应用的浏览器数据目录（默认 `%APPDATA%\@deepseek-ai\dsh-desktop`）：
 
 | 文件 | 作用 | 为什么必须在这台机器上 |
 |---|---|---|
@@ -24,6 +25,7 @@
 | `.credentials.yaml` | 网关 token（`HQZ_GATEWAY_TOKEN`）与归档 token（`HQZ_ARCHIVE_TOKEN`） | 这是客户端仅有的凭据；真 AI key 永远不进客户端 |
 | `archive.json` | 会话归档端的地址 | 归档端与网关同属一个部署 |
 | `profiles/desktop/cordis.patch.yml` | 桌面 profile 的补丁层（默认留空） | 桌面应用独占这个 profile，补丁层是它唯一的组合入口 |
+| `desktop-client.json` | **服务器模式**要连的部署地址（`{ "server": { "origin": …, "label": … } }`） | 应用按 `环境变量 → 这个文件 → 安装包里的默认值` 取地址，这一层是本机的覆写 |
 
 `profiles/desktop/` 本身由桌面应用首次启动时创建（bundle 列表是 `@deepseek-ai/dsh-base` +
 `@deepseek-ai/dsh-web-app`，自包含、没有 `link:` 依赖），**应用不会覆盖已存在的文件**，
@@ -32,14 +34,33 @@
 ## 用法
 
 ```powershell
-# 在一台客户端电脑上（管理员或当前用户均可）
+# 在一台客户端电脑上（管理员或当前用户均可；Windows PowerShell 5.1 与 pwsh 7 都能跑）
 .\provision-client.ps1 `
   -GatewayOrigin 'https://192.168.28.239:8443' `
-  -GatewayToken  '<管理台签发的网关 token>'
+  -GatewayToken  '<管理台签发的网关 token>' `
+  -ArchiveToken  '<归档 token>' `
+  -DesktopLabel  'HQZ 局域网'
 ```
 
-`-HomeDir` 省略时用 `%USERPROFILE%\.dsh`；`-WhatIfOnly` 只打印将要写入的内容。
-先跑 `-WhatIfOnly` 看一眼再落盘。
+一条命令配好两种模式：本地模式拿 `settings.yaml` + `.credentials.yaml`；服务器模式拿
+`desktop-client.json`（`origin` 省略时与 `-GatewayOrigin` 同一个部署）。
+
+| 参数 | 作用 |
+|---|---|
+| `-HomeDir` | 目标 `$DSH_HOME`；省略时 `%USERPROFILE%\.dsh` |
+| `-DesktopServerOrigin` | 服务器模式连别处（默认与网关同源） |
+| `-DesktopLabel` | 服务器模式窗口标题与徽标上的名字 |
+| `-DesktopUserDataDir` | 应用的浏览器数据目录（默认 `%APPDATA%\@deepseek-ai\dsh-desktop`） |
+| `-SkipDesktopServer` | 不写 `desktop-client.json`（例如安装包里已经烘好了别的地址） |
+| `-WhatIfOnly` | 只打印将要写入的内容 |
+
+先跑 `-WhatIfOnly` 看一眼再落盘。覆盖 `settings.yaml` 或 `desktop-client.json` 之前，
+各自会留一份 `*.bak-<时间戳>`。
+
+**安装包里可能已经烘好了地址**：打包时 `.env.windows` 里的 `DSH_DESKTOP_SERVER_MODE=auto`
+会让构建机逐个候选地址问一次 `https://<地址>:8443/auth/me`，谁答就把谁写进应用清单的
+`dshDesktopServerMode`。那样客户端**装完就自带服务器模式**，本脚本只在需要把某一台机器
+改指到别处时才非跑不可。
 
 **网关 token 从哪来**：见 `README.md` 的"模型网关"一节。当前部署里 token 写在
 `profiles/<profile>/cordis.patch.yml` 的 `llm-gateway.config.tokens` 里（阶段 1 的形态）；

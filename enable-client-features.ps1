@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 把一个 profile 变成"客户端可用的部署"：开通模型网关与会话归档端，并放行它们的前缀。
 
@@ -50,6 +50,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# 读文件一律显式按 UTF-8：Windows PowerShell 5.1 的 Get-Content 对没有 BOM 的文件
+# 用系统代码页解码，中文注释会变成乱码 —— 而乱码会让 3 字节的汉字与后一个字节配对，
+# 行结构跟着错位（连 publicPrefixes: 这种纯 ASCII 行都可能被并进上一行）。
+function Read-Utf8Text([string]$Path) {
+	return [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false)))
+}
+function Read-Utf8Lines([string]$Path) {
+	return [System.IO.File]::ReadAllLines($Path, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 $profileDir = Join-Path $DshHome "profiles\$Profile"
 $manifestPath = Join-Path $profileDir 'package.json'
 $patchPath = Join-Path $profileDir 'cordis.patch.yml'
@@ -95,7 +105,7 @@ function Get-ExistingToken([System.Collections.Generic.List[string]]$source, [st
 	return ''
 }
 
-$lines = [System.Collections.Generic.List[string]](Get-Content $patchPath)
+$lines = [System.Collections.Generic.List[string]](Read-Utf8Lines $patchPath)
 
 $existingGatewayToken = if ($wantGateway) { Get-ExistingToken $lines 'llm-gateway' } else { '' }
 $existingArchiveToken = if ($wantArchive) { Get-ExistingToken $lines 'archive' } else { '' }
@@ -108,7 +118,7 @@ if ($wantArchive -and $ArchiveToken.Trim() -eq '') {
 
 # ── 1. package.json：依赖 + bundles ──────────────────────────────────────────
 
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$manifest = Read-Utf8Text $manifestPath | ConvertFrom-Json
 if ($null -eq $manifest.dependencies) { $manifest | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{}) -Force }
 $bundles = @($manifest.dsh.profile.bundles)
 $dependencies = $manifest.dependencies
@@ -200,7 +210,7 @@ if ($wantArchive) {
 
 $next = ($head + $block) -join "`n"
 $next += "`n"
-$current = (Get-Content $patchPath -Raw)
+$current = Read-Utf8Text $patchPath
 $patchChanged = ($next -ne $current)
 
 # ── 3. node_modules 链接：link: 依赖要真的挂上才算数 ─────────────────────────
