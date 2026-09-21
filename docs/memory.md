@@ -3,7 +3,7 @@
 > **这份文件是"现在是什么状态、下一步做什么"的唯一入口。** 每次重要变更后更新它（改完顺手把"最后更新"时间改掉）。
 > 细节分流：实现与验收证据 → `docs/plan-client-world-progress.md`；两条路线的完整评估 → `docs/plan-two-paths.md`；用户手册 → `README.md`；铁律与实现级陷阱 → `AGENTS.md`。
 >
-> 最后更新：**2026-09-18 11:05（+08:00）**（阶段 1 完成，结论见 §5）
+> 最后更新：**2026-09-21 14:45（+08:00）**（线上已开通模型网关与会话归档；客户端安装包版本确定为 `0.1.6-alpha.2.20260921.1`）
 
 ---
 
@@ -11,10 +11,17 @@
 
 - 部署在 `~/.dsh`，公开仓库 `github.com/hqz-2024/dsh-plugin`。
 - 工作分支是 **`client-world`**；`main` = `origin/main` = `73ad10f`（**不要再往 main 提交**）。
-- 线上实例（3080，profile `web-client`）**已于 2026-09-17 17:45 重启**，`machine_list` / `machine_run` 已注册可用（`profiles/web-client/dispatch-trace.jsonl` 里有 `machine-tools-registered`）。
-- 服务端工作区、文件树上传下载、权限、管理台、浏览器直接用服务端 agent —— **全部照旧可用**。
-- **下一步：执行 `docs/plan-two-paths.md` 的计划 B（双模式客户端应用），先做阶段 0（打包 spike）与阶段 1（模型网关 + 客户端 profile）。**
-- 执行器分发包已按最新源码重建：`plugins/dsh-subprocess-dispatch/dist/{dsh-executor.exe,dsh-executor.zip}`（gitignored，可重建）。
+- 线上实例（3080，profile `web-client`）跑 `dsh-v0.1.6-alpha.2` 构建产物。
+  **2026-09-21 已开通模型网关与会话归档端**（`enable-client-features.ps1 -Apply`），
+  **没有重启**——两条链路实测 200 / 400（处理器原话），`/`、`/api`、`/client-auth` 原样。
+  坑与判读见 `docs/plan-two-paths.md §3.3` 与 §3.3.1。
+- **阶段 2、阶段 3 完成**（双模式客户端外壳 + 会话归档流水线，都已真机验证）；
+  桌面端在独立工作树 `Desktop\dsh-desktop`（分支 `hqz-desktop-client`），引擎 checkout 零改动。
+- **阶段 4**：客户端安装包版本已由用户确认为 **`0.1.6-alpha.2.20260921.1`**，
+  `pnpm run package:desktop:win:x64:unsigned` 已启动。**自更新不做**（用户已定）——
+  它需要 EV 代码签名证书，unsigned 构建构造上不带更新面（见 §4.2）。
+- 客户端上机：`client\provision-client.ps1` 写模型端点、两个 token、归档地址；
+  归档由桌面端定时自动跑（`plan-two-paths.md §3.4`）。
 
 ---
 
@@ -170,6 +177,28 @@
 
 **下一步**：把 0.1.5-rc.2 开成 worktree（引擎 checkout 保持零改动）→ 装依赖 → 先跑起上游桌面端 → 再加服务器模式补丁。
 
+#### 阶段 2 结论（2026-09-21，**已完成**：双模式外壳 + 打包客户端冒烟通过）
+
+全部改动在 worktree `C:\Users\bestarc\Desktop\dsh-desktop`（分支 `hqz-desktop-client`），引擎 checkout 保持零改动。
+
+| 能力 | 落在哪 | 一句话 |
+|---|---|---|
+| 双模式 | `apps/desktop/src/server-mode.ts` | 本地 `dsh-app://app/`（内置 Host）与服务器 `https://<部署>:8443` 是同一窗口的两份文档；模式记在 `desktop-mode.json`，切回本地只是一次页面加载 |
+| 证书 | 同上 + `main.ts` 的 `certificate-error` | 默认接受该 origin 的自签证书并记录指纹（提示可钉）；配了 `certificateSha256` 则只认那一张 |
+| 一眼可分 | `preload-mode.ts` | 只有服务器模式注入 shadow DOM 徽标（部署名 +「切回本地」），本地模式不出现 |
+| 定时归档 | `session-archive.ts` | 启动 60 秒后第一次，之后每 6 小时；只认 `$DSH_HOME/client/export-session.mjs`，没有这个脚本就整条链路不启用 |
+| 打包 | `apps/desktop/scripts/package-target.ts` | `package:desktop:win:x64:unsigned` → 免签名安装包 |
+
+**真机冒烟（2026-09-21，隔离 home）**：装好的 `win-unpacked\DeepSeek Harness.exe` 以 `DSH_HOME=<隔离>` + `--user-data-dir=<隔离>` 启动后，窗口加载 `dsh-app://app/`、`globalThis.dshDesktopBoot` 是对象、**无模式徽标**（本地模式正确）、页面 `readyState=complete`、应用根 48 KB DOM、中文界面（新会话／工作区／设置…）、客户端插件经 `dsh-app://app/plugins/??@deepseek-ai/dsh-client-modules/client.js` 解析；隔离 home 里自动长出 `profiles/desktop/{cordis.yml,package.json,cordis.patch.yml}`、`settings.yaml`、`.credentials.yaml`、`storages`。**内置运行时是自洽的：客户端机器不需要预装 dsh、Node 或 pnpm。**
+
+**安装包清单核对**：`app.asar` 里的 `package.json` 是 `version 0.1.6-alpha.2.20260921.1` 与 `dshDesktopAppId: "com.hqz.dsh-client"`，**没有** `dshMandatoryUpdatePolicy`；`resources/` 下**没有** `app-update.yml` —— 免签名构建确实不带更新面（对应 `electron-builder-config.mjs` 里 `update === undefined → publish: null`）。
+
+**`DSH_DESKTOP_SERVER_MODE` 的语义（踩过一次，写下来）**：它**不是模式开关**，装的是**部署对象的 JSON**（`{"origin":"https://…:8443","certificateSha256":"…","label":"…"}`）；**不设它才落到本地模式**。把它当模式开关写成 `local` 时，主进程在 `JSON.parse` 上抛裸 `SyntaxError`，弹出「DeepSeek Harness 无法使用 / Unexpected token 'l'」的原生恢复框 —— 报错里既没有变量名，也没说它该装什么。已修（提交 `325b125e3e`）：现在报 `desktop server mode: DSH_DESKTOP_SERVER_MODE is not valid JSON (received "local"); it carries the deployment, … and an unset variable starts in local mode`，与设置文件那条 `desktop client state: <path> is not valid JSON` 对称。
+
+**交付物（2026-09-21，最终）**：`apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts\deepseek-harness-0.1.6-alpha.2.20260921.1-win-x64.exe`（293.07 MB）—— 打的是带 `DSH_DESKTOP_SERVER_MODE` 报错修复的源码（提交 `325b125e3e`），重打后又跑了一遍同样的隔离 home 冒烟，结果与上表逐项一致。
+
+**打包流水线的一个环境事实**：`prepare:runtime` 从 GitHub release 拉 150 MB 的 `electron-v44.0.0-win32-x64.zip` 会稳定卡死在 0 字节（三次：两次超时、一次 `fetch failed`）。绕法是本机镜像 `electron-mirror-server.mjs` + `ELECTRON_MIRROR=http://127.0.0.1:8791/`，镜像里放 `%LOCALAPPDATA%\electron\Cache\<sha256(dirname(url))>\` 下那份**已核对过哈希**的 zip 和**上游原文**的 `SHASUMS256.txt`（目录布局必须是 `v44.0.0/`，因为 `customDir` 默认 `v<version>`）。
+
 ### 阶段 3：归档流水线（用户 2026-09-18 新增要求）
 
 `本地会话 → 归档成文档 → 按账号上传到服务器 → 服务器用 AI 精简 → 写进 Obsidian`
@@ -195,7 +224,9 @@
 ## 7. 已知陷阱（`AGENTS.md` §四之外的补充）
 
 - **git**：`git grep` 无命中时退出码是 1（别当成错误）；以 `-` 开头的模式必须用 `-e` 传；`git stash pop` 会把文件写成 **CRLF**，提交前要转回 LF（`.gitattributes` 是 `eol=lf`）。
-- **本机命令**：`Get-CimInstance Win32_Process | Where CommandLine -match 'executor'` 会**杀掉自己的 pwsh**（它的命令行里也含这个词）—— 过滤必须带 `Name=`；pwsh 里 .NET 文件 API 按**进程 cwd** 解析，必须用绝对路径；`Start-Process -RedirectStandard*` 在本 harness 下会 `spawn EPERM`。
+- **本机命令**：`Get-CimInstance Win32_Process | Where CommandLine -match 'executor'` 会**杀掉自己的 pwsh**（它的命令行里也含这个词）—— 过滤必须带 `Name=`；pwsh 里 .NET 文件 API 按**进程 cwd** 解析，必须用绝对路径；`Start-Process -RedirectStandard*` 在**受限沙箱**下会 `spawn EPERM`（打不开命名管道），在 `danger-full-access` 下正常 —— 抓 GUI 应用（Electron）的 stdout/stderr 就靠它，因为 GUI 子系统进程不继承控制台。
+- **`Invoke-WebRequest` 的 `.Content` 可能是 `byte[]`**（内容类型是 `application/octet-stream` 时，如 GitHub release 的 `SHASUMS256.txt`）：直接 `Set-Content` 会把每个字节写成一行十进制数字。要落盘二进制/文本请走 `[System.IO.File]::WriteAllBytes/WriteAllText`。
+- **junction 只看"在不在"会骗人**（`enable-client-features.ps1` 2026-09-21 已修）：断链的 junction（目标被删了）`Test-Path` 给 **true**、`Get-Item` 也能拿到，但 `mklink` 建不了；指向别处的 junction 同样"看着正常"。两种都会让 profile 的 `bundles` 那一行解析失败（或更糟：挂上另一个 home 里的插件），而且**只在组合重载时才炸**。修法是巡检时核对 `.Target`，且目标从 `package.json` 的 `link:` 解析 —— 不要按包名猜（`dsh-video-studio` 实际挂在 `plugins/dsh-video-studio-local`）。顺带一条脚本级教训：**别复用外层的 `$existing` / `$current`**，覆盖了会以 "Cannot compare … because it is not IComparable" 的形式在几十行之外炸出来。
 - **客户端 shell**：`machine_run` 的 `command` 走 Windows 自带的 `powershell.exe` 5.1（不是 pwsh 7），已强制 UTF-8 控制台编码；客户端的 glob/grep 若要做，用执行器里的 Node 实现，**不要依赖 ripgrep**。
 - 引擎与部署的实现级坑（SEA 会"fork 自己"、`hello` 事实只有那台机器知道、`DSH_` 前缀会被清洗、同机测试的证伪力）见 `AGENTS.md` §四。
 

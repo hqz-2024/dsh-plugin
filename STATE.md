@@ -1,5 +1,39 @@
 # STATE.md — hqz-dsh 部署现状与交接说明
 5. 线上 3080 **重启会切断用户当前对话** —— 需要重启先确认。
+
+---
+
+## 10. 2026-09-18 19:00 增补：工具调用崩溃与三个打不开的会话
+
+### 10.1 一执行工具整段对话就死（`Cannot read properties of undefined (reading 'prepare')`）
+
+- **现象**：0.1.6 上任何一次工具调用都抛 `Cannot read properties of undefined (reading 'prepare')`，随后日志里留下无结果的 `tool/call`；从下一轮起 DeepSeek 一律拒绝（`DeepSeek Messages tool calls need immediate results`），对话等于报废。
+- **根因（两层）**：① `~/.dsh/profiles/node_modules` 的安装回退链仍指向 `Desktop\deepseek-harness`（0.1.3），其中 59 条是死链——正常解析失败，于是 tsx 的 tsconfig `paths` 兜底把引擎内部的 `@deepseek-ai/*` 解析成 `packages/*/src/index.ts`，而 profile 加载器把插件行解析成 `packages/*/lib/index.js`，同一模块两份实例 → `TOOL_RUNTIME_SCHEDULER` 唯一符号不匹配 → `ctx.tools[SYM]` 为 undefined → agent-loop 取 `.prepare` 崩。② 即便回退链修好，`node --import tsx/esm apps/cli/src/bin.ts` 仍会在真实工具调用上崩（headless 实测），构建产物启动 `node apps/cli/lib/bin.js` 则成功。
+- **修复**：`start-dsh-lan.cmd` 改为 `DSH_DIR=dsh-0.1.6` + `node apps\cli\lib\bin.js`（备份 `start-dsh-lan.cmd.pre-0.1.6-launchfix.bak`）；**不要再用源码启动**。
+- **配套**：已用引擎自带 `healProfilesModuleFallback`（installAnchor = dsh-0.1.6/apps/cli/package.json）把回退链重指到 dsh-0.1.6，并新增 `~\.dsh\node_modules` → `~\.dsh\profiles\node_modules`（让 `~/.dsh/plugins/**` 的普通 Node 解析也能沿父目录走到安装闭包）。修完 `web`/`web-client` 启动 0 警告，部署插件全部挂载。
+- **自检**：`node apps\cli\lib\bin.js --profile web --patch C:\Users\bestarc\.dsh\check-module-identity.yml --port 3099 --no-open`，读 `~\.dsh\module-identity-report.json`，要求 `ok: true`（源码启动会报 `ok: false`，这是有意的）。
+
+### 10.2 三个会话在 0.1.6 里打不开（v2→v3 迁移被拒）
+
+- **现象**：`deepseek-harness` 工作区里 `session-31804be7`（160 轮）、`session-9c25a037`（64 轮）、`session-b7beba73`（42 轮）打开即失败。
+- **根因**：这些 v2 日志里有「turn 未收尾就被下一轮顶掉」的历史形态——某轮模型调用被打断（`assistant/attempt` 空流），写了 `step/end` 却没写 `turn/end`，之后用户重发消息直接开了下一轮。v0→v1 / v1→v2 的关系校验本来就承认这种 released 形态（`legacyInterruptedTurnRestart`，引擎自己的测试辅助里就带这个标志），但 `RELEASED_V2_RELATIONSHIP_EXTENSIONS` 没带 → v2→v3 迁移一律拒绝，日志本身没坏、只是读不了。
+- **修复**：`dsh-0.1.6/packages/session/session-format-v1-to-v2/{src/validation.ts,lib/index.js}` 的 `RELEASED_V2_RELATIONSHIP_EXTENSIONS` 加上 `legacyInterruptedTurnRestart: true`（构建产物与源码同步改，否则重启后按启动方式只生效一半）。
+- **验证**：隔离 home 副本上，三个会话从 `REFUSED` 变为可加载（`--session-id <id>` 不再报 migration 拒绝）。
+- **兜底存档**：`C:\Users\bestarc\Desktop\dsh-session-recovery\`（`INDEX.md` + 每个会话一份 Markdown 全文，直接从 `session.v?.jsonl.zstd` 解帧导出，不依赖 UI）。
+
+### 10.3 执行结果（2026-09-18 16:30，用户已同意重启）
+
+- **16:30:37 线上已切到构建产物**：`node apps\cli\lib\bin.js --profile web-client --trusted-host 192.168.28.239`（pid 27296，`start-dsh-lan.cmd` 即此命令）；启动日志 `~\.dsh\live-0.1.6.log`、`live-0.1.6.err.log`（stdout/stderr 重定向，便于下次核对），**0 警告**。旧的 tsx 源码实例与 3090 演练实例已停。
+- **验证**：`check-module-identity.mjs` → `ok: true`（built）；`/api` 匿名 403、`/client-auth/state` 匿名 401、`/client-relay/错密钥` 403、`/executor` 错 token close 4001（curl 复核；`check-live-client-world.ps1` 自身在 PS 5.1 下取不到状态码，是脚本探测问题）；`/` 与 `https://192.168.28.239:8443/` 均 200。
+- **10.2 的三个会话**：`session-31804be7` 已在 16:20:03 迁移出 v3 后继（13.5 MB），可正常打开；另两条随点随迁移。
+- **脏会话扫描**（`check-dangling-tool-results.mjs`，只读）：全库只有 2 条——`session-06841b50`、`session-f0fbb722`，各 1 个无结果的 `pwsh` 调用。两条都是今天 15:47/15:49 的"在吗"会话（内容是恢复对话的请求本身），建议存档后弃用。
+
+### 10.4 剩余待办
+
+1. **引擎侧护栏（建议做）**：调度器失败时，agent-loop 目前只记 `tool/call`、不补 `tool/result`（`packages/core/agent-loop/src/tool-calls.ts` 注释写着 "Scheduler failure drains dispatches without committing synthetic recovery results"），于是那条会话此后每轮都被 DeepSeek 拒收。建议在 turn 结束前为已发出的调用补一条明确的失败结果事件（模型可见 ⟺ 已记录），改动局限在 agent-loop + 一条测试。
+2. **就地修复那 2 条脏会话不可行**：`tool/result` 必须紧跟在 assistant 的 tool-call 之后，追加到日志末尾会落在后续 user 消息之后，救不了；要救必须重写日志（seq 重排），不值得为两条"在吗"会话做。
+3. **补丁上游化**：`session-format-v1-to-v2` 的 `legacyInterruptedTurnRestart` 属于上游遗漏（他们的测试辅助里就有这个标志），建议给 deepseek-harness 提 issue/PR，否则下次同步上游会丢。
+4. `cutover-report.txt` 还停在 15:32 的"已回滚"，与现状不符（16:18 手工切换、16:30 换启动方式）；`cutover-0.1.6.ps1` 需要同步成"构建产物启动"再复用。
 4. **断言要落在只有当事者才能产生的事实上**（子进程自报的 cwd/hostname、执行器环境里的标记），不要落在中间变量的说法上。
 **升级顺序与进度（2026-09-18）**：
 
@@ -38,9 +72,9 @@
 
 | 项 | 值 |
 |---|---|
-| 线上实例 | 端口 **3080**（`127.0.0.1`），启动命令 `node --import tsx/esm apps/cli/src/bin.ts --profile web-client --trusted-host 192.168.28.239`（由 `start-dsh-lan.cmd` 启动） |
+| 线上实例 | 端口 **3080**（`127.0.0.1`），启动命令 `node --import file:///C:/Users/bestarc/.dsh/engine-patches/register.mjs apps\cli\lib\bin.js --profile web-client --trusted-host 192.168.28.239`（由 `start-dsh-lan.cmd` 启动；**源码启动已废弃**，理由见 §10.1；`--import` 是部署侧运行时补丁，见 §12） |
 | 局域网入口 | caddy 反向代理 **8443** → `https://192.168.28.239:8443`（自签证书，客户端需信任根证书） |
-| 启动脚本 | `start-dsh-lan.cmd`（同时拉起 caddy 与 dsh；`set PROFILE=web-client`） |
+| 启动脚本 | `start-dsh-lan.cmd`（同时拉起 caddy 与 dsh；`set PROFILE=web-client`）。脚本会校验 node/`lib\bin.js`/caddy 是否存在、已监听 8443 的 caddy 不重复拉、dsh 输出重定向到 `live-0.1.6.log`/`live-0.1.6.err.log`、等待 3080 监听最多 30 秒并在失败时打印 stderr 尾部。**这个文件必须保持纯 ASCII**——见 §10.5。 |
 | 健康检查 | `check-live-client-world.ps1`（期望 exit 0；第 4 项 502/403 属正常） |
 | 诊断产物 | `profiles/web-client/dispatch-trace.jsonl`（分派决策）、`profiles/pilot-auth/{probe-result,machine-probe,llm-gateway-usage}.jsonl` |
 | 关键约束 | **重启 3080 会切断用户正在用的那段对话**（对话就跑在这个进程里）→ 先征得同意 |
@@ -158,3 +192,22 @@
 3. **跑验证在隔离 home**（`.dsh-pilot-auth` 3084 最全），不要拿线上试。
 4. **断言要落在只有当事者才能产生的事实上**（子进程自报的 cwd/hostname、执行器环境里的标记），不要落在中间变量的说法上。
 5. 线上 3080 **重启会切断用户当前对话** —— 需要重启先确认。
+
+---
+
+## 11. 2026-09-18 17:00：`start-dsh-lan.cmd` 为什么"只有 caddy 起来了"
+
+- **根因：编码，不是路径也不是命令。** 脚本原是 UTF-8 无 BOM，而 `cmd.exe` 按 OEM 代码页（本机 GBK）读 `.cmd`：中文注释被拆成乱码命令逐行执行，其中一处把 `set "NODE=C:\nvm4w\nodejs\node.exe"` 吃掉 → `%NODE%` 为空 → `start ... "" apps\cli\lib\bin.js ...` 立刻失败；窗口是 `/min`，一闪而过看不见。caddy 那行在损坏点之前，所以只有它活着。这与上一个 agent 记的"PS 5.1 读不了无 BOM 的 UTF-8 脚本"是同一类坑（那条坑杀掉过一次切换脚本）。
+- **修复**：脚本改为**纯 ASCII**（中文说明留在本文件）；同时加了前置校验、caddy 去重、stdout/stderr 重定向到 `live-0.1.6.log`/`live-0.1.6.err.log`、等待 3080 监听 30 秒并在失败时打印 stderr 尾部——以后再坏，cmd 窗口里会直接指出是哪一步。
+- **验证（2026-09-18 16:56）**：`cmd /c C:\Users\bestarc\.dsh\start-dsh-lan.cmd` → exit 0 打印 "up"；3080 = 构建产物实例（pid 32216，`apps\cli\lib\bin.js --profile web-client`）；8443 复用既有 caddy 未重复拉起；`/` 与 `https://192.168.28.239:8443/` 均 200；日志无警告。
+- **给下一个 agent**：改这个 `.cmd` 时不要写非 ASCII 字符；中文说明写进本文件。同类坑：`.ps1` 中文必须带 BOM 或纯 ASCII。
+
+---
+
+## 12. 2026-09-18 17:40：引擎回到 `deepseek-harness`，且保持官方原样
+
+- **引擎**：`C:\Users\bestarc\Desktop\deepseek-harness`，分支 **`hqz-dsh-0.1.6`** = `ddefc45fbc` = 上游 `origin/master` = tag `dsh-v0.1.6-alpha.2`；`git status` 干净。旧分支 `hqz-dsh`、`hqz-dsh-pre-upgrade`（均 94c528137c）保留作归档，`README.zh.md` 那 2 行改动在 `git stash` 里。`dsh-0.1.6` 已还原成**与官方逐字一致**的参考副本，不再用于运行。
+- **引擎目录内不再有任何部署改动**：打在 `session-format-v1-to-v2` 的那一行已还原，改成 `~\.dsh\engine-patches\` 的 Node loader hook（`register.mjs` + `legacy-turn-restart.mjs`），由启动脚本 `--import file:///C:/Users/bestarc/.dsh/engine-patches/register.mjs` 加载；命中写 `engine-patches\applied.log`，锚点丢失时大声报错（见该目录 README）。
+- **部署解析链**：已用 `healProfilesModuleFallback`（installAnchor = `deepseek-harness/apps/cli/package.json`）重指到新引擎；`@deepseek-ai/*`、`react`、`typescript` 等均解析到 `deepseek-harness`。
+- **验证**：`pnpm install`（24 s，exit 0）+ `pnpm build`（约 5.5 min，exit 0）；脚本重启 3080 → pid 32772，`3080=200`、`8443=200`，启动日志 **0 警告**，stderr 含 `engine patch: legacy-turn-restart applied`。
+- **回滚点**：引擎 = 把 `start-dsh-lan.cmd` 的 `DSH_DIR` 改回 `dsh-0.1.6`；分支 = `hqz-dsh` / `hqz-dsh-pre-upgrade`。
