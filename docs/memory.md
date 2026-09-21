@@ -199,6 +199,16 @@
 
 **打包流水线的一个环境事实**：`prepare:runtime` 从 GitHub release 拉 150 MB 的 `electron-v44.0.0-win32-x64.zip` 会稳定卡死在 0 字节（三次：两次超时、一次 `fetch failed`）。绕法是本机镜像 `electron-mirror-server.mjs` + `ELECTRON_MIRROR=http://127.0.0.1:8791/`，镜像里放 `%LOCALAPPDATA%\electron\Cache\<sha256(dirname(url))>\` 下那份**已核对过哈希**的 zip 和**上游原文**的 `SHASUMS256.txt`（目录布局必须是 `v44.0.0/`，因为 `customDir` 默认 `v<version>`）。
 
+**打包期间不要动 git（踩过一次）**：客户端构建把 `DSH_CLIENT_COMMIT_HASH` 记进构件记录，`release:pack` 再读出来跟当时的环境比对。构建跑到一半我提交了桌面仓库，`release:pack` 于是报 `client build environment differs from the required artifact profile: DSH_CLIENT_COMMIT_HASH` 并中止。**打包前先提交完，打包中别碰仓库。**
+
+#### 客户端分发（2026-09-21，三件事都做完）
+
+1. **装完就自带服务器模式**：`apps/desktop/.env.windows` 里 `DSH_DESKTOP_SERVER_MODE=auto` 时，打包会把这个部署的地址烘进应用清单的 `dshDesktopServerMode`（桌面 worktree 提交 `fbb24781fc`，新增 `scripts/desktop-server-mode-environment.mjs`）。解析顺序：`DSH_DESKTOP_SERVER_ORIGIN` → `DSH_DESKTOP_SERVER_HOST`(+`_PORT`) → **`DSH_LAN_IP`（`start-dsh-lan.cmd` 自己就设这个变量）** → 本机网卡地址（私网段优先）。**自动探测会逐个候选地址问一次 `https://<地址>:8443/auth/me`，谁答就用谁**，并把赢家作为显式 host 交给构建器 —— 烘进去的就是验证过的那个地址；一个都不答就保留第一个候选并在打包日志里 WARNING，不因此让构建失败。应用侧的读取优先级仍是 `环境变量 → desktop-client.json → 清单默认值`。
+2. **一条命令配两种模式**：`client/provision-client.ps1` 现在也写 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-client.json`（`-DesktopServerOrigin` / `-DesktopLabel` / `-DesktopUserDataDir` / `-SkipDesktopServer`），落盘前各自留 `.bak-<时间戳>`。
+3. **设置页直接下载**：设置 →「本地插件」多一张「桌面客户端（可选）」卡片，下载走 `/auth/client-installer`（流式、要求登录），文件取 `$DSH_HOME/client/dist` 里最新的 `.exe`（`DSH_CLIENT_DIST` 可改）。**发新版本 = 把新 exe 丢进那个目录**，列表每次请求现读，不用改代码不用重启。该目录已加进 `.gitignore`。
+
+**PowerShell 5.1 的两个坑（客户端机器上就是它）**：`.ps1` 不带 BOM 时，Windows PowerShell 5.1 按**系统代码页**解码，中文注释变乱码 —— 而乱码会让 3 字节的汉字与后一个字节配对，**行结构跟着错位**，连 `publicPrefixes:` 这种纯 ASCII 行都可能被并进上一行（`enable-client-features.ps1` 就是这么报「没有 publicPrefixes」的）。所以：两个脚本都带 BOM 存盘，且脚本里读文件一律 `[System.IO.File]::ReadAllText(..., UTF8Encoding($false))`，不用 `Get-Content`；写文件也不用 5.1 没有的 `-Encoding utf8NoBOM`。
+
 ### 阶段 3：归档流水线（用户 2026-09-18 新增要求）
 
 `本地会话 → 归档成文档 → 按账号上传到服务器 → 服务器用 AI 精简 → 写进 Obsidian`
