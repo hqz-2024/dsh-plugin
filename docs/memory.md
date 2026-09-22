@@ -61,6 +61,8 @@
 | 打包 exe「每结束一个终端就多出一个执行器」缺陷的修复 | `check-conpty-agent-fork.mjs`（精确复刻 node-pty 的 fork）+ 进程监视器：修前 `n=2/3`、修后整轮 `n=1`；`terminal-python-repl` 由 ❌ 转 ✅ |
 | 工作区共享／绑定的 Web UI 入口撤除 | `7fa2e08`；路由层代码仍在、绑定存储仍在（恢复步骤见 `README.md`） |
 | 机密体检 | `check-secret-leak.mjs`：AI key、machineSecret、relay token、Figma token 在**已推送历史**与本地历史里均 0 命中 |
+| **桌面客户端本地模式真能干活（2026-09-22，用户实测确认）** | 装 15:45 那次构建（SHA-256 `1A710218…DEF40`）后，客户端机器上本地模式能正常连上模型 —— 用户原话"本地模式能正常连上模型了"。三个前置修复：路由写进 profile 补丁层、`agent-default-model` 钉住网关公布的 id、**部署根证书随包烘入并作为 `NODE_EXTRA_CA_CERTS` 交给本地 Host**（见 §5 客户端分发第 4/5 条、§7 第 5 条） |
+| 文件树顶部工具行不再被裁（2026-09-22） | `plugins/folder-tree-sh-local/lib/client.js`：顶栏由一行十项改为两行自适应换行；顺带修掉右键菜单「刷新」只切视图的老毛病。同一 bundle 的 HMR 会重发，刷新页面即生效 |
 
 ---
 

@@ -69,7 +69,102 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ---
 
-## 三、手动迁移清单（自动化不可用时）
+## 三、新服务器部署：一步一步
+
+> 从零装一台新服务器，照顺序做即可。每步都写了「做完应该看到什么」。原理与例外见 §五 的坑，最后照 §六 验收。
+
+### 第 0 步：准备
+
+1. Windows 10/11 x64 一台。**登录用户名最好与旧机相同** —— 跨用户名时旧会话日志内的路径没法重写，打开会被拒（见 §二 末尾）。
+2. 装好三样：**Node 22 或更高**、**pnpm**、**Git**。
+3. 从旧机带来两样东西：`backup.ps1` 产出的 `dsh-backup-<时间戳>.zip`，和两条分支的 `dsh-branches.bundle`（做法见 §五 坑 5）。
+4. 定下这台服务器的**局域网 IP**（下文写作 `<IP>`），并放行防火墙 **8443** 端口（仓库里的 `fix-firewall.cmd` 会做）。
+
+### 第 1 步：铺代码（约 15 分钟）
+
+```powershell
+# 1) 部署仓库（配置、插件、脚本）→ %USERPROFILE%\.dsh
+git clone https://github.com/hqz-2024/dsh-plugin.git %USERPROFILE%\.dsh
+
+# 2) 引擎本体（本部署对引擎零改动，可直接 clone）
+git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh C:\Users\<用户名>\Desktop\deepseek-harness
+
+# 3) 客户端源码 = 同一个仓库的第二个 worktree（历史在引擎的 .git 里，不能只拷目录）
+cd C:\Users\<用户名>\Desktop\deepseek-harness
+git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'
+git worktree add ..\dsh-desktop hqz-desktop-client
+```
+
+**做完应该看到**：`%USERPROFILE%\.dsh` 里有 `install.ps1`、`plugins\`、`profiles\`；`Desktop\` 下同时有 `deepseek-harness` 与 `dsh-desktop` 两个目录。
+
+### 第 2 步：装运行时依赖（不含数据）
+
+```powershell
+cd %USERPROFILE%\.dsh
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <IP>
+```
+
+它负责：装 `profiles\web` 的 pnpm 依赖（插件是 `link:` 依赖，这一步等于把插件挂上）、生成 `start-dsh-lan.cmd` 与 `Caddyfile`、下载 dsh-doc 运行时与 FFmpeg、必要时装 caddy 到 `bin\caddy.exe`。
+
+**做完应该看到**：`verify.ps1` 跑完除"数据类"检查外全绿。
+
+### 第 3 步：恢复数据（顺序不能反：先代码后数据）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldUser <旧用户名> -NewUser <新用户名>
+```
+
+它会解压备份、把文本里的绝对路径从旧用户名映射到新用户名、重命名 `sessions\` 下的变形目录名，再合并进 `~\.dsh`。
+
+**做完应该看到**：`auth\store.json`、`auth\session-owners.json`、`storages\workspace.json`、`sessions\`、`sessions-archived\`、`.credentials.yaml`、`profiles\web\cordis.patch.yml` 全部在位。不想用脚本就照 §四 的清单手动拷。
+
+### 第 4 步：起服务，确认门是通的
+
+```powershell
+.\start-dsh-lan.cmd
+```
+
+**做完应该看到**：服务器本机 `http://127.0.0.1:3080` 是登录页；局域网里 `https://<IP>:8443` 是同一个页面（自签证书，浏览器要确认一次例外）。
+
+### 第 5 步：客户端（dsh-desktop）在新服务器上要改什么
+
+**只需要改一台机器** —— 跑 `build-client.ps1` 的那台**构建机**。改的文件只有一个：`Desktop\dsh-desktop\apps\desktop\.env.windows`（**已被 git 忽略，每台机器一份**，模板是同目录的 `.env.windows.example`）。
+
+| 设置 | 新服务器上填什么 | 为什么 |
+|---|---|---|
+| `DSH_DESKTOP_APP_ID` | 沿用（除非"与官方桌面端并存"的策略变了） | 安装目录、单实例锁、更新身份都按它算 |
+| `DSH_DESKTOP_SERVER_MODE` | `auto` | 装完自带服务器模式；写 `none` 则不带部署 |
+| `DSH_DESKTOP_SERVER_LABEL` | 想在窗口标题/徽标上显示的名字，如 `HQZ 局域网` | 纯显示 |
+| `DSH_DESKTOP_SERVER_ORIGIN` | 想钉死就写 `https://<IP>:8443`；留空则打包时自动探测 | 自动探测 = 逐个候选地址问 `https://<地址>:8443/auth/me`，谁答烘谁 |
+| `DSH_DESKTOP_GATEWAY` | `auto`（本地模式要模型就留着） | `none` = 完全不烘模型路由 |
+| `DSH_DESKTOP_GATEWAY_TOKEN` | **新服务器的网关 token** | 客户端不带 AI key，靠这个 token 认账号/限额/入账 |
+| `DSH_DESKTOP_GATEWAY_CA_FILE` | **新服务器的 caddy 根证书**：`%APPDATA%\Caddy\pki\authorities\local\root.crt` | Node 不读 Windows 证书库，缺了本地模式握手就断（坑 8） |
+| `DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN` | `none` | 本部署没有强更策略服务 |
+| `DOWNLOAD_TEST_ORIGIN` | `https://<IP>:8443` | 只为过打包校验；unsigned 构建不写进产物 |
+| `DSH_DESKTOP_WINDOWS_*` | 全部留空 | 不签名 |
+
+改完**必须重新打包并发布**（`~\.dsh\build-client.ps1`，约 15 分钟）：上面这些值都是**打包时烘进应用清单**的，换了服务器地址（坑 7）、换了网关 token、换了根证书（坑 8），旧安装包就都指向旧服务器了。发布 = 把新 exe 放进 `~\.dsh\client\dist`，设置页那张卡片立刻可用（每次请求现读目录）。
+
+**每台客户端机器**不用改代码，二选一：
+
+- 直接用安装包（上面烘好的一切都在里面）：设置 →「本地插件」→「桌面客户端（可选）」→ 下载 → 安装。
+- 想在某一台上改指到别处，再跑一次 provisioning（`-WhatIfOnly` 先看，再去掉它执行）：
+
+```powershell
+%USERPROFILE%\.dsh\client\provision-client.ps1 -GatewayOrigin https://<IP>:8443 -GatewayToken <网关token> `
+  -DesktopServerOrigin https://<IP>:8443 -DesktopLabel '<名字>' -DesktopGatewayCa <根证书.pem>
+```
+
+> **不需要改的**：客户端源码、`apps/desktop` 里的任何代码、版本号。新服务器上 `dsh-desktop` 唯一随部署变化的文件就是那份 git 忽略的 `.env.windows`。
+
+### 第 6 步：验收
+
+照 §六 逐条过。最容易漏的是最后两条：设置页的**客户端下载卡片**，以及客户端机器上**本地模式真跑一次任务**。
+
+---
+
+
+## 四、手动迁移清单（自动化不可用时）
 
 ### 1. 数据（丢失不可恢复，最高优先级）
 
@@ -115,11 +210,11 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
 | `C:\Users\<用户名>\Desktop\deepseek-harness\`（不含 node_modules） | DSH 源码 checkout（分支 `hqz-dsh-0.1.6`，与上游 `master` 逐字一致） | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
-| `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，7 个提交：服务器模式/证书/模式徽标、定时归档、发布版本号、打包默认地址）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5） |
+| `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，领先上游 `hqz-dsh-0.1.6` **14 个提交**：服务器模式与证书信任、模式徽标与切换、本地模式的模型路由、根证书信任、定时归档、发布版本号、打包默认地址与策略声明）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5） |
 
 ---
 
-## 四、坑（必读）
+## 五、坑（必读）
 
 ### 坑 1：引擎 checkout 是零改动的，可以干净 clone
 会话隔离已从核心 `session-controller` 源码移到 `dsh-remote-local` 插件（服务层包装 `sessionController.list`），所以引擎仓库 `hqz-2024/hqz-dsh` 可以直接 `git clone -b hqz-dsh`，**无需再手工打任何源码补丁**。
@@ -155,7 +250,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 工作树 | 分支 | 是什么 |
 |---|---|---|
 | `Desktop\deepseek-harness` | `hqz-dsh-0.1.6` | 引擎本体（与上游 `master` 逐字一致，零改动 —— 这是铁律 1） |
-| `Desktop\dsh-desktop` | `hqz-desktop-client` | 客户端：在那份引擎上加了 7 个提交（服务器模式与证书、模式徽标、定时归档、发布版本号、打包默认地址、两处修复） |
+| `Desktop\dsh-desktop` | `hqz-desktop-client` | 客户端：在那份引擎上加了 **14 个提交**（服务器模式与证书、模式徽标与切换、本地模式的模型路由与根证书信任、定时归档、发布版本号、打包默认地址与策略声明） |
 
 所以 `Desktop\dsh-desktop` 里的 `.git` **是一个文件**（内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop`），只拷目录带不走历史。新机上重建：
 
@@ -190,7 +285,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ---
 
-## 五、验证清单
+## 六、验证清单
 
 1. 能登录 `admin`（迁移后 `auth\store.json` 原样生效，账号/密码/TOTP 都跟着走）。
 2. 角色账号（如 `Finance-mgr`）能登录，且**只看到自己工作区的会话**，看不到别人的。账号由 admin 在设置页创建，名字必须与 `cordis.patch.yml` 的 roleMap 键**完全一致**（区分大小写）才生效。
@@ -207,7 +302,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ---
 
-## 六、常见问题
+## 七、常见问题
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -220,7 +315,9 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 | 打开旧会话被拒 "session outside your workspace" | 跨用户名迁移导致会话日志 cwd 与新工作区路径不一致（见「二」的跨用户名限制） |
 | 设置页「本地插件」里没有「桌面客户端」那张卡 | `$DSH_HOME\client\dist` 里没有 `.exe`（目录里没有文件时这张卡整个不出现，这是刻意的），或插件还是旧代码（判据见验证清单第 9 条） |
 | 客户端服务器模式连的是旧地址 | 安装包里的地址是打包时烘的（坑 7）：重新打包发布，或在单台机器的 `desktop-client.json` 里改指 |
-| 客户端本地模式没有模型可选 | 那台机器没跑 provisioning（`settings.yaml` / `.credentials.yaml` 缺失），或网关 token 已吊销 |
+| 客户端本地模式没有模型可选 | 那台机器既没有安装包烘的模型路由、也没跑 provisioning（`profiles\desktop\cordis.patch.yml` 与 `.credentials.yaml` 都没有），或网关 token 已吊销 |
+| 客户端本地模式报 `失败原因：DeepSeek API request to https://…/llm/v1 failed` | 十有八九是**根证书没到位**（坑 8）：Node 不读 Windows 证书库。先看 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop.log` 里有没有 `trusting …\profiles\desktop\gateway-ca.crt`，再看那个文件在不在；缺了就重新打包（把 `DSH_DESKTOP_GATEWAY_CA_FILE` 指对）或在单台机器上 `provision-client.ps1 -DesktopGatewayCa <根证书.pem>` |
+| 客户端文件树顶部按钮被裁（老版本） | 插件 fork 的顶部工具行原先是一行十项、容器又 `overflow:hidden`：面板窄时「刷新/上传/传文件夹」会被裁掉。本仓库的 `folder-tree-sh-local` 已改成两行自适应换行（2026-09-22），迁移时确认 `plugins\folder-tree-sh-local\lib\client.js` 是最新的 |
 | 打包在 `prepare:runtime` 卡住不动（0 字节） | GitHub 上那份 150 MB 的 electron zip 拉不动（坑 6）：用 `build-client.ps1`，或手工起 `electron-mirror-server.mjs` 并设 `ELECTRON_MIRROR` |
 | 打包报 `client build environment differs … DSH_CLIENT_COMMIT_HASH` | 打包期间仓库被改动了（坑 6）：提交完再重跑 |
 

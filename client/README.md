@@ -2,7 +2,14 @@
 
 这是**客户端电脑**（局域网里跑桌面应用的机器）需要的部署侧文件，不是服务器上跑的东西。
 桌面应用本身由上游 `apps/desktop` 构建（见 `docs/plan-two-paths.md` 阶段 2/4）；
-本目录补的是它**装不进二进制的那一半**：这台机器该连哪个部署、模型走哪条路。
+本目录补的是它**装不进二进制的那一半**：这台机器该连哪个部署、模型走哪条路、
+以及**信任哪张根证书**。
+
+> **先看这条**：安装包现在会把**三件事**一起烘进应用清单 —— 服务器模式要连的地址
+> （`dshDesktopServerMode`）、本地模式的模型路由与网关 token（`dshDesktopGateway`）、
+> 以及**部署 TLS 终结器的根证书**（`dshDesktopGateway.certificateAuthority`）。
+> 所以"装完就能用"已经不需要本脚本了；**本脚本现在的用途是"把某一台机器改指到别处"**
+> （另一个部署、另一个网关 token、另一张根证书），或者给不带这些的安装包补上。
 
 ## 一个窗口，两种模式
 
@@ -14,17 +21,18 @@
 两种模式的差别只有"文档 + 谁来跑循环"。工具、工作区、会话在本地模式下全在本机，
 所以本机 agent 能直接操作本机文件与软件，不需要执行器、不需要共享。
 
-## 这台机器要放的五样东西
+## 这台机器要放的六样东西
 
-`provision-client.ps1` 会把它们写好：前四样落在 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`），
-第五样落在桌面应用的浏览器数据目录（默认 `%APPDATA%\@deepseek-ai\dsh-desktop`）：
+`provision-client.ps1` 会把它们写好：前五样落在 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`），
+第六样落在桌面应用的浏览器数据目录（默认 `%APPDATA%\@deepseek-ai\dsh-desktop`）：
 
 | 文件 | 作用 | 为什么必须在这台机器上 |
 |---|---|---|
-| `settings.yaml` | `llm-deepseek` 段把模型端点指到部署网关，并声明网关开放的模型 id | 端点与模型清单是**部署**的事实，随服务器走 |
+| `settings.yaml` | `llm-deepseek` 段把模型端点指到部署网关，并声明网关开放的模型 id | 端点与模型清单是**部署**的事实，随服务器走。**注意：这一段优先级高于安装包烘进补丁层的路由**，即本文件是"改指别处"的那一层 |
 | `.credentials.yaml` | 网关 token（`HQZ_GATEWAY_TOKEN`）与归档 token（`HQZ_ARCHIVE_TOKEN`） | 这是客户端仅有的凭据；真 AI key 永远不进客户端 |
 | `archive.json` | 会话归档端的地址 | 归档端与网关同属一个部署 |
-| `profiles/desktop/cordis.patch.yml` | 桌面 profile 的补丁层（默认留空） | 桌面应用独占这个 profile，补丁层是它唯一的组合入口 |
+| `profiles/desktop/cordis.patch.yml` | 桌面 profile 的补丁层（默认留空；应用自己会把模型路由写在里面，已配置过就不动） | 桌面应用独占这个 profile，补丁层是它唯一的组合入口 |
+| `profiles/desktop/gateway-ca.crt` | **部署 TLS 终结器的根证书**（PEM）；应用启动时把它作为 `NODE_EXTRA_CA_CERTS` 交给本机 Host | **Node 不读 Windows 证书库**：没有它，本地模式的模型请求在握手就断（`DeepSeek API request to … failed`）。带根证书的安装包会自己写这份，本脚本是给不带包/改指别处用的 |
 | `desktop-client.json` | **服务器模式**要连的部署地址（`{ "server": { "origin": …, "label": … } }`） | 应用按 `环境变量 → 这个文件 → 安装包里的默认值` 取地址，这一层是本机的覆写 |
 
 `profiles/desktop/` 本身由桌面应用首次启动时创建（bundle 列表是 `@deepseek-ai/dsh-base` +
@@ -39,17 +47,22 @@
   -GatewayOrigin 'https://192.168.28.239:8443' `
   -GatewayToken  '<管理台签发的网关 token>' `
   -ArchiveToken  '<归档 token>' `
-  -DesktopLabel  'HQZ 局域网'
+  -DesktopLabel  'HQZ 局域网' `
+  -DesktopGatewayCa "$env:APPDATA\Caddy\pki\authorities\local\root.crt"
 ```
 
-一条命令配好两种模式：本地模式拿 `settings.yaml` + `.credentials.yaml`；服务器模式拿
+一条命令配好两种模式：本地模式拿 `settings.yaml` + `.credentials.yaml`
+（+ 根证书 `profiles\desktop\gateway-ca.crt`）；服务器模式拿
 `desktop-client.json`（`origin` 省略时与 `-GatewayOrigin` 同一个部署）。
 
 | 参数 | 作用 |
 |---|---|
 | `-HomeDir` | 目标 `$DSH_HOME`；省略时 `%USERPROFILE%\.dsh` |
+| `-Models` | 网关开放的模型 id（默认 `deepseek-v4-flash, deepseek-v4-pro`） |
+| `-ArchiveOrigin` | 归档端地址（默认与网关同源） |
 | `-DesktopServerOrigin` | 服务器模式连别处（默认与网关同源） |
 | `-DesktopLabel` | 服务器模式窗口标题与徽标上的名字 |
+| `-DesktopGatewayCa` | **部署根证书的 PEM 文件路径**（caddy 的 `%APPDATA%\Caddy\pki\authorities\local\root.crt`）。要根证书、不要叶子证书 |
 | `-DesktopUserDataDir` | 应用的浏览器数据目录（默认 `%APPDATA%\@deepseek-ai\dsh-desktop`） |
 | `-SkipDesktopServer` | 不写 `desktop-client.json`（例如安装包里已经烘好了别的地址） |
 | `-WhatIfOnly` | 只打印将要写入的内容 |
