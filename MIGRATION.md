@@ -126,6 +126,32 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 **做完应该看到**：服务器本机 `http://127.0.0.1:3080` 是登录页；局域网里 `https://<IP>:8443` 是同一个页面（自签证书，浏览器要确认一次例外）。
 
+### 第 4b 步：开通「客户端世界」（要用执行器 / 机器工具 / 客户端安装包才需要）
+
+不做这一步，服务器只有服务器模式：一切命令都在服务器上跑，客户端机器连不进来、也没有安装包可下。
+
+1. **让启动脚本跑对 profile**：`install.ps1` 默认生成 `--profile web`（全部在服务器执行）。要用客户端世界就重跑一次并带上 `-RunProfile web-client` —— **不带这个参数会把启动脚本改回 `web`**。
+2. **让这个 profile 起得来**（`profiles\web\` 与 `profiles\web-client\` 各自有自己的 `link:` 依赖）：
+   - **从旧机恢复**：第 3 步的备份里已经带了 `profiles\web-client\cordis.patch.yml`（含 sidecar token 等机密），恢复后只要在 `profiles\web-client` 目录里跑一次 `pnpm install`。
+   - **全新部署**：`copy profiles\web\cordis.patch.yml profiles\web-client\cordis.patch.yml`（同一批 sidecar token —— `.gitignore` 里就是这么写两者关系的），在 `profiles\web-client` 里 `pnpm install`，然后给 `- id: subprocess-dispatch` 那一行的 `config` 加一行 `machineSecret: '<随机 32 字节 hex>'`。这就是执行器的部署级密钥：它被编进分发的 exe，**轮换 = 改这一行 + 重建分发包**。
+3. **开通模型网关与会话归档**（客户端本地模式要模型、要回传会话就要）：
+
+   ```powershell
+   node enable-client-features.ps1 -Profile web-client -Apply
+   ```
+
+   它按「三处齐全」一次做完：profile 的 `package.json`（`link:` 依赖 + `bundles`）、`cordis.patch.yml`（用完整 config 打开 `llm-gateway` / `archive` 两行）、门禁行的 `publicPrefixes`（客户端拿的是 token 不是会话 cookie，不放行就永远 403）。默认只打印，`-Apply` 才写，幂等。**它会打印生成的网关 token 与归档 token —— 记下来，客户端机器与桌面安装包都要用。** 线上 profile 是 `patchReload: live`，写完立刻生效。
+4. **重建执行器分发包**（`plugins\dsh-subprocess-dispatch\dist\` 不进 git，含 80+ MB 的 exe）：
+
+   ```powershell
+   node build-executor-exe.mjs
+   ```
+
+   客户端机器就是从服务器的下载端点拿这个产物。构建脚本读第 2 步那个 `machineSecret` 与服务器地址并编进 exe；缺了会警告"构建出的 exe 将需要 `--secret` 才能注册"。
+5. （可选）**桌面客户端安装包**：见第 5 步。
+
+**验收**：设置 →「本地插件」里出现「桌面客户端（可选）」卡片（`$DSH_HOME\client\dist` 里真有 exe 才出现）；`GET https://<IP>:8443/auth/client-installer` 返回 **401**（处理器接管）而不是 SPA 的 HTML。
+
 ### 第 5 步：客户端（dsh-desktop）在新服务器上要改什么
 
 **只需要改一台机器** —— 跑 `build-client.ps1` 的那台**构建机**。改的文件只有一个：`Desktop\dsh-desktop\apps\desktop\.env.windows`（**已被 git 忽略，每台机器一份**，模板是同目录的 `.env.windows.example`）。

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   DSH 局域网部署一键安装脚本。
@@ -42,7 +42,9 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $ProfileDir = Join-Path $Root "profiles\web"
-$Plugins = @("dsh-remote-local", "folder-tree-sh-local", "dsh-usage-panel-local", "dsh-local-bridge", "dsh-video-studio-local")
+$Plugins = @(Get-ChildItem (Join-Path $PSScriptRoot "plugins") -Directory -ErrorAction SilentlyContinue |
+  Where-Object { Test-Path (Join-Path $_.FullName "package.json") } |
+  Select-Object -ExpandProperty Name)
 $Presets = @("finance-manager", "art-design", "business-sales", "procurement", "production", "hr-management", "rd-development")
 $Skills  = @("sidecar", "dsh-development", "dsh-video-studio", "firecrawl", "adobe-illustrator-scripting",
              "defuddle", "json-canvas", "obsidian-cli", "obsidian-markdown", "obsidian-bases")
@@ -100,7 +102,9 @@ try {
   Ok "profile pnpm install 完成"
 } finally { Pop-Location }
 
-# ── 3. 五个插件依赖（link: 不装被链接包自己的依赖，须各自 install）───
+# ── 3. 插件依赖（link: 不装被链接包自己的依赖，须各自 install）───
+# 清单由 plugins\ 目录推导：写死过一版（五个名字），后来删掉一个、又加了五个，
+# 没人回来改 —— 少装的插件要到 profile 启动时才炸。
 Step "3. 插件依赖"
 foreach ($p in $Plugins) {
   $d = Join-Path $Root ("plugins\" + $p)

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   打包 ~/.dsh 的「状态 + 密钥」为 zip，用于备份 / 迁移。

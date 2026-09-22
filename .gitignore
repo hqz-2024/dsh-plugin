@@ -63,6 +63,10 @@ profiles/web/.dsh-module-fallback/
 *.log
 prof/
 *.bak
+# 运行时台账与一次性诊断产物：机器相关、可再生，不进仓库
+profiles/*/llm-gateway-usage.jsonl
+cutover-report.txt
+module-identity-report.json
 
 # ---- 插件内嵌套的独立 git 仓库 ----
 plugins/*/.git/

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   恢复 backup.ps1 的 zip 到 ~/.dsh，并把旧机用户名/绝对路径映射到新机。
