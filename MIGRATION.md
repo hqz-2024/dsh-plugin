@@ -82,18 +82,36 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ### 第 1 步：铺代码（约 15 分钟）
 
+三个工程两个仓库，位置是**固定**的（脚本与文档都按这个布局写）：
+
+| 工程 | 从哪来 | 分支 | 放到哪 | 怎么拿 |
+|---|---|---|---|---|
+| **部署仓库**（配置/插件/脚本，就是 `~\.dsh`） | `hqz-2024/dsh-plugin` | **`client-world`** | `%USERPROFILE%\.dsh` | `git clone` |
+| **引擎**（deepseek-harness） | `hqz-2024/hqz-dsh` | **`hqz-dsh-0.1.6`** | `桌面\deepseek-harness` | `git clone` |
+| **客户端**（dsh-desktop） | 同上那个仓库 | **`hqz-desktop-client`** | `桌面\dsh-desktop` | **`git worktree add`** —— 它不是独立仓库，是引擎仓库的第二个工作树，`.git` 是个文件，**不能单独 clone** |
+
 ```powershell
 # 1) 部署仓库（配置、插件、脚本）→ %USERPROFILE%\.dsh
-git clone https://github.com/hqz-2024/dsh-plugin.git %USERPROFILE%\.dsh
+#    分支必须是 client-world：远端 main 是三个月前的旧状态（36 个提交）。
+git clone -b client-world https://github.com/hqz-2024/dsh-plugin.git %USERPROFILE%\.dsh
 
 # 2) 引擎本体（本部署对引擎零改动，可直接 clone）
-git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh C:\Users\<用户名>\Desktop\deepseek-harness
+#    分支必须是 hqz-dsh-0.1.6（= 现网跑的 0.1.6-alpha.2）；仓库里的 hqz-dsh 是 0.1.3 时代的老分支。
+git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh-0.1.6 C:\Users\<用户名>\Desktop\deepseek-harness
 
 # 3) 客户端源码 = 同一个仓库的另一个分支（hqz-desktop-client），挂成第二个 worktree。
 #    它的历史在引擎的 .git 里，所以不能只拷目录；clone 之后远端已有这个分支，
 #    worktree add 会自动建一个跟踪它的本地分支。
 cd C:\Users\<用户名>\Desktop\deepseek-harness
 git worktree add ..\dsh-desktop hqz-desktop-client
+```
+
+**以后各自更新**（三个工程互不干扰，worktree 也是普通工作树，能直接 pull）：
+
+```powershell
+git -C %USERPROFILE%\.dsh pull                      # 部署仓库（client-world）
+git -C C:\Users\<用户名>\Desktop\deepseek-harness pull    # 引擎
+git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同一个 .git，worktree 分支）
 ```
 
 > 旧机上若有**还没推送**的客户端提交（比如你在旧机上又改了客户端），才需要走 bundle：在旧机 `git bundle create dsh-branches.bundle hqz-desktop-client`，把 bundle 拷过来后 `git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'` 再 `git worktree add`（详见 §五 坑 5）。
@@ -110,6 +128,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <IP>
 它负责：装 `profiles\web` 的 pnpm 依赖（插件是 `link:` 依赖，这一步等于把插件挂上）、生成 `start-dsh-lan.cmd` 与 `Caddyfile`、下载 dsh-doc 运行时与 FFmpeg、必要时装 caddy 到 `bin\caddy.exe`。
 
 **做完应该看到**：`verify.ps1` 跑完除"数据类"检查外全绿。
+
+> **引擎要 build 一次，否则 `engine-patches` 不生效。** 部署侧的运行时补丁（`~\.dsh\engine-patches\`，现在只有一个：让"有被打断轮次"的老会话在 v2→v3 迁移时不被拒）按 `…/session-format-v1-to-v2/lib/index.js` 这个后缀命中模块 —— **只对构建产物生效**，源码启动（`tsx` 跑 `src/*.ts`）时它整段静默不生效。所以在引擎目录跑一次 `pnpm run build`（约十几分钟）；`install.ps1` 生成的启动脚本会自动优先用 `apps\cli\lib\bin.js` 并带上 `--import engine-patches\register.mjs`，没有 lib 才退回源码启动（那时会打印警告）。判据：启动后 `~\.dsh\live-0.1.6.err.log` 里应有一行 `[dsh-lan] engine patch: legacy-turn-restart applied`。
 
 ### 第 3 步：恢复数据（顺序不能反：先代码后数据）
 
@@ -287,6 +307,14 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 git clone https://github.com/hqz-2024/hqz-dsh.git C:\Users\<用户名>\Desktop\deepseek-harness
 cd C:\Users\<用户名>\Desktop\deepseek-harness
 git worktree add ..\dsh-desktop hqz-desktop-client
+```
+
+**以后各自更新**（三个工程互不干扰，worktree 也是普通工作树，能直接 pull）：
+
+```powershell
+git -C %USERPROFILE%\.dsh pull                      # 部署仓库（client-world）
+git -C C:\Users\<用户名>\Desktop\deepseek-harness pull    # 引擎
+git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同一个 .git，worktree 分支）
 ```
 
 旧机上如果有**还没推送**的提交（例如你刚在旧机改了客户端），在那台机器上补一次推送就行；确实要离线搬时用 bundle：`git bundle create dsh-branches.bundle hqz-dsh-0.1.6 hqz-desktop-client`，到新机 `git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'` 再 `git worktree add`。

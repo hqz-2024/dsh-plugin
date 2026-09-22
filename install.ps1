@@ -17,7 +17,8 @@
 .PARAMETER EngineRepo
   引擎仓库（含会话隔离改动），默认 https://github.com/hqz-2024/hqz-dsh.git。
 .PARAMETER EngineBranch
-  引擎分支，默认 hqz-dsh。
+  引擎分支，默认 hqz-dsh-0.1.6（现网跑的就是这条，版本 0.1.6-alpha.2）。
+  引擎仓库里还有更老的 hqz-dsh（0.1.3 时代）与上游 master，别拿它们当部署基线。
 .PARAMETER LanIP
   服务器局域网 IP（写入 caddy 反代地址与 --trusted-host）。
 .PARAMETER NodePath
@@ -29,7 +30,7 @@
 param(
   [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\deepseek-harness"),
   [string]$EngineRepo = "https://github.com/hqz-2024/hqz-dsh.git",
-  [string]$EngineBranch = "hqz-dsh",
+  [string]$EngineBranch = "hqz-dsh-0.1.6",
   [string]$LanIP = "",
   [string]$NodePath = "",
   # 生成的启动脚本用哪个 profile：web（默认，全部在服务器执行）或
@@ -311,7 +312,18 @@ echo [dsh-lan] starting caddy reverse proxy (0.0.0.0:8443 -^> 127.0.0.1:3080)...
 start "dsh-caddy" /min "%CADDY%" run --config "%CADDYFILE%"
 
 echo [dsh-lan] starting dsh web (127.0.0.1:3080, profile=%PROFILE%)...
-start "dsh-web" /min /d "%DSH_DIR%" "%NODE%" --import tsx/esm apps/cli/src/bin.ts --profile %PROFILE% --trusted-host %LAN_IP%
+REM engine-patches 只对**构建产物**生效：补丁按 /session-format-v1-to-v2/lib/index.js
+REM 这个后缀命中模块，源码启动（tsx 跑 src/*.ts）时它整段静默不生效。所以有 lib 就用 lib
+REM （引擎目录跑一次 pnpm run build 就有了），没有才退回源码启动。
+set "ENGINE_PATCHES=file:///$($Root -replace '\\','/')/engine-patches/register.mjs"
+if exist "%DSH_DIR%\apps\cli\lib\bin.js" (
+  start "dsh-web" /min /d "%DSH_DIR%" "%NODE%" --import "%ENGINE_PATCHES%" apps\cli\lib\bin.js --profile %PROFILE% --trusted-host %LAN_IP%
+) else (
+  echo [dsh-lan] WARN: "%DSH_DIR%\apps\cli\lib\bin.js" 不存在 —— 退回源码启动；
+  echo [dsh-lan] WARN: 此时 engine-patches 不生效，迁移过来的老会话（有被打断的轮次）会打不开。
+  echo [dsh-lan] WARN: 在引擎目录跑一次 "pnpm run build" 后重新启动即可。
+  start "dsh-web" /min /d "%DSH_DIR%" "%NODE%" --import tsx/esm apps/cli/src/bin.ts --profile %PROFILE% --trusted-host %LAN_IP%
+)
 
 echo [dsh-lan] started. LAN access: https://%LAN_IP%:8443
 "@
