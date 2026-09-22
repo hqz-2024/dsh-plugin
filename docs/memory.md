@@ -34,7 +34,7 @@
 | `main` | `73ad10f`，与 `origin/main` 一致（**没有动过**；`client-world` 是独立分支） |
 | 工作区 | 干净（运行时台账与一次性诊断产物已在 `.gitignore` 里：`profiles/*/llm-gateway-usage.jsonl`、`cutover-report.txt`、`module-identity-report.json`） |
 | 引擎 checkout | `C:\Users\bestarc\Desktop\deepseek-harness`，分支 `hqz-dsh`，**零改动铁律**（只有 `README.zh.md` 一处早期未提交改动） |
-| 客户端 worktree | `C:\Users\bestarc\Desktop\dsh-desktop`，分支 `hqz-desktop-client`（14 个提交，2.45 MB）—— **仍未推送**，引擎仓库（remote 名是 `mine`，`hqz-2024/hqz-dsh`）里只有 `master`/`hqz-dsh`/`hqz-dsh-0.1.6` |
+| 客户端 worktree | `C:\Users\bestarc\Desktop\dsh-desktop`，分支 `hqz-desktop-client`（14 个提交，2.45 MB）—— **2026-09-22 已推送到 `hqz-2024/hqz-dsh`**（remote 名是 `mine`；引擎仓库现有 `master`/`hqz-dsh`/`hqz-dsh-0.1.6`/`hqz-desktop-client` 四条分支，前三条未被改动）。**没有**用 `hqz-2024/hqz-dsh-desktop`：那个仓库仍是空的 —— 客户端不是独立项目，单独开仓要复制整段引擎历史（约 194 MB）或丢历史，挂在引擎仓库只要 2.45 MB，且新机一次 clone 就同时拿到引擎与客户端 |
 
 **分支纪律**：所有改动提交到 `client-world`；除非用户明确要求，不推送、不合并、不动 `main`。
 

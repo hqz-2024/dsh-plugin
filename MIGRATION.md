@@ -65,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 > ⚠ **跨用户名限制**：会话日志 `session.jsonl.zstd` 是 zstd 压缩二进制，其内部 cwd 脚本不重写；跨用户名恢复旧会话可能被拒（"session outside your workspace"）。**建议新机保持同名用户**，或由维护者做 zstd 级重映射。
 
-> **备份里没有客户端源码，也没有客户端机器上的东西。** `backup.ps1` 打的是 `~\.dsh` 的状态与机密；客户端源码是**引擎仓库的一个 worktree**（见坑 5），必须跟引擎 checkout 一起走；`~\.dsh\client\dist` 里的安装包是可重建的构建产物（新机跑一次 `build-client.ps1` 就有了）。**每台客户端机器上的 `%USERPROFILE%\.dsh` 与 `%APPDATA%\@deepseek-ai\dsh-desktop` 完全不在迁移范围内** —— 服务器换了地址，就要在那些机器上重跑 `provision-client.ps1`，或者依赖安装包里烘进去的地址（这正是换地址后要重新打包的理由，见坑 7）。
+> **备份里没有客户端源码，也没有客户端机器上的东西。** `backup.ps1` 打的是 `~\.dsh` 的状态与机密；客户端源码是**引擎仓库的一个 worktree**（见坑 5），两条分支都在 GitHub 上（`hqz-2024/hqz-dsh` 的 `hqz-dsh-0.1.6` 与 `hqz-desktop-client`），新机 clone 一次即可；`~\.dsh\client\dist` 里的安装包是可重建的构建产物（新机跑一次 `build-client.ps1` 就有了）。**每台客户端机器上的 `%USERPROFILE%\.dsh` 与 `%APPDATA%\@deepseek-ai\dsh-desktop` 完全不在迁移范围内** —— 服务器换了地址，就要在那些机器上重跑 `provision-client.ps1`，或者依赖安装包里烘进去的地址（这正是换地址后要重新打包的理由，见坑 7）。
 
 ---
 
@@ -89,11 +89,14 @@ git clone https://github.com/hqz-2024/dsh-plugin.git %USERPROFILE%\.dsh
 # 2) 引擎本体（本部署对引擎零改动，可直接 clone）
 git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh C:\Users\<用户名>\Desktop\deepseek-harness
 
-# 3) 客户端源码 = 同一个仓库的第二个 worktree（历史在引擎的 .git 里，不能只拷目录）
+# 3) 客户端源码 = 同一个仓库的另一个分支（hqz-desktop-client），挂成第二个 worktree。
+#    它的历史在引擎的 .git 里，所以不能只拷目录；clone 之后远端已有这个分支，
+#    worktree add 会自动建一个跟踪它的本地分支。
 cd C:\Users\<用户名>\Desktop\deepseek-harness
-git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
+
+> 旧机上若有**还没推送**的客户端提交（比如你在旧机上又改了客户端），才需要走 bundle：在旧机 `git bundle create dsh-branches.bundle hqz-desktop-client`，把 bundle 拷过来后 `git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'` 再 `git worktree add`（详见 §五 坑 5）。
 
 **做完应该看到**：`%USERPROFILE%\.dsh` 里有 `install.ps1`、`plugins\`、`profiles\`；`Desktop\` 下同时有 `deepseek-harness` 与 `dsh-desktop` 两个目录。
 
@@ -236,7 +239,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
 | `C:\Users\<用户名>\Desktop\deepseek-harness\`（不含 node_modules） | DSH 源码 checkout（分支 `hqz-dsh-0.1.6`，与上游 `master` 逐字一致） | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
-| `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，领先上游 `hqz-dsh-0.1.6` **14 个提交**：服务器模式与证书信任、模式徽标与切换、本地模式的模型路由、根证书信任、定时归档、发布版本号、打包默认地址与策略声明）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5） |
+| `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，领先上游 `hqz-dsh-0.1.6` **14 个提交**：服务器模式与证书信任、模式徽标与切换、本地模式的模型路由、根证书信任、定时归档、发布版本号、打包默认地址与策略声明；**已在 GitHub 上**）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5；新机 `git worktree add` 即可） |
 
 ---
 
@@ -278,19 +281,17 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | `Desktop\deepseek-harness` | `hqz-dsh-0.1.6` | 引擎本体（与上游 `master` 逐字一致，零改动 —— 这是铁律 1） |
 | `Desktop\dsh-desktop` | `hqz-desktop-client` | 客户端：在那份引擎上加了 **14 个提交**（服务器模式与证书、模式徽标与切换、本地模式的模型路由与根证书信任、定时归档、发布版本号、打包默认地址与策略声明） |
 
-所以 `Desktop\dsh-desktop` 里的 `.git` **是一个文件**（内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop`），只拷目录带不走历史。新机上重建：
+所以 `Desktop\dsh-desktop` 里的 `.git` **是一个文件**（内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop`），只拷目录带不走历史。**两条分支都在 GitHub 上**（引擎仓库 `hqz-2024/hqz-dsh`：`hqz-dsh-0.1.6` 与 `hqz-desktop-client`），所以新机上重建就是"clone + worktree add"：
 
 ```powershell
-# 旧机：把两个分支打成一个 bundle（比拷整个 .git 小得多）
-cd C:\Users\<用户名>\Desktop\deepseek-harness
-git bundle create dsh-branches.bundle hqz-dsh-0.1.6 hqz-desktop-client
-
-# 新机：先 clone 引擎，再从 bundle 取回两条分支，最后挂出 worktree
 git clone https://github.com/hqz-2024/hqz-dsh.git C:\Users\<用户名>\Desktop\deepseek-harness
 cd C:\Users\<用户名>\Desktop\deepseek-harness
-git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
+
+旧机上如果有**还没推送**的提交（例如你刚在旧机改了客户端），在那台机器上补一次推送就行；确实要离线搬时用 bundle：`git bundle create dsh-branches.bundle hqz-dsh-0.1.6 hqz-desktop-client`，到新机 `git fetch <bundle 路径> 'refs/heads/*:refs/heads/*'` 再 `git worktree add`。
+
+**为什么客户端不单独开一个仓库**：它不是独立项目，而是引擎仓库在某个基线上加的 14 个提交 —— 单独开仓要么把整段引擎历史（本地对象库约 194 MB）复制一份，要么丢掉历史变成不可合并的快照；而挂在引擎仓库里只要 **2.45 MB**（基座 `hqz-dsh-0.1.6` 已在远端），新机器一次 clone 就同时拿到引擎与客户端。
 
 `dsh-desktop` 第一次使用要先 `pnpm install`（`node_modules` 不在 git 里），完整构建约 15 分钟。
 
