@@ -30,6 +30,10 @@
 .PARAMETER SkipPublish
 只构建，不复制到分发目录。
 
+.PARAMETER StopRunning
+如果目标目录里正跑着客户端实例（它们锁着 win-unpacked 里的 dll），先把它们结束掉。
+不给就报错退出，由你决定。
+
 .EXAMPLE
 .\build-client.ps1
 #>
@@ -39,7 +43,8 @@ param(
 	[string]$DistDir = (Join-Path $env:USERPROFILE '.dsh\client\dist'),
 	[int]$MirrorPort = 8791,
 	[switch]$SkipBuild,
-	[switch]$SkipPublish
+	[switch]$SkipPublish,
+	[switch]$StopRunning
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +91,19 @@ $startedMirror = $false
 $mirrorProcess = $null
 try {
 	if (-not $SkipBuild) {
+		# 从目标目录跑着的客户端锁着 win-unpacked 里的 dxcompiler.dll 等文件，打包会一路跑到最后
+		# 一步才以 `EPERM: operation not permitted, unlink …` 失败 —— 那已经是十几分钟以后。
+		$running = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue |
+			Where-Object { $_.Path -like "$Artifacts*" })
+		if ($running.Count -gt 0) {
+			if (-not $StopRunning) {
+				$pids = ($running | ForEach-Object { $_.Id }) -join ', '
+				throw "有 $($running.Count) 个客户端实例正从目标目录运行（pid $pids）：它们锁着 win-unpacked 里的文件，打包会在最后一步以 EPERM 失败。先关掉它们，或加 -StopRunning 让本脚本代关。"
+			}
+			$running | Stop-Process -Force
+			Start-Sleep -Seconds 2
+			Write-Host "已结束 $($running.Count) 个占用目标目录的客户端实例"
+		}
 		$null = Initialize-Mirror
 		if (-not (Test-Port $MirrorPort)) {
 			Write-Host "起本机 Electron 镜像（127.0.0.1:$MirrorPort）…"

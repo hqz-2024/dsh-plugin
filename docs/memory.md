@@ -233,7 +233,14 @@
 
 ## 7. 已知陷阱（`AGENTS.md` §四之外的补充）
 
-- **git**：`git grep` 无命中时退出码是 1（别当成错误）；以 `-` 开头的模式必须用 `-e` 传；`git stash pop` 会把文件写成 **CRLF**，提交前要转回 LF（`.gitattributes` 是 `eol=lf`）。
+- **桌面客户端（2026-09-22 一天内踩了四条，全部写进 `desktop.log` 或测试了）**：
+  1. **证书判定必须按 host:port，不能按整个 origin。** 一个部署一个监听端口：文档走 `https://`、会话流走 `wss://`，同一张证书。按 origin 比会把**每一次 WSS 握手**判成"证书不属于这个部署"，Web UI 于是永远"重新连接"。**在服务器上永远测不出来** —— caddy 的根证书装在 `CurrentUser\Root` 里，Chromium 压根不报证书错误，那段判定一次都不执行；只有客户端机器（没装根证书）才会走到。要复现就用一张**真正不受信**的自签证书（`New-SelfSignedCertificate` + 本地 HTTPS/WSS 探针，用完从证书库删掉）。
+  2. **合成的 `.click()` 不能当"能点"的证据。** 徽标画在原生 caption 带（`titleBarOverlay`，40 DIP）里，操作系统把那条带当**拖动把手**：不声明 `-webkit-app-region: no-drag` 的控件，真人按下去是拖窗口，而 CDP 里 `element.click()` 照样触发 DOM 事件、测试全绿。**可点击性的证据只能是计算样式**（`getComputedStyle(el).getPropertyValue('-webkit-app-region')`）或真人点击。
+  3. **服务器模式没有"覆盖层座位"。** `preload-menu.ts` 的「应用 / 编辑」只等 `[data-shell-overlay]`（本外壳自己的文档才发布它）；部署页面没有 → 菜单整条不挂。而 `windowsMenu` 的准入写死 `assertDesktopSender(event, ['app'])`，所以就算挂上也会被拒。现在由外壳把模式报给菜单、服务器模式自己挂，并且这一条请求只按"主窗口顶层 frame"校验（它只带菜单名与两个坐标，不带页面授予的权限）。
+  4. **打包前必须关掉从 `win-unpacked` 跑着的客户端**：它锁着 `dxcompiler.dll` 等文件，electron-builder 会一路跑到最后一步才以 `EPERM: operation not permitted, unlink …` 失败（十几分钟白跑）。`build-client.ps1` 现在开工前检查并拒绝（`-StopRunning` 可代关）。
+  另外：`desktop.log`（`%APPDATA%\@deepseek-ai\dsh-desktop\`，512 KB 上限）现在记启动模式、每次证书判定、每次模式切换、归档结果与致命错误 —— **客户端报障先要这个文件**，别再靠猜。
+- **编辑 `.ps1` 会丢掉 BOM。** 我的编辑工具重写文件时不保留 BOM，而**没有 BOM 的中文注释在 Windows PowerShell 5.1 下会被按系统代码页解码**，乱码会让 3 字节汉字吞掉后一个字节、行结构错位（表现是莫名其妙的 `ParserError`）。改完 `.ps1` 必须补 BOM 并用两个 shell 各解析一遍。同理：**PowerShell 行尾是闭合字符串时不续行**（`+` 写在下一行开头会报"缺少右括号"）。
+- **git**：`git grep` 无命中时退出码是 1（别当成错误）；以 `-` 开头的模式必须用 `-e` 传；`git stash pop` 会把文件写成 **CRLF**，提交前要转回 LF（`.gitattributes` 是 `eol=lf`）。**不要在有嵌套 `node_modules` 的仓库跑不带路径限制的 `git status --ignored`** —— 它会走几十万层目录、几分钟后超时，还会留下孤儿 git 进程和 `index.lock`（下一次 commit 直接失败，报 `index.lock: File exists`；确认没有 git 进程后删掉即可）。
 - **本机命令**：`Get-CimInstance Win32_Process | Where CommandLine -match 'executor'` 会**杀掉自己的 pwsh**（它的命令行里也含这个词）—— 过滤必须带 `Name=`；pwsh 里 .NET 文件 API 按**进程 cwd** 解析，必须用绝对路径；`Start-Process -RedirectStandard*` 在**受限沙箱**下会 `spawn EPERM`（打不开命名管道），在 `danger-full-access` 下正常 —— 抓 GUI 应用（Electron）的 stdout/stderr 就靠它，因为 GUI 子系统进程不继承控制台。
 - **`Invoke-WebRequest` 的 `.Content` 可能是 `byte[]`**（内容类型是 `application/octet-stream` 时，如 GitHub release 的 `SHASUMS256.txt`）：直接 `Set-Content` 会把每个字节写成一行十进制数字。要落盘二进制/文本请走 `[System.IO.File]::WriteAllBytes/WriteAllText`。
 - **junction 只看"在不在"会骗人**（`enable-client-features.ps1` 2026-09-21 已修）：断链的 junction（目标被删了）`Test-Path` 给 **true**、`Get-Item` 也能拿到，但 `mklink` 建不了；指向别处的 junction 同样"看着正常"。两种都会让 profile 的 `bundles` 那一行解析失败（或更糟：挂上另一个 home 里的插件），而且**只在组合重载时才炸**。修法是巡检时核对 `.Target`，且目标从 `package.json` 的 `link:` 解析 —— 不要按包名猜（`dsh-video-studio` 实际挂在 `plugins/dsh-video-studio-local`）。顺带一条脚本级教训：**别复用外层的 `$existing` / `$current`**，覆盖了会以 "Cannot compare … because it is not IComparable" 的形式在几十行之外炸出来。
