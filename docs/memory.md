@@ -30,12 +30,17 @@
 | 项 | 值 |
 |---|---|
 | 部署仓库 | `~/.dsh`（`%USERPROFILE%\.dsh`），远端 `https://github.com/hqz-2024/dsh-plugin.git`（**公开**） |
-| 工作分支 | `client-world`，HEAD = `910dca5`，领先 `main` **76 个提交** |
-| `main` | `73ad10f`，与 `origin/main` 一致（那 76 个提交**从未推送**） |
-| 工作区 | 只有两处历史遗留改动：`backup.ps1` / `migrate.ps1` 的 BOM |
+| 工作分支 | `client-world`，HEAD = `2546f28`，领先 `main` **103 个提交**，**2026-09-22 已推送到 `origin/client-world`** |
+| `main` | `73ad10f`，与 `origin/main` 一致（**没有动过**；`client-world` 是独立分支） |
+| 工作区 | 干净（运行时台账与一次性诊断产物已在 `.gitignore` 里：`profiles/*/llm-gateway-usage.jsonl`、`cutover-report.txt`、`module-identity-report.json`） |
 | 引擎 checkout | `C:\Users\bestarc\Desktop\deepseek-harness`，分支 `hqz-dsh`，**零改动铁律**（只有 `README.zh.md` 一处早期未提交改动） |
+| 客户端 worktree | `C:\Users\bestarc\Desktop\dsh-desktop`，分支 `hqz-desktop-client`（14 个提交，2.45 MB）—— **仍未推送**，引擎仓库（remote 名是 `mine`，`hqz-2024/hqz-dsh`）里只有 `master`/`hqz-dsh`/`hqz-dsh-0.1.6` |
 
 **分支纪律**：所有改动提交到 `client-world`；除非用户明确要求，不推送、不合并、不动 `main`。
+
+**2026-09-22 首次推送（用户明确要求）**：推之前跑了 `check-secret-leak.mjs`，三项金丝雀（AI key / machineSecret / relay token）与 `sk-` 扫描在两边历史里都 0 命中；**但 `setup-smb.ps1` 的历史版本里有一个真 SMB 口令**（7 个待推送提交的树里都有它，一推就永久公开）—— 用 `git filter-branch --index-filter` 把历史里那一行的默认值清空（内容其余不变，`refs/original/` 留着可回退），清完 0 命中且远端分支同样为 0。**那个口令仍建议轮换**：它曾存在于本地历史，且对真实账号 `dshtest` 有效（脚本现在留空即随机生成）；轮换会打断正在用旧口令的共享挂载，所以听用户的时机。第一次 `git push` 报 `schannel: failed to receive handshake` 是代理节点瞬时抖动，重试即成功（git 走的是 `http://127.0.0.1:7897`，`verge-mihomo`）。
+
+**从 GitHub 部署的齐全性体检（2026-09-22，用户问"资料齐不齐、能不能照步骤装"）**：仓库侧齐全 —— 全部部署脚本（`install/backup/migrate/verify` 各有 .ps1 与 .sh、`fix-firewall.cmd`、`build-client.ps1`、`electron-mirror-server.mjs`、`client\provision-client.ps1`、`client\export-session.mjs`、`build-executor-exe.mjs`、`enable-client-features.ps1`）、10 个插件、286 个预设（590 文件）、11 个 skill 目录、两套 profile（含各自的 `cordis.patch.example.yml` 脱敏模板）、`tools\manifest-tool`。按设计不在仓库里的是：机密（`.credentials.yaml`/`auth/`/`profiles/web*/cordis.patch.yml` → 走备份包或由脚本生成）、数据（sessions/storages/attachments → 备份包）、机器相关（Caddyfile、启动脚本 → `install.ps1` 生成）、大件（caddy、dsh-doc 运行时、FFmpeg、`client\dist` 的 293 MB 安装包、执行器 dist → 脚本下载/重建）。**查出并修掉三处会真挡住部署的问题**：① 6 个 `.ps1`（含 `install.ps1`/`backup.ps1`/`migrate.ps1`）带中文却没有 BOM → **Windows PowerShell 5.1 下直接 `Unexpected token` 解析失败**（实测），已补齐 BOM 并逐个复验；② `install.ps1` 的插件清单写死五个名字（含一个已删除的），漏掉 5 个新插件 → 改成按 `plugins\` 目录推导；③ 客户端世界的开通步骤原本没写进迁移文档 → `MIGRATION.md` 新增「第 4b 步」。**唯一未闭合的缺口**：客户端源码分支 `hqz-desktop-client` 只在本地，第 1 步仍需旧机的 bundle（推它只要 2.45 MB，且基座 `hqz-dsh-0.1.6` 已在远端）—— 已问用户是否要推。
 
 ---
 
