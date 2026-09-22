@@ -517,7 +517,7 @@ window.__ModuleLoader__.load({
 		const refreshTree = () => {
 			if (!colEl) return;
 			if (cutPath) { cutPath = null; const els = colEl.querySelectorAll('.dsh-ftree-cut'); for (const e of Array.from(els)) e.classList.remove('dsh-ftree-cut'); }
-			const btn = colEl.querySelector('.dsh-ftree-col-head .dsh-ftree-btn');
+			const btn = colEl.querySelector('.dsh-ftree-col-head .dsh-ftree-refresh');
 			if (btn) btn.click();
 		};
 		const closeMenu = () => {
@@ -1981,7 +1981,7 @@ window.__ModuleLoader__.load({
 										react.createElement('option', { value: 'size' }, '大小'),
 										react.createElement('option', { value: 'mtime' }, '时间')
 									),
-									react.createElement('span', { className: 'dsh-ftree-btn', title: '刷新', onClick: (ev) => { ev.stopPropagation(); if (view === 'git') refreshGit(); else if (listRoot) { setRoot(null); setDirsSync({}); setLoading(true); loadDir(listRoot, sortMode === 'mtime').then((r) => { setRoot(r); setLoading(false); }); } } }, '刷新'),
+									react.createElement('span', { className: 'dsh-ftree-btn dsh-ftree-refresh', title: '刷新', onClick: (ev) => { ev.stopPropagation(); if (view === 'git') refreshGit(); else if (listRoot) { setRoot(null); setDirsSync({}); setLoading(true); loadDir(listRoot, sortMode === 'mtime').then((r) => { setRoot(r); setLoading(false); }); } } }, '刷新'),
 									react.createElement('span', { className: 'dsh-ftree-btn', title: '上传文件到当前文件夹', onClick: (ev) => { ev.stopPropagation(); const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.onchange = () => { for (const f of Array.from(inp.files || [])) uploadFile(f, listRoot); }; inp.click(); } }, '上传'),
 									react.createElement('span', { className: 'dsh-ftree-btn', title: '上传整个文件夹到当前文件夹', onClick: (ev) => { ev.stopPropagation(); const inp = document.createElement('input'); inp.type = 'file'; inp.webkitdirectory = true; inp.onchange = () => { const files = Array.from(inp.files || []); if (files.length > 0) uploadFolderFiles(files, listRoot); }; inp.click(); } }, '传文件夹')
 								)
