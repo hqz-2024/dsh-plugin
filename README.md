@@ -235,6 +235,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **模型网关（2026-09-18，客户端世界阶段 1）**：`dsh-llm-gateway-local` 在部署上开一个 OpenAI 兼容的模型面 `/llm/v1`（`/models` 与 `/chat/completions`），**按 token 认账号**，再用部署自己的 DeepSeek key 转发，并把用量记进 `profiles/web-client/llm-gateway-usage.jsonl`。客户端因此**一个 AI key 都不需要**：`settings.yaml` 把 `llm-deepseek` 的 `baseURL` 指到 `<origin>/llm/v1`、`apiKeyEnv` 指到 `HQZ_GATEWAY_TOKEN`。门禁要放行 `/llm` 前缀（token 不是会话 cookie），见 `enable-client-features.ps1`。
 - **会话归档（2026-09-18，阶段 3）**：`~\.dsh\client\export-session.mjs` 把本机会话导成转录（只收 `user/message` 里 **source.kind === 'user'** 的部分——插件注入的上下文动辄几万字，收进来只会把"这次做了什么"淹掉），按账号上传到 `/archive/v1/sessions`；服务端 `plugins\dsh-archive-local` 先落原始转录，再用部署的模型精简成一篇笔记写进 `obsidian笔记\会话记录\`（frontmatter + 中文序号章节 + 索引一行，格式照库里已有的样本做）。同一会话重复归档是**替换**：主题变了连旧笔记一起删，不会留孤儿。台账 `$DSH_HOME\client\archive-state.json` 保证 `--pending` 只传变化过的会话——否则每 6 小时把同一个会话重传一遍，模型精简是真金白银。
 - **桌面客户端（2026-09-21，阶段 2/4）**：在**上游自带的 Electron 桌面端**（`apps/desktop`，MIT）上打补丁，而不是从零写壳——只加三样：**服务器模式**（同一窗口加载部署的 Web UI，带只能由外壳绘制、页面改不掉的模式徽标，菜单里可切换）、**证书信任**（配置了 `certificateSha256` 就只认那一张，否则接受该 origin 的自签证书并报出指纹供钉）、**定时归档**（启动 60 秒后第一次，之后每 6 小时；只认 `$DSH_HOME\client\export-session.mjs`，没这个脚本就整条链路不启用）。客户端**自带 Node 与 dsh**，装机机器不需要任何其他依赖；本地模式全权限无审批（刻意如此，装机时要向用户说明）。真机冒烟：隔离 home 里窗口加载 `dsh-app://app/`、无徽标、中文界面、客户端插件正常挂载；只写"上次选的是服务器模式"、机器上任何地方都没有地址文件时，窗口自己连上 `https://192.168.28.239:8443` 并显示徽标「服务器模式 · HQZ 局域网」。
+- **本地模式的模型与证书（2026-09-22）**：把"装完就能用本地模式"真正做完，两个坑各踩了一轮。**模型路由**烘进应用清单的 `dshDesktopGateway`（origin / models / 网关 token），首次启动写进 `$DSH_HOME\profiles\desktop\cordis.patch.yml` 与 `.credentials.yaml`；**根证书**由 `.env.windows` 的 `DSH_DESKTOP_GATEWAY_CA_FILE`（指 caddy 的 `root.crt`）烘进同一个清单值，首次启动写成 `profiles\desktop\gateway-ca.crt`，外壳把它作为 `NODE_EXTRA_CA_CERTS` 交给本地 Host 与归档脚本 —— **因为 Node 不读 Windows 证书库**，光有路由会在握手就断（`Transport: DeepSeek API request to https://…/llm/v1 failed`），而外壳窗口自己那套"接受自签证书"管不到那个独立进程。实测对照（用**打包运行时**跑一次性任务）：带根证书 → 模型回话；不带 → 复现原报错。客户端机器上要改指别处仍用 `client\provision-client.ps1`（新增 `-DesktopGatewayCa`）。
 - **打包与分发（2026-09-21）**：**装完就自带服务器模式** —— 打包时把部署地址烘进应用清单的 `dshDesktopServerMode`。地址是"当时的部署事实"，所以是**问出来的**：`DSH_DESKTOP_SERVER_ORIGIN` → `…_HOST`(+`_PORT`) → `DSH_LAN_IP`（`start-dsh-lan.cmd` 自己就设这个变量）→ 本机网卡（私网段优先），走到最后一步时逐个候选地址请求 `https://<地址>:8443/auth/me`，**谁答用谁**，都不答就保留第一个候选并在日志里 WARNING（不因此让构建失败）。安装包上线后由设置 →「本地插件」的「桌面客户端（可选）」卡片直接分发（`$DSH_HOME\client\dist` 里最新的 `.exe`，列表每次请求现读，**发新版 = 把新 exe 丢进目录**）。服务端一条命令：`~\.dsh\build-client.ps1`（备镜像 → 构建 → 发布 → 核对哈希）。
 
 ### 11.4 运维提示
@@ -249,7 +250,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **`setup-smb.ps1` 不再带默认密码。** 第一版把 `-SmbPassword` 的默认值写死在脚本里，而它对一个**真实存在的本机账号**有效，且该脚本已提交进 git —— 等于把可用凭据写进了仓库。现在留空即本次随机生成。**该密码仍在 git 历史里（提交 `bf92f35`）**，所以：① 仓库推送到公开远端前必须先改密；② 更稳妥的做法是直接把那个 SMB 账号的密码轮换掉（`Set-LocalUser -Name dshtest -Password ...`）或删掉重建。**已启用的 `dshtest` 账号若继续用旧密码对外提供共享，等于共享凭据是公开的。** 另外：脚本**第 21 行的用法示例**里还留着一个 22 位的真口令（`-SmbPassword '<22 字符>'`），它出现在 7 个未推送的提交里 —— push 之前一并换成占位符。
 - **客户端构建与发布（2026-09-21）**：服务端一条命令 `~\.dsh\build-client.ps1` —— 备好本机 Electron 镜像 → 跑 `pnpm run package:desktop:win:x64:unsigned` → 把新产物复制进 `~\.dsh\client\dist` 并核对哈希。**打包期间不要动 git 仓库**：客户端构建把 `DSH_CLIENT_COMMIT_HASH` 记进构件记录，`release:pack` 会再比一次，中途提交会让打包以 `client build environment differs from the required artifact profile: DSH_CLIENT_COMMIT_HASH` 中止（构建约 15 分钟，先提交完再开跑）。
 - **客户端相关的三处目录**：`~\.dsh\client\`（provisioning 脚本 + 导会话脚本 + 镜像服务器 + `dist\` 安装包，`dist` 已 gitignore）、桌面 worktree `C:\Users\bestarc\Desktop\dsh-desktop`（客户端源码与构建现场，**引擎 checkout 仍是零改动**）、`~\.dsh\plugins\dsh-remote-local`（设置页「本地插件」那张下载卡片与 `/auth/client-installer` 路由所在）。客户端机器上的数据不在这里：`%USERPROFILE%\.dsh` 与 `%APPDATA%\@deepseek-ai\dsh-desktop` 各自独立，**服务器迁移不会带上它们**。
-- **桌面 profile 由桌面应用独占**：`$DSH_HOME\profiles\desktop`（bundle 列表 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`，自包含、无 `link:` 依赖），应用启动时只创建缺失文件、**不覆盖已存在的**，CLI 也 boot 不了这个 profile。所以先放 provisioning 的文件是安全的。
+- **桌面 profile 由桌面应用独占**：`$DSH_HOME\profiles\desktop`（bundle 列表 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`，自包含、无 `link:` 依赖），应用启动时只创建缺失文件、**不覆盖已存在的**，CLI 也 boot 不了这个 profile。所以先放 provisioning 的文件是安全的。**例外**：`gateway-ca.crt` 与 `cordis.patch.yml` 里的路由是"构建的事实" —— 带根证书的构建会覆盖前者，补丁层那一行只在没配置过时才写；而 `settings.yaml` 的 `llm-deepseek:` 段（provisioning 写的）**优先级高于**补丁层，即 provisioning 可以整体改指到别的部署。
 
 ### 11.5 全局 skill 与加载顺序
 
@@ -325,7 +326,7 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **一句话**：在那台电脑上装一个应用，它要么**当本机 agent 用**（工具直接操作那台机器上的文件和软件，模型请求打到本部署的网关），要么**当本部署的窗口用**（加载 `https://<服务器>:8443`，一切在服务器上）。两种模式是同一个窗口、同一份文档位置，菜单里切换。
 
-**怎么拿到**：在那台机器的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「桌面客户端（可选）」那张卡片** → 点「**下载**」拿到 `deepseek-harness-<版本>-win-x64.exe`（约 293 MB）。
+**怎么拿到**：在那台机器的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「桌面客户端（可选）」那张卡片** → 点「**下载**」拿到 `deepseek-harness-<版本>-win-x64.exe`（约 293 MB）。**文件名不带构建时间**（每次构建都是同一个名字），所以**换包之后必须重新下载**；想确认拿到的是哪一次构建，在下载目录里比对哈希：`Get-FileHash .\deepseek-harness-*.exe -Algorithm SHA256`，与 `docs\memory.md` 里"交付物"一节记的那一行对。
 
 **怎么装**：双击。安装器**只装当前用户**（不需要管理员），安装目录可改，装完默认勾选"立即启动"。**装机机器不需要预装任何东西** —— Node、dsh、生产依赖全在安装包里；归档脚本也是用应用自带的 Node 跑的。
 
@@ -333,13 +334,15 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 | 模式 | 跑在哪 | 模型从哪来 | 怎么认 |
 |---|---|---|---|
-| **本地模式**（默认） | **这台机器**：agent 循环在本机，工具直接操作本机文件与软件 | 本部署的模型网关（`<origin>/llm/v1`） | 没有徽标 |
-| **服务器模式** | 服务器：客户端只是一个窗口 | 服务器上的循环 | 窗口顶部黄色徽标「服务器模式 · 部署名」 |
+| **服务器模式**（安装后第一次启动） | 服务器：客户端只是一个窗口 | 服务器上的循环 | 窗口顶部黄色徽标「服务器模式 · 部署名」 |
+| **本地模式**（菜单切换） | **这台机器**：agent 循环在本机，工具直接操作本机文件与软件 | 本部署的模型网关（`<origin>/llm/v1`），装完就有 | 没有徽标 |
 
 - **切到服务器模式**：菜单 **模式 → 服务器模式**（或在服务器模式里点徽标上的「切回本地」）。选中的模式记在 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-mode.json`，重启后保持。
 - **服务器模式要登录**：窗口加载的是部署自己的 Web UI，第一次会让你输账号密码 —— 跟浏览器打开 `https://<服务器>:8443` 是同一件事。
 - **装完自带部署地址**：打包时地址已经烘进应用清单，所以**不需要任何配置**就能用服务器模式。要让某一台机器连**别的**部署，在它的 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-client.json` 里写 `{ "server": { "origin": "https://…:8443", "label": "…" } }`（或设 `DSH_DESKTOP_SERVER_MODE`）。
-- **本地模式要有模型，就要 provisioning**：在那台机器上跑一次 `~\.dsh\client\provision-client.ps1`（把 `client\` 整个目录拷过去），它写四样东西到 `%USERPROFILE%\.dsh` —— `settings.yaml`（网关端点与模型清单）、`.credentials.yaml`（网关 token 与归档 token）、`archive.json`、`profiles\desktop\cordis.patch.yml` —— 外加第五样 `desktop-client.json` 把服务器模式也一并配好。**客户端没有任何 AI key**：模型请求带网关 token，网关按 token 认账号、限额、入账，再用部署自己的 key 转发。`-WhatIfOnly` 先看一遍。本地模式默认**全权限、无审批**（`danger-full-access`）—— 这是刻意的：agent 以该 Windows 用户身份直接操作这台机器，装机时要向用户说明。
+- **本地模式装完就有模型**：模型路由（网关地址 + 模型清单 + 网关 token）在打包时**烘进应用清单**，第一次启动写进 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml` 与 `.credentials.yaml`，**不需要 provisioning**。**客户端没有任何 AI key**：模型请求带网关 token，网关按 token 认账号、限额、入账，再用部署自己的 key 转发。本地模式默认**全权限、无审批**（`danger-full-access`）—— 这是刻意的：agent 以该 Windows 用户身份直接操作这台机器，装机时要向用户说明。
+- **证书也是烘进去的**：部署的 TLS 终结器（caddy）自签，而**本地 Host 是个普通 Node 进程、不读 Windows 证书库**，所以光有模型路由还会卡在握手上（报 `DeepSeek API request to https://…/llm/v1 failed`）。安装包把**根证书**一并烘进去，首次启动写成 `%USERPROFILE%\.dsh\profiles\desktop\gateway-ca.crt`，外壳把它作为 `NODE_EXTRA_CA_CERTS` 交给本地 Host 与归档脚本。要根证书而不是叶子证书：终结器换叶子证书时根证书不变。
+- **要改指到别的部署才用 provisioning**：在那台机器上跑一次 `~\.dsh\client\provision-client.ps1`（把 `client\` 整个目录拷过去），它写 `settings.yaml`（网关端点与模型清单）、`.credentials.yaml`（网关 token 与归档 token）、`archive.json`、`profiles\desktop\cordis.patch.yml`，`-DesktopGatewayCa <根证书.pem>` 再写 `profiles\desktop\gateway-ca.crt`，外加把服务器模式也一并配好的 `desktop-client.json`。`-WhatIfOnly` 先看一遍。**优先级（实测）**：`settings.yaml` 里的 `llm-deepseek:` 段**覆盖**安装包烘进补丁层的那一行（设置层是"组合基座 + 用户层"，用户层在上），所以 provisioning 确实能把某台机器改指到另一个部署；想回到安装包的默认路由，就把 `settings.yaml` 里那一段删掉。
 - **会话会自动归档**：应用启动约 60 秒后跑第一次，之后每 6 小时一次（菜单里也有「立即归档会话」）。启用条件是**两件事同时成立**：`%USERPROFILE%\.dsh\client\export-session.mjs` 存在（provisioning 放进去的）**且**归档地址已配 —— 只装了应用、没配归档的机器不会自己去连任何地方。归档 → 部署用模型精简 → 写进服务器的 `obsidian笔记\会话记录\`。
 - **出错了会弹一个原生框**：上面是「应用无法启动或已意外停止」与**有界的**错误末尾，按钮是 退出 / 重启 / 禁用第三方插件、备份 profile patch 并重启。看到它就照按钮做；括号里的原始错误通常已经说明是哪一行配置不对。
 

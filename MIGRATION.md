@@ -182,6 +182,12 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 `DSH_DESKTOP_SERVER_MODE=auto`（`apps/desktop/.env.windows`）时，打包会探测本机哪个地址真的在跑 dsh —— 逐个候选请求 `https://<地址>:8443/auth/me`，谁答就把谁写进应用清单的 `dshDesktopServerMode`。客户端装完就自带服务器模式、不需要任何配置。**所以换了服务器地址或网段，必须重新打包（`build-client.ps1`）并重新发布**，否则老安装包的服务器模式还指着旧地址。单台机器可以不改包：在它的 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-client.json` 写 `{ "server": { "origin": "https://新地址:8443", "label": "…" } }`（用户文件优先于清单默认值），或设环境变量 `DSH_DESKTOP_SERVER_MODE`。
 
+### 坑 8：根证书也是**打包时**烘进去的（Node 不读 Windows 证书库）
+
+部署的 TLS 终结器（caddy）自签，而客户端**本地模式下的模型请求由一个独立的 Node 进程发出**（`Host`），外壳窗口里那套"接受自签证书"管不到它；Node 又完全不读 Windows 证书库，所以没有根证书时请求在握手就断，界面上的表现是 `失败原因：DeepSeek API request to https://<地址>:8443/llm/v1 failed`。因此打包时把**根证书**（`apps/desktop/.env.windows` 里的 `DSH_DESKTOP_GATEWAY_CA_FILE`，指 `%APPDATA%\Caddy\pki\authorities\local\root.crt`）一并烘进应用清单的 `dshDesktopGateway.certificateAuthority`，客户端首次启动写成 `%USERPROFILE%\.dsh\profiles\desktop\gateway-ca.crt`，外壳把它作为 `NODE_EXTRA_CA_CERTS` 交给本地 Host 与归档脚本。**后果与坑 7 相同**：换了终结器/重建了 caddy 的 PKI（根证书变了）就要**重新打包并重新发布**；单台机器可以不改包，用 `client\provision-client.ps1 -DesktopGatewayCa <新根证书.pem>` 把新根证书放进同一个位置。要**根证书**不要叶子证书 —— 叶子证书每次续期都换，根证书不变。
+
+**发布即覆盖**：安装包文件名每次构建都一样（`deepseek-harness-<版本>-win-x64.exe`），新构建直接覆盖 `$DSH_HOME\client\dist` 里的旧文件，设置页那张卡片显示的名字与大小几乎不变 —— **客户端必须重新下载**，要确认拿到的是哪一次构建就用 `Get-FileHash … -Algorithm SHA256` 对 `docs\memory.md`"交付物"里记的哈希。
+
 ---
 
 ## 五、验证清单

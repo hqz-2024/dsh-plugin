@@ -39,6 +39,13 @@
 .PARAMETER DesktopLabel
 服务器模式窗口标题与徽标上显示的名字，例如 "HQZ 局域网"。
 
+.PARAMETER DesktopGatewayCa
+部署 TLS 终结器的**根证书**（PEM 文件路径），例如 caddy 的
+%APPDATA%\Caddy\pki\authorities\local\root.crt。Node 不读 Windows 证书库，
+所以本地 Host（真正发模型请求的那个进程）必须有这个根证书才肯和部署握手 ——
+桌面应用从安装包里烘的根证书或这个文件里取一个用；不带根证书的安装包就用这个。
+要根证书而不是叶子证书：终结器换叶子证书时根证书不变。
+
 .PARAMETER DesktopUserDataDir
 桌面应用的浏览器数据目录；省略时用 %APPDATA%\@deepseek-ai\dsh-desktop
 （安装包的清单里没有 productName，所以应用名就是包名）。
@@ -51,6 +58,10 @@
 
 .EXAMPLE
 .\provision-client.ps1 -GatewayOrigin 'https://192.168.28.239:8443' -GatewayToken 'xxx' -WhatIfOnly
+
+.EXAMPLE
+.\provision-client.ps1 -GatewayOrigin 'https://192.168.28.239:8443' -GatewayToken 'xxx' `
+	-DesktopGatewayCa "$env:APPDATA\Caddy\pki\authorities\local\root.crt"
 #>
 [CmdletBinding()]
 param(
@@ -62,6 +73,7 @@ param(
 	[string]$ArchiveOrigin = '',
 	[string]$DesktopServerOrigin = '',
 	[string]$DesktopLabel = '',
+	[string]$DesktopGatewayCa = '',
 	[string]$DesktopUserDataDir = (Join-Path $env:APPDATA '@deepseek-ai\dsh-desktop'),
 	[switch]$SkipDesktopServer,
 	[switch]$WhatIfOnly
@@ -155,6 +167,20 @@ $targets = [ordered]@{
 	(Join-Path $HomeDir 'profiles\desktop\cordis.patch.yml') = $patch
 }
 
+# 部署的根证书。桌面应用启动时读 $DSH_HOME\profiles\desktop\gateway-ca.crt 并把它
+# 作为 NODE_EXTRA_CA_CERTS 交给本地 Host —— 装出来的客户端不带根证书时（比如
+# DSH_DESKTOP_GATEWAY=none 的构建），信任就由这个文件提供。
+# 用 .NET 读、不带 BOM 写：证书文件里多一个 BOM，Node 就解析不出第一张证书。
+if ($DesktopGatewayCa.Trim() -ne '') {
+	$caPath = $DesktopGatewayCa.Trim()
+	if (-not (Test-Path -LiteralPath $caPath -PathType Leaf)) { throw "DesktopGatewayCa 不是文件：$caPath" }
+	$caText = [System.IO.File]::ReadAllText($caPath)
+	if ($caText -notmatch '-----BEGIN CERTIFICATE-----' -or $caText -notmatch '-----END CERTIFICATE-----') {
+		throw "DesktopGatewayCa 不是 PEM 证书：$caPath"
+	}
+	$targets[(Join-Path $HomeDir 'profiles\desktop\gateway-ca.crt')] = ($caText -replace "`r`n", "`n").TrimEnd() + "`n"
+}
+
 # 服务器模式的部署地址。桌面应用按 环境变量 → 这个文件 → 安装包里的默认值 取，
 # 所以写在这里就等于替这台机器点定一个部署；安装包里烘过的默认值仍然管别的机器。
 if (-not $SkipDesktopServer) {
@@ -190,6 +216,11 @@ foreach ($entry in $targets.GetEnumerator()) {
 Write-Host ''
 Write-Host '完成。桌面应用启动后：' -ForegroundColor Green
 Write-Host "  本地模式：模型来自 $baseUrl（网关），本机没有 AI key。"
+if ($DesktopGatewayCa.Trim() -ne '') {
+	Write-Host '  证书：部署根证书已写入 profiles\desktop\gateway-ca.crt；本地 Host 会带着它启动。'
+} else {
+	Write-Host '  证书：未给 -DesktopGatewayCa；应用只用安装包里烘的根证书（没有就握手失败）。' -ForegroundColor Yellow
+}
 if ($SkipDesktopServer) {
 	Write-Host '  服务器模式：未配置（-SkipDesktopServer）；应用用安装包里烘进去的默认值。'
 } else {
