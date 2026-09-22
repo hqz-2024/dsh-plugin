@@ -30,11 +30,12 @@
 | 项 | 值 |
 |---|---|
 | 部署仓库 | `~/.dsh`（`%USERPROFILE%\.dsh`），远端 `https://github.com/hqz-2024/dsh-plugin.git`（**公开**） |
-| 工作分支 | `client-world`，HEAD = `2546f28`，领先 `main` **103 个提交**，**2026-09-22 已推送到 `origin/client-world`** |
-| `main` | `73ad10f`，与 `origin/main` 一致（**没有动过**；`client-world` 是独立分支） |
+| 工作分支 | `client-world`（日常改动都提交在这里），HEAD = `bbadb41` |
+| `main` | **2026-09-22 已由用户要求 fast-forward 到 `client-world`**（`73ad10f → bbadb41`，直系所以没丢历史、没产生 merge 提交）。以后想让 main 跟上，就是 `git branch -f main client-world` + `git push origin client-world:main`（**不要 checkout main**：线上实例正在读这个目录里的文件） |
 | 工作区 | 干净（运行时台账与一次性诊断产物已在 `.gitignore` 里：`profiles/*/llm-gateway-usage.jsonl`、`cutover-report.txt`、`module-identity-report.json`） |
-| 引擎 checkout | `C:\Users\bestarc\Desktop\deepseek-harness`，分支 `hqz-dsh`，**零改动铁律**（只有 `README.zh.md` 一处早期未提交改动） |
-| 客户端 worktree | `C:\Users\bestarc\Desktop\dsh-desktop`，分支 `hqz-desktop-client`（14 个提交，2.45 MB）—— **2026-09-22 已推送到 `hqz-2024/hqz-dsh`**（remote 名是 `mine`；引擎仓库现有 `master`/`hqz-dsh`/`hqz-dsh-0.1.6`/`hqz-desktop-client` 四条分支，前三条未被改动）。**没有**用 `hqz-2024/hqz-dsh-desktop`：那个仓库仍是空的 —— 客户端不是独立项目，单独开仓要复制整段引擎历史（约 194 MB）或丢历史，挂在引擎仓库只要 2.45 MB，且新机一次 clone 就同时拿到引擎与客户端 |
+| 引擎 checkout | `C:\Users\bestarc\Desktop\deepseek-harness`，分支 `hqz-dsh-0.1.6`（= `ddefc45fbc`，0.1.6-alpha.2），**零改动铁律**（只有 `README.zh.md` 一处早期未提交改动） |
+| 引擎仓库分支 | `hqz-2024/hqz-dsh`：`master` 与 `hqz-dsh-0.1.6` **都指向 `ddefc45fbc`**（2026-09-22 按用户要求把 0.1.6 fast-forward 进 master，原来 master 停在 0.1.2 时代）；`hqz-dsh` = `94c52813` 是 **0.1.3 时代的老分支**（就是它让 `install.ps1` 默认拉错引擎，建议删掉）；`hqz-desktop-client` = `3057c8df0f` |
+| 客户端 worktree | `C:\Users\bestarc\Desktop\dsh-desktop`，分支 `hqz-desktop-client`（14 个提交）—— 是引擎仓库的第二个工作树，**不单独开仓、也不合并回引擎分支**（理由见 README/MIGRATION：master 是上游镜像，0.1.6 要保持与上游逐字一致；它自己就是"引擎基线之上的功能分支"，部署时 `git worktree add` 就够） |
 
 **分支纪律**：所有改动提交到 `client-world`；除非用户明确要求，不推送、不合并、不动 `main`。
 
