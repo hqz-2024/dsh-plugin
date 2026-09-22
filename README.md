@@ -182,7 +182,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 隐藏工作区/会话（admin） | `/auth/hide` + `auth\hidden-items.json` | 同上 |
 | 账号管理界面 | 账号卡片可编辑 + 工作区多选下拉 + 预设选择 | 同上（client.js） |
 | 办公文档解析 | dsh-doc（PDF/DOCX/XLSX/PPTX/MD/CSV + OCR） | `profiles\web\cordis.patch.yml` |
-| 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格） | `~\.dsh\plugins\folder-tree-sh-local` |
+| 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格；**顶部工具行已改两行自适应换行**，窄面板下按钮不再被裁） | `~\.dsh\plugins\folder-tree-sh-local` |
 | Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
 | 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具（**已降级为逃生口**，见 11.6） | `~\.dsh\plugins\dsh-local-bridge` |
 | **客户端执行世界** | 工作区绑定决定命令跑在哪台机器：`dsh-client-bindings`（绑定存储）+ `dsh-subprocess-dispatch`（接管 `subprocess`）+ 客户端 executor | `~\.dsh\plugins\dsh-client-bindings`、`~\.dsh\plugins\dsh-subprocess-dispatch` |

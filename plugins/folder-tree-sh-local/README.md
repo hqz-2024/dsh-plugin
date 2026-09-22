@@ -68,6 +68,11 @@ cd ..\.. && pnpm add "file:./packages/dsh-ftree"
 | `/dsh-ftree-git` | GET | git status（branch + 变更） |
 | `/dsh-ftree-git-op` | POST | stage / unstage / discard / diff |
 
+## 本部署的本地改动（相对上游 0.3.0）
+
+- **顶部工具行改成两行（2026-09-22）**：`dsh-ftree-col-head` 由「一行十项」改为纵向两段 —— 第一行是图标 + 标题 + 路径（`dsh-ftree-head-ident`），第二行是全部功能按钮 `文件 / Git / 隐藏开关 / 排序 / 刷新 / 上传 / 传文件夹`（`dsh-ftree-head-actions`，`flex-wrap:wrap`）。原因：原来十项挤在一行，而 `.dsh-ftree-col` 是 `overflow:hidden`，面板一窄（默认宽度或用户拖窄后）「刷新 / 上传 / 传文件夹」会被直接裁掉、点不到。现在按钮行会自己换行，任何宽度下都不会被裁。改动只在 `lib/client.js`（CSS 规则 + `head` 的 React 结构），备份在同目录 `lib/client.js.bak-two-row`。
+- 归档面板、预览列、下载按钮、xlsx 网格等改动见 `~\.dsh\README.md` §11 的插件清单与 `~\.dsh\docs\memory.md`。
+
 ## 许可
 
 MIT
