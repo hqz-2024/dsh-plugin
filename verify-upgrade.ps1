@@ -1,4 +1,4 @@
-# verify-upgrade.ps1 — post-cutover health check for the running dsh instance.
+﻿# verify-upgrade.ps1 — post-cutover health check for the running dsh instance.
 # Usage: pwsh -File verify-upgrade.ps1 [-Port 3080]
 param([int]$Port = 3080)
 
@@ -35,13 +35,26 @@ if ($engine -and (Test-Path (Join-Path $engine 'package.json'))) {
   Check 'engine version = 0.2.1-rc.2' ($version -eq '0.2.1-rc.2') $version
 }
 
+# PowerShell 5.1 has no -SkipHttpErrorCheck; probe with curl.exe so the script
+# behaves the same under powershell.exe and pwsh.
+function Probe([string]$Url, [string]$Method = 'GET', [hashtable]$Headers = @{}, [string]$Body = '') {
+  $out = Join-Path $env:TEMP ('probe-' + [guid]::NewGuid().ToString('N') + '.txt')
+  $curlArgs = @('-s', '-o', $out, '-w', '%{http_code}', '-X', $Method, '--max-time', '12')
+  foreach ($key in $Headers.Keys) { $curlArgs += @('-H', ($key + ': ' + $Headers[$key])) }
+  if ($Body) { $curlArgs += @('-H', 'Content-Type: application/json', '--data', $Body) }
+  $curlArgs += $Url
+  $code = (& curl.exe @curlArgs) | Select-Object -Last 1
+  $body = ''
+  if (Test-Path $out) { $body = Get-Content $out -Raw -ErrorAction SilentlyContinue; Remove-Item $out -Force -ErrorAction SilentlyContinue }
+  [pscustomobject]@{ StatusCode = [int]$code; Content = $body }
+}
 try {
-  $me = Invoke-WebRequest "http://127.0.0.1:$Port/auth/me" -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  $me = Probe "http://127.0.0.1:$Port/auth/me"
   Check '/auth/me' ($me.StatusCode -eq 200) ("status=" + $me.StatusCode)
 } catch { Check '/auth/me' $false $_.Exception.Message }
 
 try {
-  $html = Invoke-WebRequest "http://127.0.0.1:$Port/" -Headers @{ Accept = 'text/html' } -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  $html = Probe "http://127.0.0.1:$Port/" -Headers @{ Accept = 'text/html' }
   Check 'app shell' ($html.StatusCode -eq 200 -and $html.Content -match '<html') ("status=" + $html.StatusCode)
 } catch { Check 'app shell' $false $_.Exception.Message }
 
@@ -50,17 +63,17 @@ $token = ''
 if (Test-Path $patch) { $token = [regex]::Match((Get-Content $patch -Raw), 'gw-[A-Za-z0-9\-]+').Value }
 if ($token) {
   try {
-    $models = Invoke-WebRequest "http://127.0.0.1:$Port/llm/v1/models" -Headers @{ Authorization = "Bearer $token" } -UseBasicParsing -TimeoutSec 10 -SkipHttpErrorCheck
+    $models = Probe "http://127.0.0.1:$Port/llm/v1/models" -Headers @{ Authorization = "Bearer $token" }
     $ids = ([regex]::Matches($models.Content, '"id":"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) -join ','
     Check '/llm/v1/models' ($models.StatusCode -eq 200) $ids
   } catch { Check '/llm/v1/models' $false $_.Exception.Message }
   try {
-    $archive = Invoke-WebRequest "http://127.0.0.1:$Port/archive/v1/sessions" -Method POST -Headers @{ Authorization = 'Bearer invalid' } -Body '{}' -ContentType 'application/json' -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+    $archive = Probe "http://127.0.0.1:$Port/archive/v1/sessions" -Method POST -Headers @{ Authorization = 'Bearer invalid' } -Body '{}'
     Check '/archive route mounted' ($archive.StatusCode -eq 401) ("status=" + $archive.StatusCode)
   } catch { Check '/archive route mounted' $false $_.Exception.Message }
 }
 try {
-  $auth = Invoke-WebRequest "http://127.0.0.1:$Port/client-auth" -Method POST -Body '{}' -ContentType 'application/json' -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  $auth = Probe "http://127.0.0.1:$Port/client-auth" -Method POST -Body '{}'
   Check '/client-auth route mounted' ($auth.StatusCode -eq 401) ("status=" + $auth.StatusCode)
 } catch { Check '/client-auth route mounted' $false $_.Exception.Message }
 
