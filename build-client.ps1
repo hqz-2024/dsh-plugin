@@ -7,7 +7,7 @@
   1. 备好本机 Electron 镜像并起一个临时 HTTP 服务 —— 这台机器从 GitHub release 拉
      150 MB 的 electron zip 会稳定卡死在 0 字节，打包因此走本机镜像（哈希仍按上游
      SHASUMS256.txt 校验，不是我们自己算的）；
-  2. 在桌面 worktree 里跑 package:desktop:win:x64:unsigned（安装包里的部署地址由打包
+  2. 在桌面 worktree 里跑 package:win:x64:unsigned（安装包里的部署地址由打包
      时自动探测，见 apps/desktop/.env.windows 的 DSH_DESKTOP_SERVER_MODE）；
   3. 把新产物复制到 $DSH_HOME\client\dist —— 设置页「本地插件」按"目录里最新的 .exe"
      现读，所以复制完刷新页面就能下载，不用改代码、不用重启 dsh。
@@ -49,7 +49,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$ElectronVersion = 'v44.0.0'
+# Electron 版本跟随 apps\desktop 的安装结果（0.2.1 起是 44.7.0），不再写死。
+$ElectronVersion = 'v44.7.0'
+$electronManifest = Join-Path $Repo 'apps\desktop\node_modules\electron\package.json'
+if (Test-Path $electronManifest) {
+  $ElectronVersion = 'v' + (Get-Content $electronManifest -Raw | ConvertFrom-Json).version
+}
 $Artifacts = Join-Path $Repo 'apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts'
 $MirrorRoot = Join-Path $Repo 'apps\desktop\.desktop-build\targets\win-x64\electron-mirror'
 $MirrorServer = Join-Path $env:USERPROFILE '.dsh\electron-mirror-server.mjs'
@@ -59,7 +64,7 @@ function Test-Port([int]$Port) {
 	return [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
-# 把已经下载并核对过的那份 zip 摆成 @electron/get 认的布局：<mirror>/v44.0.0/<文件名>。
+# 把已经下载并核对过的那份 zip 摆成 @electron/get 认的布局：<mirror>/<ElectronVersion>/<文件名>。
 function Initialize-Mirror {
 	$versionDir = Join-Path $MirrorRoot $ElectronVersion
 	New-Item -ItemType Directory -Force -Path $versionDir | Out-Null
@@ -68,14 +73,21 @@ function Initialize-Mirror {
 		$cached = Get-ChildItem $CacheRoot -Recurse -Filter "electron-$ElectronVersion-win32-x64.zip" -ErrorAction SilentlyContinue |
 			Sort-Object Length -Descending | Select-Object -First 1
 		if ($null -eq $cached) {
-			throw "本机缓存里没有 electron-$ElectronVersion-win32-x64.zip（$CacheRoot）；先让一次打包把它下下来，或手工放一份到 $versionDir"
+			$url = "https://npmmirror.com/mirrors/electron/$ElectronVersion/electron-$ElectronVersion-win32-x64.zip"
+			Write-Host "本机缓存没有 electron-$ElectronVersion-win32-x64.zip，从镜像下载：$url"
+			& curl.exe -L --fail --retry 3 --retry-delay 2 -o $zip $url
+			if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)) { throw "下载 electron $ElectronVersion 失败（$url）" }
+			Write-Host "下载完成：$zip"
+		} else {
+			Copy-Item $cached.FullName $zip -Force
+			Write-Host "已从缓存取用 $($cached.FullName)"
 		}
-		Copy-Item $cached.FullName $zip -Force
-		Write-Host "已从缓存取用 $($cached.FullName)"
 	}
 	$sums = Join-Path $versionDir 'SHASUMS256.txt'
 	if (-not (Test-Path $sums)) {
-		$response = Invoke-WebRequest -Uri "https://github.com/electron/electron/releases/download/$ElectronVersion/SHASUMS256.txt" -UseBasicParsing -TimeoutSec 60
+		$sumUrl = "https://npmmirror.com/mirrors/electron/$ElectronVersion/SHASUMS256.txt"
+		try { $response = Invoke-WebRequest -Uri $sumUrl -UseBasicParsing -TimeoutSec 60 }
+		catch { $response = Invoke-WebRequest -Uri "https://github.com/electron/electron/releases/download/$ElectronVersion/SHASUMS256.txt" -UseBasicParsing -TimeoutSec 60 }
 		# 上游这份文件是 application/octet-stream，Invoke-WebRequest 会给 byte[]；
 		# 直接 Set-Content 会把每个字节写成一行十进制数字。
 		[System.IO.File]::WriteAllBytes($sums, $response.Content)
@@ -119,7 +131,7 @@ try {
 		$env:ELECTRON_MIRROR = "http://127.0.0.1:$MirrorPort/"
 		Push-Location $Repo
 		try {
-			& pnpm run package:desktop:win:x64:unsigned
+			& pnpm run package:win:x64:unsigned
 			if ($LASTEXITCODE -ne 0) { throw "打包失败（退出码 $LASTEXITCODE）" }
 		} finally { Pop-Location }
 	}

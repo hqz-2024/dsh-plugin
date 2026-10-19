@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 > bash install.sh --lan-ip <局域网IP>
 > ```
 >
-> 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
+> 差异：dsh-doc 用 `engine: node`（0.2.1 起该插件已移除）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
 脚本按顺序完成：前置检查 → 拉取引擎（dsh-0.2.1，已 clone 就跳过）→ 安装 profile 依赖 → **逐个安装 `plugins\` 下每个插件各自的依赖**（清单由目录推导，不写死）→ **校验角色预设（7 个自定义 + agency 角色库，共 286 个）与全局 skill（10 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ **下载 FFmpeg 二进制**（~185MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 
@@ -216,7 +216,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | caddy 报 502           | dsh 没启动（先起 dsh 再起 caddy）                                                                                                         |
 | dsh 启动报 schema 错误 | 某个插件 tool 的 JSON Schema 不合法（`required` 在 items 里、object 缺 `additionalProperties` 等），按 dsh 的 value-schema DSL 规则修 |
 | 登录后看不到历史会话   | `auth\session-owners.json` / `storages\workspace.json` 没恢复，或会话目录与工作区路径不一致                                           |
-| 文档预览失败           | dsh-doc 运行时缺失，或`cordis.patch.yml` 的 `runtimeDir` 路径不对                                                                     |
+| 文档预览失败           | 0.2.1 内置 Office 预览；`dshdoc_*` 工具已随 dsh-doc 下线，旧的 `runtimeDir` 配置可删                                  |
 
 ---
 
@@ -233,14 +233,14 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 | 会话按账号隔离                 | 服务层包装`sessionController.list` + `auth\session-owners.json`                                                                                                               | 同上                                                                                                 |
 | 隐藏工作区/会话（admin）       | `/auth/hide` + `auth\hidden-items.json`                                                                                                                                       | 同上                                                                                                 |
 | 账号管理界面                   | 账号卡片可编辑 + 工作区多选下拉 + 预设选择                                                                                                                                        | 同上（client.js）                                                                                    |
-| 办公文档解析                   | dsh-doc（PDF/DOCX/XLSX/PPTX/MD/CSV + OCR）                                                                                                                                        | `profiles\web\cordis.patch.yml`                                                                    |
+| 办公文档解析                   | 0.2.1 内置 Office/PDF 预览与转换（原 dsh-doc 已移除）                                                                                                                              | 内置，无需配置                                                                                      |
 | 页内文件树（分列窗格）         | fork`folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格；**顶部工具行已改两行自适应换行**、窄面板下按钮不再被裁；**右键菜单的「刷新」已真正重列目录**） | `~\.dsh\plugins\folder-tree-sh-local`                                                              |
 | Token 用量统计                 | fork`dsh-usage-panel`（全站聚合，admin 专属）                                                                                                                                   | `~\.dsh\plugins\dsh-usage-panel-local`                                                             |
 | 本机软件调用                   | dsh-local-bridge sidecar +`local_run` 工具（**已降级为逃生口**，见 11.6）                                                                                                 | `~\.dsh\plugins\dsh-local-bridge`                                                                  |
 | **客户端执行世界**       | 工作区绑定决定命令跑在哪台机器：`dsh-client-bindings`（绑定存储）+ `dsh-subprocess-dispatch`（接管 `subprocess`）+ 客户端 executor                                          | `~\.dsh\plugins\dsh-client-bindings`、`~\.dsh\plugins\dsh-subprocess-dispatch`                   |
 | 视频批量剪辑                   | dsh-video-studio（内嵌 FFmpeg：剪切/变速/转场/BGM/字幕/格式转换/滤镜，11 个工具）                                                                                                 | `~\.dsh\plugins\dsh-video-studio-local`                                                            |
 | manifest 校对工具              | Electron 桌面工具（本地预览视频 + 帧级进度条 + 人工校对/修正 manifest），设置页「本地插件」下载                                                                                   | `~\.dsh\tools\manifest-tool`（源码）+ `~\.dsh\plugins\dsh-video-studio-local\assets`（打包 exe） |
-| 角色预设                       | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名）                                                                                                                 | `~\.dsh\.agent-presets\<id>\`                                                                      |
+| 角色预设                       | 286 条组合包声明（7 自定义 + 279 agency，中文名）                                                                                                                                 | `~\.dsh\plugins\dsh-agent-presets-local\`                                                          |
 | 全局 skill 库                  | 10 个 skill：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases  | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`）                                  |
 | 本地插件（设置页）             | sidecar 下载 + 本账号 token + 连接状态 + 启动命令                                                                                                                                 | 设置 → 本地插件                                                                                     |
 | **模型网关**             | 客户端本地模式的模型入口：`/llm/v1`（OpenAI 兼容面），按 token 认账号、限额、入账，用部署自己的 key 转发                                                                        | `~\.dsh\plugins\dsh-llm-gateway-local`                                                             |
@@ -277,7 +277,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 - **本机桥接**：sidecar + local_run，per-account token；设置页「本地插件」（下载 + token + 连接状态 + 一键启动脚本）；`local_run` 按会话归属自动路由（不串设备）；sidecar 使用规范做成全局 skill 供所有预设共用。
 - **视频剪辑（2026-09-10）**：`dsh-video-studio` 插件内嵌 FFmpeg 完整版（BtbN win64-gpl，ffmpeg/ffprobe 各约 157MB），11 个模型工具（video_build / video_cut / video_concat / video_audio / video_subtitle / video_convert / video_filter / video_probe / video_list / video_thumbnail / ffmpeg_run），覆盖剪切、变速（不变调）、分辨率、xfade 转场、BGM、字幕、格式转换（容器互转/提取音频/转 GIF）、常用滤镜（亮度/对比度/饱和度/模糊/锐化/黑白/旋转/翻转等）；并发限流 + 工作区沙箱收容；全局 skill `dsh-video-studio` 承载「读标注选片出片」与「抽帧读图生成 manifest 标注」两条工作流。
 - **manifest 校对工具（2026-09-10）**：Electron 桌面工具（`~\.dsh\tools\manifest-tool`），三栏布局（视频列表 / 帧级预览 / manifest 表单），本地预览视频 + 帧级进度条 + 快进 + 加速 + 人工校对/修正 manifest（动态字段 / 新增字段 / tags 逗号分隔 / 直接保存 + 另存为），UI 中英切换；打包成 portable exe（内嵌 FFmpeg，约 151MB）挂到设置页「本地插件」供局域网用户下载。
-- **部署工具**：`install.ps1`（含 dsh-doc 运行时下载、FFmpeg 下载、manifest 校对工具打包）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
+- **部署工具**：`install.ps1`（FFmpeg 下载、manifest 校对工具打包；0.2.1 起不再下载 dsh-doc 运行时）、`verify.ps1`、`backup.ps1`、`migrate.ps1`；插件 `link:` 相对路径。
 - **客户端执行世界（2026-09-16）**：本机桥接之后的更进一步——不再需要 agent 显式选 `local_run`，而是**整个执行面跟着工作区走**。新增两个插件（`dsh-client-bindings` 绑定存储、`dsh-subprocess-dispatch` 按 cwd→工作区→绑定分派）与一个跑在用户机器上的 executor；文件仍是服务器上那一份，客户端通过 SMB 共享（`\\<服务器>\ws-<工作区>`）看到同一份字节。另加全局 skill `local-staging`（>10MB / 工程格式走本机暂存）。实施与验收记录见 `docs/plan-client-world-progress.md`，设计见 `docs/plan-client-world.md`。
 - **executor 自带共享凭据（2026-09-16）**：计划 §2.0 把「绑定工作区（SMB 凭据）」划给 executor，此前靠用户手工 `cmdkey`。现在配置页有「工作区共享凭据」一节，`--smb-user/--smb-password` 供无值守装机；主机名从绑定带回的可见路径推出，改密码可对已绑定工作区重新应用，`/status` 只报账号不回显密码。
 - **executor 分发（2026-09-16）**：新增 `/dsh-subprocess-dispatch/executor.mjs` 下载端点（与 `/dsh-local-bridge/sidecar.mjs` 同形），并加进**设置 → 本地插件**的列表 —— 用户从此有一个受支持的途径把执行器装到本机，而不是靠手工拷贝。端点**刻意不列入 `publicPrefixes`**：下载者是设置页里已登录的浏览器，登录门禁正是该做的检查。文件里**不含 token**，凭据由配置页登录时签发。

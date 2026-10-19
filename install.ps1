@@ -8,7 +8,7 @@
     0 前置检查          1 引擎拉取/安装    2 profile 依赖
     3 五个插件依赖      4 角色预设 + 全局 skill 校验
     5 渲染 cordis.patch.yml                  6 .credentials.yaml
-    7 dsh-doc 运行时  7b FFmpeg 二进制  8 启动脚本 + caddy  9 自检 verify.ps1
+    7 FFmpeg 二进制  8 启动脚本 + caddy  9 自检 verify.ps1
 
   幂等：可重复运行，已存在的文件/已完成步骤会跳过（不覆盖你的 token）。
 
@@ -94,7 +94,7 @@ if (-not $SkipEngine) {
   } finally { Pop-Location }
 }
 
-# ── 2. profile 依赖（link: 相对路径，会创建 5 个插件 symlink）───
+# ── 2. profile 依赖（link: 相对路径，逐个创建 plugins\ 下的插件 symlink）───
 Step "2. profile 依赖"
 Push-Location $ProfileDir
 try {
@@ -120,17 +120,15 @@ foreach ($p in $Plugins) {
 
 # ── 4. 角色预设 + 全局 skill（仓库自带，仅校验）─────────────────
 Step "4. 角色预设 + 全局 skill"
-$missing = @()
-foreach ($p in $Presets) {
-  if (-not (Test-Path (Join-Path $Root (".agent-presets\" + $p + "\agent.cordis.yml")))) { $missing += $p }
+# 0.2.1 起预设在组合包里声明，$DSH_HOME\.agent-presets\ 目录不再被任何代码读取。
+$presetBundle = Join-Path $Root "plugins\dsh-agent-presets-local\cordis.patch.yml"
+if (-not (Test-Path $presetBundle)) {
+  Warn "预设 bundle 缺失：plugins\dsh-agent-presets-local\cordis.patch.yml"
+} else {
+  $declarations = (Select-String -Path $presetBundle -Pattern '^\s+- id: preset-').Count
+  if ($declarations -lt 286) { Warn ("预设声明 " + $declarations + " 条，少于预期的 286 条") }
+  else { Ok ("预设声明：" + $declarations + " 条（组合包声明，旧目录已停用）") }
 }
-if ($missing.Count -eq 0) { Ok ("自定义角色预设齐全：" + $Presets.Count + " 个（各带 skills 目录）") }
-else { Warn ("角色预设缺失：" + ($missing -join ", ")) }
-
-$allPresets = (Get-ChildItem -Directory (Join-Path $Root ".agent-presets") |
-  Where-Object { Test-Path (Join-Path $_.FullName "agent.cordis.yml") }).Count
-if ($allPresets -lt 286) { Warn ("预设总数 " + $allPresets + " 个，少于预期的 286（7 自定义 + 279 agency）") }
-else { Ok ("预设总数：" + $allPresets + " 个（7 自定义 + 279 agency）") }
 
 $missingSkill = @()
 foreach ($s in $Skills) {
@@ -172,24 +170,8 @@ if (Test-Path $cred) {
   }
 }
 
-# ── 7. dsh-doc OCR 运行时 ──────────────────────────────────────
-Step "7. dsh-doc OCR 运行时"
-$rt = Join-Path $Root "runtimes\dshdoc-runtime-win32-x64"
-if (Test-Path $rt) { Ok ("运行时已存在：" + $rt) }
-else {
-  $fetch = Join-Path $ProfileDir "node_modules\dsh-doc\scripts\fetch-runtime-win32-x64.mjs"
-  if (Test-Path $fetch) {
-    Warn "运行时缺失，正在从 dsh-doc GitHub Release 下载（~178MB，含 SHA-256 校验）..."
-    & $NodePath $fetch $rt
-    if (($LASTEXITCODE -eq 0) -and (Test-Path $rt)) { Ok "运行时下载 + 校验完成" }
-    else { Warn ("下载失败。可稍后手动执行：node `"" + $fetch + "`" `"" + $rt + "`"") }
-  } else {
-    Warn "dsh-doc 未安装，无法自动下载运行时（请先完成 profile/插件的 pnpm install）"
-  }
-}
-
-# ── 7b. FFmpeg 二进制（dsh-video-studio 内嵌）───────────────────
-Step "7b. FFmpeg 二进制"
+# ── 7. FFmpeg 二进制（dsh-video-studio 内嵌）───────────────────
+Step "7. FFmpeg 二进制"
 $vsBin = Join-Path $Root "plugins\dsh-video-studio-local\bin"
 $ffmpegExe = Join-Path $vsBin "ffmpeg.exe"
 $ffprobeExe = Join-Path $vsBin "ffprobe.exe"

@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 > bash install.sh --lan-ip <局域网IP>
 > ```
 >
-> 差异：Linux/macOS 的 dsh-doc 用 `engine: node`（无 win32 离线 OCR 运行时）；启动脚本为 `start-dsh-lan.sh`（`bash start-dsh-lan.sh` 启动）。备份/恢复用 `backup.sh` / `migrate.sh`（bash）：`bash backup.sh` 打 tar.gz，`bash migrate.sh --backup <备份> --old-user <旧用户名>` 恢复并重映射路径（`/home`、`/Users`、`C:\Users` 三种老 home 都能映射到新 home）。
+> 差异：Linux/macOS 的 dsh-doc 用 `engine: node`（0.2.1 起该插件已整体移除）；启动脚本为 `start-dsh-lan.sh`（`bash start-dsh-lan.sh` 启动）。备份/恢复用 `backup.sh` / `migrate.sh`（bash）：`bash backup.sh` 打 tar.gz，`bash migrate.sh --backup <备份> --old-user <旧用户名>` 恢复并重映射路径（`/home`、`/Users`、`C:\Users` 三种老 home 都能映射到新 home）。
 
 `migrate.ps1` 会自动：解压 → 把 `workspace.json` / `cordis.patch.yml` / `settings.yaml` 等文本里的绝对路径从 `C:\Users\<旧用户名>\` 映射成 `C:\Users\<新用户名>\` → 重命名 `sessions\` / `sessions-archived\` 下的变形目录名 → 合并进 `~\.dsh`。
 
@@ -127,7 +127,7 @@ cd %USERPROFILE%\.dsh
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <IP>
 ```
 
-它负责：装 `profiles\web` 的 pnpm 依赖（插件是 `link:` 依赖，这一步等于把插件挂上）、生成 `start-dsh-lan.cmd` 与 `Caddyfile`、下载 dsh-doc 运行时与 FFmpeg、必要时装 caddy 到 `bin\caddy.exe`。
+它负责：装 `profiles\web` 的 pnpm 依赖（插件是 `link:` 依赖，这一步等于把插件挂上）、生成 `start-dsh-lan.cmd` 与 `Caddyfile`、下载 FFmpeg（0.2.1 起不再下载 dsh-doc 运行时）、必要时装 caddy 到 `bin\caddy.exe`。
 
 **做完应该看到**：`verify.ps1` 跑完除"数据类"检查外全绿。
 
@@ -239,10 +239,10 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 |---|---|---|
 | `.dsh\profiles\web\`（不含 node_modules） | profile 组合：`cordis.yml`、`cordis.patch.yml`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml` | 必须 |
 | `.dsh\plugins\` | 本部署的本地插件（认证与角色 `dsh-remote-local`、文件树 `folder-tree-sh-local`、sidecar `dsh-local-bridge`、视频 `dsh-video-studio-local`、远程 `dsh-remote-local`、以及客户端世界的 `dsh-client-bindings` / `dsh-subprocess-dispatch` / `dsh-llm-gateway-local` / `dsh-archive-local`——清单见 `README.md` §11.1） | 必须 |
-| `.dsh\.agent-presets\` | 7 个自定义角色预设（各自带 `skills\`，通过 `customSkillDirs` 接入）+ 279 个 agency 角色预设，共 286 个目录 | 必须 |
+| `.dsh\plugins\dsh-agent-presets-local\` | 286 条 `@deepseek-ai/dsh-agent-preset` 声明——0.2.1 起预设的唯一来源（`.agent-presets\` 目录已停用） | 必须 |
 | `.dsh\skills\` | 全局 skill 10 个：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases（rank 400，所有预设 agent 共用） | 必须（本仓库已收录，clone 即得） |
 | `%USERPROFILE%\.agents\skills\` | 同一批 skill 的第二份用户根（rank 500），让 dsh 之外的 agent（Claude Code 等）也能读到 | 建议（缺了不影响 dsh；把它当成 `.dsh\skills\` 的副本整目录拷过去即可） |
-| `.dsh\runtimes\dshdoc-runtime-win32-x64\` | dsh-doc 离线 Python 运行时（openpyxl/python-docx + OCR） | 必须（或由 install.ps1 重新下载） |
+| `.dsh\runtimes\dshdoc-runtime-win32-x64\` | 0.1.6 时代的 dsh-doc 离线运行时；**0.2.1 起不再需要**（插件被兼容性闸门拒绝且会卡启动） | 可删 |
 | `.dsh\plugins\dsh-video-studio-local\bin\` | 内嵌 FFmpeg（ffmpeg.exe + ffprobe.exe，各约 157MB） | 建议（原样拷贝最快；install.ps1 会自动下载 + SHA256 校验） |
 | `.dsh\tools\manifest-tool\` | manifest 校对工具源码（Electron 工程，不含 node_modules/dist/ffmpeg） | 必须（clone 即得） |
 | `.dsh\plugins\dsh-video-studio-local\assets\` | 打包的 manifest-tool.exe（供局域网下载） | 建议（或由 install.ps1 从 GitHub Release 下载） |
@@ -277,7 +277,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 |---|---|
 | `storages\workspace.json` | 各工作区的 `path` |
 | `sessions\` 目录名 | `--C-Users-<用户名>-Desktop-finance-ws--` 等（按工作区路径变形） |
-| `profiles\web\cordis.patch.yml` | dsh-doc 的 `runtimeDir` |
+| `profiles\web\cordis.patch.yml` | `agent-preset-registry` 的默认预设、网关/归档路径等插件行 |
 | `start-dsh-lan.cmd` | `NODE`、`DSH_DIR` |
 
 **换用户名/换盘符时**：`migrate.ps1` 会自动重映射文本路径 + 重命名会话目录；手动迁移则需全局替换 + 重命名 + 改 `runtimeDir`。想省事就**保持同名用户 + 原目录结构**。
@@ -347,11 +347,11 @@ git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同�
 1. 能登录 `admin`（迁移后 `auth\store.json` 原样生效，账号/密码/TOTP 都跟着走）。
 2. 角色账号（如 `Finance-mgr`）能登录，且**只看到自己工作区的会话**，看不到别人的。账号由 admin 在设置页创建，名字必须与 `cordis.patch.yml` 的 roleMap 键**完全一致**（区分大小写）才生效。
 3. 文件树全操作正常：新建文件、新建文件夹、重命名、复制、粘贴（剪切）、删除、上传、编辑保存、Excel 保存。
-4. 上传 docx / xlsx 能正常预览（验证 dsh-doc 运行时）。
+4. 上传 docx / xlsx 能正常预览（0.2.1 内置 Office 预览；`dshdoc_*` 工具已随 dsh-doc 下线）。
 5. admin 能打开用量面板（admin-only）。
 6. 每台用户机 sidecar 能连上，`local_run` 能驱动用户本机。
 7. 安全门禁：非 admin 调 `session.search` / `session.export` 返回 403；`session.follow` 拉取他人会话被断连。
-8. 预设与 skill 就位：`.agent-presets\` 286 个目录、`skills\` 10 个 skill——直接跑 `verify.ps1`，全绿即可。
+8. 预设与 skill 就位：`plugins\dsh-agent-presets-local\` 里 286 条声明、`skills\` 10 个 skill——跑 `verify.ps1`，全绿即可。
 9. **客户端下载卡片在**：设置 →「本地插件」里应当有「桌面客户端（可选）」一张卡，点「下载」能拿到 `deepseek-harness-<版本>-win-x64.exe`。**不用登录的判据**：`GET https://<服务器>:8443/auth/client-installer` 返回 **401**（处理器接管）而不是 200 + SPA 的 HTML；若是后者，说明插件还是旧代码，**整进程重启**即可。
 10. **模型网关通**：`GET https://<服务器>:8443/llm/v1/models`，带 `Authorization: Bearer <网关 token>` → 200 且列出模型；不带 token → 403。
 11. **归档端通**：`POST https://<服务器>:8443/archive/v1/sessions` 带归档 token 与空 body → **400 且错误文本是 `archive body must carry sessionId`**（处理器自己的文本 = 已过门禁；没有文本的 403 才是被门禁拦）。
@@ -387,3 +387,26 @@ git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同�
 cd C:\Users\<用户名>\Desktop\dsh-0.2.1
 pnpm dsh --profile web --trusted-host <局域网IP>
 ```
+
+---
+
+## 十、客户端安装包（0.2.1 起）
+
+1. **构建**（在 `桌面\dsh-desktop`，分支 `hqz-desktop-client`，基线 tag `dsh-v0.2.1-rc.2`）：
+
+   ```powershell
+   pnpm install --frozen-lockfile
+   pnpm run build
+   $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+   $env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://npmmirror.com/mirrors/electron-builder-binaries/'
+   pnpm --filter @deepseek-ai/dsh-desktop run package:win:x64:unsigned
+   ```
+
+   产物：`apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts\deepseek-harness-0.2.1-rc.2-win-x64-unsigned.exe`。
+   打包会自动把 `.env.windows` 里的部署地址烘进安装包（构建日志里能看到 `server mode candidate … -> HTTP 200`）。
+
+2. **部署**：把该 exe 复制进 `~\.dsh\client\dist\`，旧的先移到 `client\old\`。设置页「本地插件」按目录里**最新的 `.exe`** 现读，不需要重启 dsh。
+
+3. **一键脚本**：`~\.dsh\build-client.ps1` 已跟随 0.2.1——Electron 版本从 `apps\desktop\node_modules\electron` 读取（0.2.1 是 44.7.0），本机缓存缺失时从 npmmirror 下载，最后调用 `package:win:x64:unsigned` 并复制到分发目录。
+
+4. **注意**：`--unsigned` 没有代码签名，客户端首次运行会出现「未知发布者 / SmartScreen」，点「更多信息 → 仍要运行」。要消掉需用 `.env.windows` 里配置的证书走签名构建。
