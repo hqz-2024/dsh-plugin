@@ -270,3 +270,38 @@
 - **工作区共享与绑定的界面入口**：2026-09-17 撤除（恢复步骤写在 `README.md`）。
 - **计划 A 的 P0（文件/stdin/后台任务）**：计划 B 落地前不做。
 - **客户端里再走一遍"执行器 + 机器工具"**：本地模式不需要它；执行器只为"没装客户端的机器"和"服务器工作区 + 本机软件"保留。
+
+---
+
+## 9. 2026-10-19 升级到 dsh 0.2.1-rc.2（当前状态）
+
+**现状**
+
+- 线上 3080 = **0.2.1-rc.2**，引擎 `C:\Users\bestarc\Desktop\dsh-0.2.1`（worktree，分支 `hqz-dsh-0.2.1` = tag `dsh-v0.2.1-rc.2`）；`start-dsh-lan.cmd` 的 `DSH_DIR` 已指向它，日志 `live-0.2.1.*`。
+- 旧引擎 `deepseek-harness` 仍在 `hqz-dsh-0.1.6`（0.1.6-alpha.2，已构建，工作树干净）= **回滚目标**；另有 tag `rollback-pre-0.2.1-rc.2` 与分支 `hqz-dsh-pre-0.2.1-rc.2`。
+- `web-client` profile 11 个 bundle：9 个原插件 + `dsh-agent-presets-local`；`dsh-doc` 与三个 0.1.x 终端包已移除（新版兼容性闸门拒绝 / 会卡启动）。
+- 286 个预设迁成 `plugins/dsh-agent-presets-local/cordis.patch.yml`（286 条 `@deepseek-ai/dsh-agent-preset` 声明；组合后共 290 行，含官方 standard/ptc/minimal/cordis）。
+- 组合行 `agent-presets` → `agent-preset-registry`（当前 `default: standard`，升级前是 `cordis`）。
+- `settings.yaml` 已一次性导入为 `settings.yaml.imported`，设置写进 profile patch 的插件行（`ui-settings-general` / `ui-theme` / `ui-conversation` / `agent-default-model` / `permission.defaultPreset`）。
+- 运行时补丁 `engine-patches/legacy-turn-restart.mjs` **仍然需要**（0.2.1 仍未把 `legacyInterruptedTurnRestart` 放进 released 关系集合），启动日志应有命中行。
+- 回滚步骤已按实际结果重写：`C:\Users\bestarc\Desktop\回滚操作说明.md`（关键：回滚不只改 `DSH_DIR`，还要 `git reset` + `pnpm install` + 恢复真实 patch 与 `settings.yaml`）。
+
+**0.2.1 下必须知道的四件事**
+
+1. 预设只能由**组合包声明**；`$DSH_HOME/.agent-presets/` 目录不再被任何代码读取。
+2. 客户端 `settingsScope` 服务被删；`@xgone/dsh-remote` 已去掉该注入（否则整个 UI `web boot: 1 entry did not activate`）。
+3. `@deepseek-ai/dsh-client-ui-primitives` 图标集重组；`folder-tree-sh` 的开关按钮改成带兜底的 inline SVG（0.1.6 上仍用原图标）。
+4. 插件兼容性闸门按 `engines.dsh` / requirements 判断；`dsh-doc@0.1.1` 被拒，强行放行后会卡在 subprocess job runner。
+
+**本次踩到的坑**
+
+- **别在活着的 3080 home 上跑 `--dump-config`**：它会把整棵组合树（含 token）写进 `profiles/<name>/cordis.yml`。该文件已从 git 取消跟踪并 gitignore。
+- **cutover 的自动回滚不能恢复"已经升级"的 `package.json`**：会导致旧版 `cannot resolve profile bundle`。正确顺序是 `git reset` → 恢复真实 patch → `pnpm install`。
+- **Windows PowerShell 5.1 没有 `-SkipHttpErrorCheck` / `-SkipCertificateCheck`**：健康检查要么用 `curl.exe`，要么用 pwsh 7。
+- **160 轮那个会话（`session-31804be7`）仍然 413**：上下文体积超限，不是升级 bug；新建会话把结论贴过去。
+
+**下一步**
+
+- 桌面客户端：`dsh-desktop-0.2.1` worktree（分支 `hqz-desktop-client-0.2.1`，基于 rc.2）+ 单补丁重放（预检：40 文件、约 12 个冲突，冲突集中在 `main.ts` / `preload-app.ts` / `package.json` / README / `electron-builder-config.mjs`）+ 重打包。
+- 默认预设是否改回 `cordis`（改 patch 会触发热重载，建议停机窗口做）。
+- `cutover-0.2.1.ps1` 已执行过并失败过，保留作历史；不要再用它切换。
