@@ -1,0 +1,68 @@
+# verify-upgrade.ps1 — post-cutover health check for the running dsh instance.
+# Usage: pwsh -File verify-upgrade.ps1 [-Port 3080]
+param([int]$Port = 3080)
+
+$ErrorActionPreference = 'Continue'
+$DshHome = Join-Path $env:USERPROFILE '.dsh'
+$pass = 0
+$fail = 0
+function Check([string]$name, [bool]$ok, [string]$detail = '') {
+  $script:total = $script:total + 1
+  if ($ok) { $script:pass++ } else { $script:fail++ }
+  '{0,-34} {1}  {2}' -f $name, $(if ($ok) { 'PASS' } else { 'FAIL' }), $detail
+}
+
+$owner = (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess
+Check "port $Port listening" ([bool]$owner) ("pid=" + $owner)
+
+$engine = ''
+if ($owner) {
+  $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue).CommandLine
+  if ($cmd -match '(?i)([A-Z]:\\[^"]*?deepseek-harness|[A-Z]:\\[^"]*?dsh-0\.2\.1)') { $engine = $Matches[1] }
+}
+Check 'engine checkout' ($engine -ne '') $engine
+if ($engine -and (Test-Path (Join-Path $engine 'package.json'))) {
+  $version = (Get-Content (Join-Path $engine 'package.json') -Raw | ConvertFrom-Json).version
+  Check 'engine version = 0.2.1-rc.2' ($version -eq '0.2.1-rc.2') $version
+}
+
+try {
+  $me = Invoke-WebRequest "http://127.0.0.1:$Port/auth/me" -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  Check '/auth/me' ($me.StatusCode -eq 200) ("status=" + $me.StatusCode)
+} catch { Check '/auth/me' $false $_.Exception.Message }
+
+try {
+  $html = Invoke-WebRequest "http://127.0.0.1:$Port/" -Headers @{ Accept = 'text/html' } -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  Check 'app shell' ($html.StatusCode -eq 200 -and $html.Content -match '<html') ("status=" + $html.StatusCode)
+} catch { Check 'app shell' $false $_.Exception.Message }
+
+$patch = Join-Path $DshHome 'profiles\web-client\cordis.patch.yml'
+$token = ''
+if (Test-Path $patch) { $token = [regex]::Match((Get-Content $patch -Raw), 'gw-[A-Za-z0-9\-]+').Value }
+if ($token) {
+  try {
+    $models = Invoke-WebRequest "http://127.0.0.1:$Port/llm/v1/models" -Headers @{ Authorization = "Bearer $token" } -UseBasicParsing -TimeoutSec 10 -SkipHttpErrorCheck
+    $ids = ([regex]::Matches($models.Content, '"id":"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) -join ','
+    Check '/llm/v1/models' ($models.StatusCode -eq 200) $ids
+  } catch { Check '/llm/v1/models' $false $_.Exception.Message }
+  try {
+    $archive = Invoke-WebRequest "http://127.0.0.1:$Port/archive/v1/sessions" -Method POST -Headers @{ Authorization = 'Bearer invalid' } -Body '{}' -ContentType 'application/json' -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+    Check '/archive route mounted' ($archive.StatusCode -eq 401) ("status=" + $archive.StatusCode)
+  } catch { Check '/archive route mounted' $false $_.Exception.Message }
+}
+try {
+  $auth = Invoke-WebRequest "http://127.0.0.1:$Port/client-auth" -Method POST -Body '{}' -ContentType 'application/json' -UseBasicParsing -TimeoutSec 8 -SkipHttpErrorCheck
+  Check '/client-auth route mounted' ($auth.StatusCode -eq 401) ("status=" + $auth.StatusCode)
+} catch { Check '/client-auth route mounted' $false $_.Exception.Message }
+
+# Startup log: newest of the two engines' error logs.
+$logs = Get-ChildItem (Join-Path $DshHome 'live-*.err.log') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+if ($logs) {
+  $text = Get-Content $logs[0].FullName -Raw
+  Check 'startup log clean' ($text -notmatch 'failed to activate|Cannot find package|incompatible with dsh|ERR_MODULE_NOT_FOUND|EADDRINUSE') $logs[0].Name
+  Check 'engine patch applied' ($text -match 'engine patch: legacy-turn-restart applied') $logs[0].Name
+}
+
+''
+'{0} passed, {1} failed' -f $pass, $fail
+if ($fail -gt 0) { exit 1 }
