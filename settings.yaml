@@ -3,7 +3,7 @@ ui-onboarding:
 agent-presets:
   default: cordis
 ui-theme:
-  preference: dark
+  preference: light
 permission:
   defaultPreset: danger-full-access
 ui-conversation:

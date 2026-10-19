@@ -2,7 +2,6 @@
 
 > **当前部署状态、插件清单、故障处置与回滚方法：见 `STATE.md`。**（接手/排障先读它）
 
-
 本目录（`~/.dsh`，即 `%USERPROFILE%\.dsh`）存放局域网部署所需的配置和脚本。核心架构：**dsh 只监听本机 127.0.0.1，caddy 作为 HTTPS 反代对外**，这样 agent 的远程代码执行能力仍被圈在本机，不直接暴露到网络。
 
 ```
@@ -10,6 +9,7 @@
 ```
 
 > **占位符说明**：本文所有路径都不含真实用户名/IP。
+>
 > - `<用户名>` = 你的 Windows 用户名（等价于 `%USERNAME%`）
 > - `%USERPROFILE%` = 你的用户主目录（如 `C:\Users\<用户名>`）
 > - `<局域网IP>` = 服务器的局域网 IP（如 `192.168.x.x`）
@@ -30,11 +30,11 @@
 
 三个工程的位置是**固定**的（脚本、启动脚本、`worktree add` 都按这个布局写）：
 
-| 工程 | 仓库 | 分支 | 放到哪 | 怎么拉 |
-|---|---|---|---|---|
-| **部署仓库**（本仓库：配置 / 插件 / 脚本） | `hqz-2024/dsh-plugin` | `main`（日常改动提交到 `client-world`） | `%USERPROFILE%\.dsh` | `git clone` |
-| **引擎**（deepseek-harness） | `hqz-2024/hqz-dsh` | **`hqz-dsh-0.1.6`** | `桌面\deepseek-harness` | `git clone` |
-| **客户端**（dsh-desktop） | 同上**那个仓库** | **`hqz-desktop-client`** | `桌面\dsh-desktop` | **`git worktree add`** |
+| 工程                                             | 仓库                    | 分支                                        | 放到哪                    | 怎么拉                         |
+| ------------------------------------------------ | ----------------------- | ------------------------------------------- | ------------------------- | ------------------------------ |
+| **部署仓库**（本仓库：配置 / 插件 / 脚本） | `hqz-2024/dsh-plugin` | `main`（日常改动提交到 `client-world`） | `%USERPROFILE%\.dsh`    | `git clone`                  |
+| **引擎**（deepseek-harness）               | `hqz-2024/hqz-dsh`    | **`hqz-dsh-0.1.6`**                 | `桌面\deepseek-harness` | `git clone`                  |
+| **客户端**（dsh-desktop）                  | 同上**那个仓库**  | **`hqz-desktop-client`**            | `桌面\dsh-desktop`      | **`git worktree add`** |
 
 ```powershell
 # 1) 部署仓库 → %USERPROFILE%\.dsh
@@ -91,15 +91,15 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 
 > **再在引擎目录跑一次 `pnpm run build`**：部署侧的运行时补丁（`~\.dsh\engine-patches\`）**只对构建产物生效**，源码启动时静默失效；`install.ps1` 生成的启动脚本会自动优先用 `apps\cli\lib\bin.js` 并带上 `--import engine-patches\register.mjs`，没有 lib 才退回源码启动并打印警告。判据：启动后 `~\.dsh\live-0.1.6.err.log` 里应有一行 `[dsh-lan] engine patch: legacy-turn-restart applied`。
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `-EngineDir` | `%USERPROFILE%\Desktop\deepseek-harness` | 引擎 checkout 路径 |
-| `-EngineRepo` | `https://github.com/hqz-2024/hqz-dsh.git` | 引擎仓库（会话隔离在插件层，引擎本身零改动） |
-| `-EngineBranch` | `hqz-dsh-0.1.6` | 引擎分支；`hqz-dsh` 是 0.1.3 时代的老分支，别用 |
-| `-RunProfile` | `web` | 启动脚本跑哪个 profile：`web`（全部在服务器执行）或 `web-client`（挂客户端执行世界） |
-| `-LanIP` | `<局域网IP>`（必填） | 服务器局域网 IP |
-| `-NodePath` | 自动取 PATH 里的 node | node.exe 绝对路径 |
-| `-SkipEngine` | - | 引擎已就绪时跳过拉取 |
+| 参数              | 默认                                        | 说明                                                                                     |
+| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `-EngineDir`    | `%USERPROFILE%\Desktop\deepseek-harness`  | 引擎 checkout 路径                                                                       |
+| `-EngineRepo`   | `https://github.com/hqz-2024/hqz-dsh.git` | 引擎仓库（会话隔离在插件层，引擎本身零改动）                                             |
+| `-EngineBranch` | `hqz-dsh-0.1.6`                           | 引擎分支；`hqz-dsh` 是 0.1.3 时代的老分支，别用                                        |
+| `-RunProfile`   | `web`                                     | 启动脚本跑哪个 profile：`web`（全部在服务器执行）或 `web-client`（挂客户端执行世界） |
+| `-LanIP`        | `<局域网IP>`（必填）                      | 服务器局域网 IP                                                                          |
+| `-NodePath`     | 自动取 PATH 里的 node                       | node.exe 绝对路径                                                                        |
+| `-SkipEngine`   | -                                           | 引擎已就绪时跳过拉取                                                                     |
 
 装完可随时跑 `verify.ps1` 自检（逐项断言预设总数 / 全局 skill / 插件 / 配置 / 密钥 / 引擎 / 运行时）。要开"客户端世界"（执行器、机器工具、客户端安装包）见 `MIGRATION.md` §三 第 4b 步。
 
@@ -207,14 +207,14 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ## 十、常见问题
 
-| 现象 | 原因 / 处理 |
-|---|---|
-| 局域网设备连不上 8443 | Windows 防火墙未放行 8443；或 IP 变了 |
-| 提示证书不受信 | 在设备上手动信任 caddy 的 `root.crt` |
-| caddy 报 502 | dsh 没启动（先起 dsh 再起 caddy） |
+| 现象                   | 原因 / 处理                                                                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 局域网设备连不上 8443  | Windows 防火墙未放行 8443；或 IP 变了                                                                                                     |
+| 提示证书不受信         | 在设备上手动信任 caddy 的`root.crt`                                                                                                     |
+| caddy 报 502           | dsh 没启动（先起 dsh 再起 caddy）                                                                                                         |
 | dsh 启动报 schema 错误 | 某个插件 tool 的 JSON Schema 不合法（`required` 在 items 里、object 缺 `additionalProperties` 等），按 dsh 的 value-schema DSL 规则修 |
-| 登录后看不到历史会话 | `auth\session-owners.json` / `storages\workspace.json` 没恢复，或会话目录与工作区路径不一致 |
-| 文档预览失败 | dsh-doc 运行时缺失，或 `cordis.patch.yml` 的 `runtimeDir` 路径不对 |
+| 登录后看不到历史会话   | `auth\session-owners.json` / `storages\workspace.json` 没恢复，或会话目录与工作区路径不一致                                           |
+| 文档预览失败           | dsh-doc 运行时缺失，或`cordis.patch.yml` 的 `runtimeDir` 路径不对                                                                     |
 
 ---
 
@@ -224,38 +224,38 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ### 11.1 已实现功能
 
-| 功能 | 实现 | 位置 |
-|---|---|---|
-| 账号密码登录 + MFA | fork `dsh-remote` | `~\.dsh\plugins\dsh-remote-local` |
-| 角色 → 预设/工作空间 | 静态 roleMap + 动态 `auth\role-map.json`（多工作区） | 同上 + `profiles\web\cordis.patch.yml` |
-| 会话按账号隔离 | 服务层包装 `sessionController.list` + `auth\session-owners.json` | 同上 |
-| 隐藏工作区/会话（admin） | `/auth/hide` + `auth\hidden-items.json` | 同上 |
-| 账号管理界面 | 账号卡片可编辑 + 工作区多选下拉 + 预设选择 | 同上（client.js） |
-| 办公文档解析 | dsh-doc（PDF/DOCX/XLSX/PPTX/MD/CSV + OCR） | `profiles\web\cordis.patch.yml` |
-| 页内文件树（分列窗格） | fork `folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格；**顶部工具行已改两行自适应换行**、窄面板下按钮不再被裁；**右键菜单的「刷新」已真正重列目录**） | `~\.dsh\plugins\folder-tree-sh-local` |
-| Token 用量统计 | fork `dsh-usage-panel`（全站聚合，admin 专属） | `~\.dsh\plugins\dsh-usage-panel-local` |
-| 本机软件调用 | dsh-local-bridge sidecar + `local_run` 工具（**已降级为逃生口**，见 11.6） | `~\.dsh\plugins\dsh-local-bridge` |
-| **客户端执行世界** | 工作区绑定决定命令跑在哪台机器：`dsh-client-bindings`（绑定存储）+ `dsh-subprocess-dispatch`（接管 `subprocess`）+ 客户端 executor | `~\.dsh\plugins\dsh-client-bindings`、`~\.dsh\plugins\dsh-subprocess-dispatch` |
-| 视频批量剪辑 | dsh-video-studio（内嵌 FFmpeg：剪切/变速/转场/BGM/字幕/格式转换/滤镜，11 个工具） | `~\.dsh\plugins\dsh-video-studio-local` |
-| manifest 校对工具 | Electron 桌面工具（本地预览视频 + 帧级进度条 + 人工校对/修正 manifest），设置页「本地插件」下载 | `~\.dsh\tools\manifest-tool`（源码）+ `~\.dsh\plugins\dsh-video-studio-local\assets`（打包 exe） |
-| 角色预设 | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名） | `~\.dsh\.agent-presets\<id>\` |
-| 全局 skill 库 | 10 个 skill：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`） |
-| 本地插件（设置页） | sidecar 下载 + 本账号 token + 连接状态 + 启动命令 | 设置 → 本地插件 |
-| **模型网关** | 客户端本地模式的模型入口：`/llm/v1`（OpenAI 兼容面），按 token 认账号、限额、入账，用部署自己的 key 转发 | `~\.dsh\plugins\dsh-llm-gateway-local` |
-| **桌面客户端** | 复用上游 `apps/desktop` 加服务器模式 + 定时归档；**装完自带部署地址**，两种模式一个窗口 | 源码 worktree `C:\Users\bestarc\Desktop\dsh-desktop`（分支 `hqz-desktop-client`） |
-| **会话归档 → Obsidian** | 客户端定时导出本机会话 → 上传部署 → 部署用自己的模型精简 → 写进 `obsidian笔记\会话记录\` | `~\.dsh\client\export-session.mjs` + `~\.dsh\plugins\dsh-archive-local` |
-| **客户端安装包分发** | 设置 →「本地插件」一张卡片，`/auth/client-installer` 流式送 `~\.dsh\client\dist` 里最新的 exe | `plugins\dsh-remote-local\lib\index.js` |
+| 功能                           | 实现                                                                                                                                                                              | 位置                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 账号密码登录 + MFA             | fork`dsh-remote`                                                                                                                                                                | `~\.dsh\plugins\dsh-remote-local`                                                                  |
+| 角色 → 预设/工作空间          | 静态 roleMap + 动态`auth\role-map.json`（多工作区）                                                                                                                             | 同上 +`profiles\web\cordis.patch.yml`                                                              |
+| 会话按账号隔离                 | 服务层包装`sessionController.list` + `auth\session-owners.json`                                                                                                               | 同上                                                                                                 |
+| 隐藏工作区/会话（admin）       | `/auth/hide` + `auth\hidden-items.json`                                                                                                                                       | 同上                                                                                                 |
+| 账号管理界面                   | 账号卡片可编辑 + 工作区多选下拉 + 预设选择                                                                                                                                        | 同上（client.js）                                                                                    |
+| 办公文档解析                   | dsh-doc（PDF/DOCX/XLSX/PPTX/MD/CSV + OCR）                                                                                                                                        | `profiles\web\cordis.patch.yml`                                                                    |
+| 页内文件树（分列窗格）         | fork`folder-tree-sh`（预览/编辑/上传/下载/拖拽/文件夹上传/xlsx 网格；**顶部工具行已改两行自适应换行**、窄面板下按钮不再被裁；**右键菜单的「刷新」已真正重列目录**） | `~\.dsh\plugins\folder-tree-sh-local`                                                              |
+| Token 用量统计                 | fork`dsh-usage-panel`（全站聚合，admin 专属）                                                                                                                                   | `~\.dsh\plugins\dsh-usage-panel-local`                                                             |
+| 本机软件调用                   | dsh-local-bridge sidecar +`local_run` 工具（**已降级为逃生口**，见 11.6）                                                                                                 | `~\.dsh\plugins\dsh-local-bridge`                                                                  |
+| **客户端执行世界**       | 工作区绑定决定命令跑在哪台机器：`dsh-client-bindings`（绑定存储）+ `dsh-subprocess-dispatch`（接管 `subprocess`）+ 客户端 executor                                          | `~\.dsh\plugins\dsh-client-bindings`、`~\.dsh\plugins\dsh-subprocess-dispatch`                   |
+| 视频批量剪辑                   | dsh-video-studio（内嵌 FFmpeg：剪切/变速/转场/BGM/字幕/格式转换/滤镜，11 个工具）                                                                                                 | `~\.dsh\plugins\dsh-video-studio-local`                                                            |
+| manifest 校对工具              | Electron 桌面工具（本地预览视频 + 帧级进度条 + 人工校对/修正 manifest），设置页「本地插件」下载                                                                                   | `~\.dsh\tools\manifest-tool`（源码）+ `~\.dsh\plugins\dsh-video-studio-local\assets`（打包 exe） |
+| 角色预设                       | 7 个自定义角色 + 279 个 agency 角色（agency-agents 导入，中文名）                                                                                                                 | `~\.dsh\.agent-presets\<id>\`                                                                      |
+| 全局 skill 库                  | 10 个 skill：sidecar / dsh-development / dsh-video-studio / firecrawl / adobe-illustrator-scripting / defuddle / json-canvas / obsidian-cli / obsidian-markdown / obsidian-bases  | `~\.dsh\skills\<name>\SKILL.md`（另镜像到 `~\.agents\skills\`）                                  |
+| 本地插件（设置页）             | sidecar 下载 + 本账号 token + 连接状态 + 启动命令                                                                                                                                 | 设置 → 本地插件                                                                                     |
+| **模型网关**             | 客户端本地模式的模型入口：`/llm/v1`（OpenAI 兼容面），按 token 认账号、限额、入账，用部署自己的 key 转发                                                                        | `~\.dsh\plugins\dsh-llm-gateway-local`                                                             |
+| **桌面客户端**           | 复用上游`apps/desktop` 加服务器模式 + 定时归档；**装完自带部署地址**，两种模式一个窗口                                                                                    | 源码 worktree`C:\Users\bestarc\Desktop\dsh-desktop`（分支 `hqz-desktop-client`）                 |
+| **会话归档 → Obsidian** | 客户端定时导出本机会话 → 上传部署 → 部署用自己的模型精简 → 写进`obsidian笔记\会话记录\`                                                                                      | `~\.dsh\client\export-session.mjs` + `~\.dsh\plugins\dsh-archive-local`                          |
+| **客户端安装包分发**     | 设置 →「本地插件」一张卡片，`/auth/client-installer` 流式送 `~\.dsh\client\dist` 里最新的 exe                                                                                | `plugins\dsh-remote-local\lib\index.js`                                                            |
 
 ### 11.2 权限模型
 
 `cordis.patch.yml` 的 `roleMap` 用**登录账号名**作键（区分大小写），在会话创建时把 `preset` 与 `workspace` 钉进该账号的会话。账号本身由 `admin` 在设置页创建——名字和 roleMap 的键对上才生效，对不上就用 `settings.yaml` 的默认预设。
 
-| roleMap 键（角色） | 预设 | 工作空间 | 沙箱 |
-|---|---|---|---|
-| （不映射，默认） | standard（全量） | 全部 | danger-full-access |
-| `Finance-mgr` | finance-manager | finance-ws | finance-confined（workspace-write + never） |
-| `Finance-staff` | finance-manager | finance-ws | finance-confined |
-| 其他角色 | art-design / business-sales / procurement / production / hr-management / rd-development | 各自工作区（可多选） | finance-confined |
+| roleMap 键（角色） | 预设                                                                                    | 工作空间             | 沙箱                                        |
+| ------------------ | --------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------- |
+| （不映射，默认）   | standard（全量）                                                                        | 全部                 | danger-full-access                          |
+| `Finance-mgr`    | finance-manager                                                                         | finance-ws           | finance-confined（workspace-write + never） |
+| `Finance-staff`  | finance-manager                                                                         | finance-ws           | finance-confined                            |
+| 其他角色           | art-design / business-sales / procurement / production / hr-management / rd-development | 各自工作区（可多选） | finance-confined                            |
 
 - finance-confined：写边界 = 账号工作区文件夹，禁止任何权限升级；角色预设无 shell/web/subagent/workflow 工具（"让 AI 重启服务器"已封死）。它是通用「工作区限定」权限预设，不限于财务场景。
 - 文件树权限矩阵：admin=全量、user=映射工作区、guest=403"需要升级权限才能使用该功能"。
@@ -309,18 +309,19 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 `~\.dsh\skills\` 与 `~\.agents\skills\` 是 dsh 的**用户级 skill 根**，与本仓库的 roleMap / 预设无关——**任何预设的 agent 都能看到**。目录格式固定为 `<root>\<name>\SKILL.md`（**只扫一层**，不递归），frontmatter 必须有 `name` 与 `description`。
 
-| 来源 | rank | 路径 |
-|---|---|---|
-| `project-dsh` | 100 | `<项目>\.dsh\skills\` |
-| `project-agents` | 200 | `<项目>\.agents\skills\` |
-| `custom` | 300 | `customSkillDirs`（**预设自带的 `skills\` 走这条**） |
-| `user-dsh` | 400 | `~\.dsh\skills\` |
-| `user-agents` | 500 | `~\.agents\skills\` |
-| `bundled` | 600 | dsh 发行版内置 |
+| 来源               | rank | 路径                                                           |
+| ------------------ | ---- | -------------------------------------------------------------- |
+| `project-dsh`    | 100  | `<项目>\.dsh\skills\`                                        |
+| `project-agents` | 200  | `<项目>\.agents\skills\`                                     |
+| `custom`         | 300  | `customSkillDirs`（**预设自带的 `skills\` 走这条**） |
+| `user-dsh`       | 400  | `~\.dsh\skills\`                                             |
+| `user-agents`    | 500  | `~\.agents\skills\`                                          |
+| `bundled`        | 600  | dsh 发行版内置                                                 |
 
 rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册顺序。
 
 > **两个坑**：
+>
 > 1. 预设目录里的 `skills\` **不会**被自动发现——必须在预设的 `agent.cordis.yml` 里用 `customSkillDirs` 指过去，本仓库的写法是 `!!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"`（`baseUrl` 由加载器注入）。
 > 2. 同一份 skill 放到 `~\.dsh\skills\` 与 `~\.agents\skills\` 两个根，是为了让 dsh 之外的 agent（Claude Code / Codex 等）也能读到；两边内容保持一致即可。
 
@@ -333,11 +334,9 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 **每台电脑的一次性准备**（三步，之后开机自启即可）：
 
 1. **拿包。** 在这台机器的浏览器里打开 `https://<服务器>:8443` 登录 → **设置 → 本地插件 → 「客户端执行器（executor）」那张卡片** → 点「**下载**」拿到 `dsh-executor.zip`（约 32 MB），再点「**下载一键启动脚本**」。
-
 2. **解压，把 `启动执行器.cmd` 放进解压出来的文件夹，双击它。** exe 里已经内置了服务器地址、TLS 根证书与**部署密钥**，不需要装 Node、不需要命令行参数、不需要填任何东西。
 
    起来后会打开一个本机状态页 `http://127.0.0.1:38460`，那里**只显示状态**：连上哪台服务器、本机标识、证书与共享凭据的状态。**没有工作区列表**（这是刻意的：该页面在本机环回上应答，同机任何进程和任何用户会话都能访问）。
-
 3. **完事。** 不需要再装别的程序：agent 在你电脑上跑命令用的是系统自带的 `powershell.exe`（Windows 5.1）+ 你自己装的软件。
 
 **agent 用起来要注意的三件事**（它会自己知道，这里只是让你能看懂它的行为）：
@@ -372,7 +371,6 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 > **这台机器叫什么，不用你填。** 机器标识（`desktop-xxxx-1a2b3c4d`）在首次运行时生成、与 `state.json` 同目录落盘，**重新注册也不换**；服务器按它寻址，`machine_list` 显示的就是它。同一个 `state.json` 里存的共享凭据（权限 0600）**不会回显、也不会发往服务器**。
 
-
 **如果要用 Figma（MCP）**：需要**先在你自己的电脑上打开 Figma 桌面 App，并在 Dev Mode 里手动启用 MCP server**（默认端口 3845）。这一步没有 API 可以代劳，必须人工做一次；启用后 agent 才能通过服务器转发访问它。服务端的转发白名单里已经包含 3845。
 
 ### 11.7 桌面客户端：局域网里那台电脑上的应用
@@ -385,10 +383,10 @@ rank 小的优先；同名 skill 由 rank 小的胜出，rank 相同才按注册
 
 **装完怎么用**：
 
-| 模式 | 跑在哪 | 模型从哪来 | 怎么认 |
-|---|---|---|---|
-| **服务器模式**（安装后第一次启动） | 服务器：客户端只是一个窗口 | 服务器上的循环 | 窗口顶部黄色徽标「服务器模式 · 部署名」 |
-| **本地模式**（菜单切换） | **这台机器**：agent 循环在本机，工具直接操作本机文件与软件 | 本部署的模型网关（`<origin>/llm/v1`），装完就有 | 没有徽标 |
+| 模式                                     | 跑在哪                                                           | 模型从哪来                                        | 怎么认                                   |
+| ---------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------- |
+| **服务器模式**（安装后第一次启动） | 服务器：客户端只是一个窗口                                       | 服务器上的循环                                    | 窗口顶部黄色徽标「服务器模式 · 部署名」 |
+| **本地模式**（菜单切换）           | **这台机器**：agent 循环在本机，工具直接操作本机文件与软件 | 本部署的模型网关（`<origin>/llm/v1`），装完就有 | 没有徽标                                 |
 
 - **切到服务器模式**：菜单 **模式 → 服务器模式**（或在服务器模式里点徽标上的「切回本地」）。选中的模式记在 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop-mode.json`，重启后保持。
 - **服务器模式要登录**：窗口加载的是部署自己的 Web UI，第一次会让你输账号密码 —— 跟浏览器打开 `https://<服务器>:8443` 是同一件事。
