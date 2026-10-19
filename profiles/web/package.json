@@ -2,14 +2,11 @@
   "name": "dsh-profile-web",
   "private": true,
   "dependencies": {
-    "@deepseek-ai/dsh-terminal": "0.0.1-rc.3",
-    "@deepseek-ai/dsh-terminal-bash": "0.0.1-rc.3",
-    "@deepseek-ai/dsh-tool-terminal": "0.0.1-rc.5",
     "@xgone/dsh-remote": "link:../../plugins/dsh-remote-local",
-    "dsh-doc": "0.1.1",
     "dsh-local-bridge": "link:../../plugins/dsh-local-bridge",
     "folder-tree-sh": "link:../../plugins/folder-tree-sh-local",
-    "dsh-video-studio": "link:../../plugins/dsh-video-studio-local"
+    "dsh-video-studio": "link:../../plugins/dsh-video-studio-local",
+    "dsh-agent-presets-local": "link:../../plugins/dsh-agent-presets-local"
   },
   "dsh": {
     "profile": {
@@ -17,10 +14,10 @@
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
         "@xgone/dsh-remote",
-        "dsh-doc",
         "folder-tree-sh",
         "dsh-local-bridge",
-        "dsh-video-studio"
+        "dsh-video-studio",
+        "dsh-agent-presets-local"
       ],
       "patchReload": "live"
     }

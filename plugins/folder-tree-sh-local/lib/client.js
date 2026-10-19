@@ -1709,7 +1709,10 @@ window.__ModuleLoader__.load({
 							const [open, setOpen] = react.useState(panelStore.open);
 							react.useEffect(() => panelSubscribe(() => setOpen(panelStore.open)), []);
 							return react.createElement('div', { className: 'dsh-ftree-toggle', onClick: panelToggle, title: '文件树' },
-								react.createElement(primitives.IconFolderOpenOutline16, { size: 16 }),
+								(primitives && primitives.IconFolderOpenOutline16
+						? react.createElement(primitives.IconFolderOpenOutline16, { size: 16 })
+						: react.createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinejoin: 'round', 'aria-hidden': true },
+							react.createElement('path', { d: 'M1.9 3.4h4.05l1.15 1.35h6.95v7.85H1.9z' }))),
 								props.wide ? react.createElement('span', null, open ? '隐藏文件树' : '显示文件树') : null
 							);
 						}

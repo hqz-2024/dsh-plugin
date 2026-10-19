@@ -1955,7 +1955,7 @@ window.__ModuleLoader__.load({
 		// apply AFTER the connection service exists — ctx.get("connection") in
 		// apply() is read once with no retry, and the remote-only file-open
 		// interception installs inside that branch.
-		const inject = ["slots", "locale", "connection", "settingsScope"];
+		const inject = ["slots", "locale", "connection"];
 
 		function apply(ctx) {
 			// On coarse-pointer (touch) devices, make plain Enter in the chat
