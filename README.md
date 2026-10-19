@@ -1,4 +1,4 @@
-# DeepSeek Harness 局域网部署说明
+﻿ DeepSeek Harness 局域网部署说明
 
 > **当前部署状态、插件清单、故障处置与回滚方法：见 `STATE.md`。**（接手/排障先读它）
 
@@ -44,11 +44,11 @@ git clone https://github.com/hqz-2024/dsh-plugin.git "$env:USERPROFILE\.dsh"
 
 # 2) 引擎 → 桌面\dsh-0.2.1
 #    分支必须是 hqz-dsh-0.2.1（= 现网跑的 0.2.1-rc.2）；仓库里还有个 hqz-dsh 是 0.1.3 时代的老分支
-git clone -b hqz-dsh-0.2.1 https://github.com/hqz-2024/hqz-dsh.git "$env:USERPROFILE\Desktop\dsh-0.2.1"
+git clone -b hqz-dsh-0.2.1 https://github.com/hqz-2024/hqz-dsh.git "$env:USERPROFILE\Desktop\deepseek-harness"
 
 # 3) 客户端 → 桌面\dsh-desktop
 #    它不是独立仓库，是引擎仓库的第二个工作树（目录里的 .git 是个文件，指向引擎的 .git\worktrees\）
-cd "$env:USERPROFILE\Desktop\dsh-0.2.1"
+cd "$env:USERPROFILE\Desktop\deepseek-harness"
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
 
@@ -58,7 +58,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ```powershell
 git -C "$env:USERPROFILE\.dsh" pull                          # 部署仓库
-git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" pull       # 引擎
+git -C "$env:USERPROFILE\Desktop\deepseek-harness" pull       # 引擎
 git -C "$env:USERPROFILE\Desktop\dsh-desktop" pull            # 客户端
 ```
 
@@ -66,8 +66,8 @@ git -C "$env:USERPROFILE\Desktop\dsh-desktop" pull            # 客户端
 
 ```powershell
 git -C "$env:USERPROFILE\.dsh" rev-parse --abbrev-ref HEAD                            # main
-git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" rev-parse --abbrev-ref HEAD        # hqz-dsh-0.2.1
-(git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" show HEAD:package.json | ConvertFrom-Json).version   # 0.2.1-rc.2
+git -C "$env:USERPROFILE\Desktop\deepseek-harness" rev-parse --abbrev-ref HEAD        # hqz-dsh-0.2.1
+(git -C "$env:USERPROFILE\Desktop\deepseek-harness" show HEAD:package.json | ConvertFrom-Json).version   # 0.2.1-rc.2
 git -C "$env:USERPROFILE\Desktop\dsh-desktop" rev-parse --abbrev-ref HEAD             # hqz-desktop-client
 ```
 
@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 
 | 参数              | 默认                                        | 说明                                                                                     |
 | ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `-EngineDir`    | `%USERPROFILE%\Desktop\dsh-0.2.1`  | 引擎 checkout 路径                                                                       |
+| `-EngineDir`    | `%USERPROFILE%\Desktop\deepseek-harness`  | 引擎 checkout 路径                                                                       |
 | `-EngineRepo`   | `https://github.com/hqz-2024/hqz-dsh.git` | 引擎仓库（会话隔离在插件层，引擎本身零改动）                                             |
 | `-EngineBranch` | `hqz-dsh-0.2.1`                           | 引擎分支；`hqz-dsh` 是 0.1.3 时代的老分支，别用                                        |
 | `-RunProfile`   | `web`                                     | 启动脚本跑哪个 profile：`web`（全部在服务器执行）或 `web-client`（挂客户端执行世界） |
@@ -146,7 +146,7 @@ https://<局域网IP>:8443 {
 dsh 必须**只监听本机 127.0.0.1**，但用 `--trusted-host` 放行从 caddy 转发来的请求：
 
 ```powershell
-cd %USERPROFILE%\Desktop\dsh-0.2.1
+cd %USERPROFILE%\Desktop\deepseek-harness
 pnpm dsh --profile web --trusted-host <局域网IP>
 ```
 

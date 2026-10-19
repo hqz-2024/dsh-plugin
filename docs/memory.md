@@ -1,4 +1,4 @@
-# 记忆：当前状态、决策记录与下一步
+﻿ 记忆：当前状态、决策记录与下一步
 
 > **这份文件是"现在是什么状态、下一步做什么"的唯一入口。** 每次重要变更后更新它（改完顺手把"最后更新"时间改掉）。
 > 细节分流：实现与验收证据 → `docs/plan-client-world-progress.md`；两条路线的完整评估 → `docs/plan-two-paths.md`；用户手册 → `README.md`；铁律与实现级陷阱 → `AGENTS.md`。
@@ -277,7 +277,7 @@
 
 **现状**
 
-- 线上 3080 = **0.2.1-rc.2**，引擎 `C:\Users\bestarc\Desktop\dsh-0.2.1`（worktree，分支 `hqz-dsh-0.2.1` = tag `dsh-v0.2.1-rc.2`）；`start-dsh-lan.cmd` 的 `DSH_DIR` 已指向它，日志 `live-0.2.1.*`。
+- 线上 3080 = **0.2.1-rc.2**，引擎 `C:\Users\bestarc\Desktop\deepseek-harness`（worktree，分支 `hqz-dsh-0.2.1` = tag `dsh-v0.2.1-rc.2`）；`start-dsh-lan.cmd` 的 `DSH_DIR` 已指向它，日志 `live-0.2.1.*`。
 - 旧引擎 `deepseek-harness` 仍在 `hqz-dsh-0.1.6`（0.1.6-alpha.2，已构建，工作树干净）= **回滚目标**；另有 tag `rollback-pre-0.2.1-rc.2` 与分支 `hqz-dsh-pre-0.2.1-rc.2`。
 - `web-client` profile 11 个 bundle：9 个原插件 + `dsh-agent-presets-local`；`dsh-doc` 与三个 0.1.x 终端包已移除（新版兼容性闸门拒绝 / 会卡启动）。
 - 286 个预设迁成 `plugins/dsh-agent-presets-local/cordis.patch.yml`（286 条 `@deepseek-ai/dsh-agent-preset` 声明；组合后共 290 行，含官方 standard/ptc/minimal/cordis）。
@@ -305,3 +305,10 @@
 - 桌面客户端：`dsh-desktop-0.2.1` worktree（分支 `hqz-desktop-client-0.2.1`，基于 rc.2）+ 单补丁重放（预检：40 文件、约 12 个冲突，冲突集中在 `main.ts` / `preload-app.ts` / `package.json` / README / `electron-builder-config.mjs`）+ 重打包。
 - 默认预设是否改回 `cordis`（改 patch 会触发热重载，建议停机窗口做）。
 - `cutover-0.2.1.ps1` 已执行过并失败过，保留作历史；不要再用它切换。
+## 10. 2026-10-19 16:00 引擎合并为单 checkout
+
+- `Desktop\dsh-0.2.1`（独立 worktree）已删除；引擎回到 `Desktop\deepseek-harness`，分支 `hqz-dsh-0.2.1` @ `687f282e86`（tag `dsh-v0.2.1-rc.2`），已 `pnpm install` + `pnpm run build`（9/9）。
+- 线上 3080 已从新路径启动（pid 30552），`auth/me` 200、8443 200、启动错误日志只有 `engine patch: legacy-turn-restart applied`。
+- 仓库现在只有两个工作树：`deepseek-harness`（引擎）+ `dsh-desktop`（客户端，`hqz-desktop-client` @ `9181a4c218`）。
+- `install.ps1` / `MIGRATION.md` / `README.md` 的引擎路径已改回 `Desktop\deepseek-harness`；回滚改为"同目录切 `hqz-dsh-pre-0.2.1-rc.2` + 重建"（见桌面 `回滚操作说明.md`）。
+- 教训（第二次）：PS 5.1 没有 `-SkipHttpErrorCheck`。任何跑在计划任务里的健康检查必须用 `curl.exe` 或 `HttpClient`，否则探针永远抛异常。

@@ -1,4 +1,4 @@
-# DSH 局域网部署迁移说明
+﻿ DSH 局域网部署迁移说明
 
 本文件描述如何把整套 DeepSeek Harness 局域网部署（多账号登录 + 角色权限 + 会话隔离 + 文件树 + 文档解析 + 本机桥接 + 视频剪辑）迁移到另一台 Windows 服务器，并**完整保留所有数据**（会话历史、账号、工作区文件、配置、插件改动）。
 
@@ -14,7 +14,7 @@
 | 项 | 值 |
 |---|---|
 | 用户名 | `<用户名>` |
-| DSH 代码 checkout | `C:\Users\<用户名>\Desktop\dsh-0.2.1` |
+| DSH 代码 checkout | `C:\Users\<用户名>\Desktop\deepseek-harness` |
 | DSH 数据/配置主目录 | `%USERPROFILE%\.dsh` |
 | 财务工作区 | `C:\Users\<用户名>\Desktop\finance-ws` |
 | 反代端口 | `https://<局域网IP>:8443` → 本机 `127.0.0.1:3080` |
@@ -99,12 +99,12 @@ git clone -b client-world https://github.com/hqz-2024/dsh-plugin.git %USERPROFIL
 
 # 2) 引擎本体（本部署对引擎零改动，可直接 clone）
 #    分支必须是 hqz-dsh-0.2.1（= 现网跑的 0.2.1-rc.2）；仓库里的 hqz-dsh 是 0.1.3 时代的老分支。
-git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh-0.2.1 C:\Users\<用户名>\Desktop\dsh-0.2.1
+git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh-0.2.1 C:\Users\<用户名>\Desktop\deepseek-harness
 
 # 3) 客户端源码 = 同一个仓库的另一个分支（hqz-desktop-client），挂成第二个 worktree。
 #    它的历史在引擎的 .git 里，所以不能只拷目录；clone 之后远端已有这个分支，
 #    worktree add 会自动建一个跟踪它的本地分支。
-cd C:\Users\<用户名>\Desktop\dsh-0.2.1
+cd C:\Users\<用户名>\Desktop\deepseek-harness
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
 
@@ -112,7 +112,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ```powershell
 git -C %USERPROFILE%\.dsh pull                      # 部署仓库（client-world）
-git -C C:\Users\<用户名>\Desktop\dsh-0.2.1 pull    # 引擎
+git -C C:\Users\<用户名>\Desktop\deepseek-harness pull    # 引擎
 git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同一个 .git，worktree 分支）
 ```
 
@@ -260,7 +260,7 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 | 源路径 | 内容 | 是否必须 |
 |---|---|---|
-| `C:\Users\<用户名>\Desktop\dsh-0.2.1\`（不含 node_modules） | DSH 源码 checkout（分支 `hqz-dsh-0.2.1`，与上游 `master` 逐字一致） | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
+| `C:\Users\<用户名>\Desktop\deepseek-harness\`（不含 node_modules） | DSH 源码 checkout（分支 `hqz-dsh-0.2.1`，与上游 `master` 逐字一致） | 必须（或 `git clone https://github.com/hqz-2024/hqz-dsh.git -b hqz-dsh`） |
 | `C:\Users\<用户名>\Desktop\dsh-desktop\` | **客户端源码 —— 同一个仓库的第二个 worktree**（分支 `hqz-desktop-client`，领先上游 `hqz-dsh-0.1.6` **14 个提交**：服务器模式与证书信任、模式徽标与切换、本地模式的模型路由、根证书信任、定时归档、发布版本号、打包默认地址与策略声明；**已在 GitHub 上**）。目录里的 `.git` 是一个**文件**，内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop` | 必须（不能只拷目录，见坑 5；新机 `git worktree add` 即可） |
 
 ---
@@ -296,18 +296,18 @@ powershell -ExecutionPolicy Bypass -File .\migrate.ps1 -Backup <备份zip> -OldU
 
 ### 坑 5：客户端源码是「引擎仓库的第二个 worktree」，不是一个独立仓库
 
-本机有两个工作树共用同一个 `.git`（`C:\Users\<用户名>\Desktop\dsh-0.2.1\.git`）：
+本机有两个工作树共用同一个 `.git`（`C:\Users\<用户名>\Desktop\deepseek-harness\.git`）：
 
 | 工作树 | 分支 | 是什么 |
 |---|---|---|
-| `Desktop\dsh-0.2.1` | `hqz-dsh-0.2.1` | 引擎本体（与上游 `master` 逐字一致，零改动 —— 这是铁律 1） |
+| `Desktop\deepseek-harness` | `hqz-dsh-0.2.1` | 引擎本体（与上游 `master` 逐字一致，零改动 —— 这是铁律 1） |
 | `Desktop\dsh-desktop` | `hqz-desktop-client` | 客户端：在那份引擎上加了 **14 个提交**（服务器模式与证书、模式徽标与切换、本地模式的模型路由与根证书信任、定时归档、发布版本号、打包默认地址与策略声明） |
 
 所以 `Desktop\dsh-desktop` 里的 `.git` **是一个文件**（内容是 `gitdir: <引擎>\.git\worktrees\dsh-desktop`），只拷目录带不走历史。**两条分支都在 GitHub 上**（引擎仓库 `hqz-2024/hqz-dsh`：`hqz-dsh-0.2.1` 与 `hqz-desktop-client`），所以新机上重建就是"clone + worktree add"：
 
 ```powershell
-git clone https://github.com/hqz-2024/hqz-dsh.git C:\Users\<用户名>\Desktop\dsh-0.2.1
-cd C:\Users\<用户名>\Desktop\dsh-0.2.1
+git clone https://github.com/hqz-2024/hqz-dsh.git C:\Users\<用户名>\Desktop\deepseek-harness
+cd C:\Users\<用户名>\Desktop\deepseek-harness
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
 
@@ -315,7 +315,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ```powershell
 git -C %USERPROFILE%\.dsh pull                      # 部署仓库（client-world）
-git -C C:\Users\<用户名>\Desktop\dsh-0.2.1 pull    # 引擎
+git -C C:\Users\<用户名>\Desktop\deepseek-harness pull    # 引擎
 git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同一个 .git，worktree 分支）
 ```
 
@@ -384,7 +384,7 @@ git -C C:\Users\<用户名>\Desktop\dsh-desktop pull         # 客户端（同�
 %USERPROFILE%\.dsh\bin\caddy.exe run --config %USERPROFILE%\.dsh\Caddyfile
 
 # 终端 2：dsh（在 checkout 目录）
-cd C:\Users\<用户名>\Desktop\dsh-0.2.1
+cd C:\Users\<用户名>\Desktop\deepseek-harness
 pnpm dsh --profile web --trusted-host <局域网IP>
 ```
 

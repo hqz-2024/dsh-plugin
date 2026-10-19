@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿Requires -Version 5.1
 <#
 .SYNOPSIS
   DSH 局域网部署一键安装脚本。
@@ -13,7 +13,7 @@
   幂等：可重复运行，已存在的文件/已完成步骤会跳过（不覆盖你的 token）。
 
 .PARAMETER EngineDir
-  deepseek-harness checkout 路径（默认 %USERPROFILE%\Desktop\dsh-0.2.1）。
+  deepseek-harness checkout 路径（默认 %USERPROFILE%\Desktop\deepseek-harness）。
 .PARAMETER EngineRepo
   引擎仓库（含会话隔离改动），默认 https://github.com/hqz-2024/hqz-dsh.git。
 .PARAMETER EngineBranch
@@ -28,7 +28,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\dsh-0.2.1"),
+  [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\deepseek-harness"),
   [string]$EngineRepo = "https://github.com/hqz-2024/hqz-dsh.git",
   [string]$EngineBranch = "hqz-dsh-0.2.1",
   [string]$LanIP = "",
