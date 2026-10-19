@@ -97,3 +97,4 @@ profiles/*/cordis.yml
 settings.yaml.imported
 profiles/*/cordis.patch.yml.pre-*
 cutover-0.2.1.ps1.pre-*
+client/old/
