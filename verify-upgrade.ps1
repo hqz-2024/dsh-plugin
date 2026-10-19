@@ -18,7 +18,16 @@ Check "port $Port listening" ([bool]$owner) ("pid=" + $owner)
 $engine = ''
 if ($owner) {
   $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue).CommandLine
-  if ($cmd -match '(?i)([A-Z]:\\[^"]*?deepseek-harness|[A-Z]:\\[^"]*?dsh-0\.2\.1)') { $engine = $Matches[1] }
+  if ($cmd -match '(?i)([A-Z]:\\[^"]*?(?:deepseek-harness|dsh-0\.\d+\.\d+))') { $engine = $Matches[1] }
+}
+# The launcher starts dsh with a relative apps\cli\lib\bin.js, so the command
+# line carries no engine path; the launcher's DSH_DIR is the authoritative one.
+if (-not $engine) {
+  $launcher = Join-Path $DshHome 'start-dsh-lan.cmd'
+  if (Test-Path $launcher) {
+    $m = [regex]::Match((Get-Content $launcher -Raw), 'set "DSH_DIR=([^"]+)"')
+    if ($m.Success) { $engine = $m.Groups[1].Value.TrimEnd('\') }
+  }
 }
 Check 'engine checkout' ($engine -ne '') $engine
 if ($engine -and (Test-Path (Join-Path $engine 'package.json'))) {
