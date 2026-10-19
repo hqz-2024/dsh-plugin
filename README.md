@@ -2,6 +2,8 @@
 
 > **当前部署状态、插件清单、故障处置与回滚方法：见 `STATE.md`。**（接手/排障先读它）
 
+> **2026-10-19 起基线：dsh 0.2.1-rc.2**，引擎在 `桌面\dsh-0.2.1`（分支 `hqz-dsh-0.2.1`）。与 0.1.6 的差异、以及现在怎么回滚，见 `STATE.md` 与桌面《回滚操作说明.md》。
+
 本目录（`~/.dsh`，即 `%USERPROFILE%\.dsh`）存放局域网部署所需的配置和脚本。核心架构：**dsh 只监听本机 127.0.0.1，caddy 作为 HTTPS 反代对外**，这样 agent 的远程代码执行能力仍被圈在本机，不直接暴露到网络。
 
 ```
@@ -33,20 +35,20 @@
 | 工程                                             | 仓库                    | 分支                                        | 放到哪                    | 怎么拉                         |
 | ------------------------------------------------ | ----------------------- | ------------------------------------------- | ------------------------- | ------------------------------ |
 | **部署仓库**（本仓库：配置 / 插件 / 脚本） | `hqz-2024/dsh-plugin` | `main`（日常改动提交到 `client-world`） | `%USERPROFILE%\.dsh`    | `git clone`                  |
-| **引擎**（deepseek-harness）               | `hqz-2024/hqz-dsh`    | **`hqz-dsh-0.1.6`**                 | `桌面\deepseek-harness` | `git clone`                  |
+| **引擎**（dsh-0.2.1）               | `hqz-2024/hqz-dsh`    | **`hqz-dsh-0.2.1`**                 | `桌面\dsh-0.2.1` | `git clone`                  |
 | **客户端**（dsh-desktop）                  | 同上**那个仓库**  | **`hqz-desktop-client`**            | `桌面\dsh-desktop`      | **`git worktree add`** |
 
 ```powershell
 # 1) 部署仓库 → %USERPROFILE%\.dsh
 git clone https://github.com/hqz-2024/dsh-plugin.git "$env:USERPROFILE\.dsh"
 
-# 2) 引擎 → 桌面\deepseek-harness
-#    分支必须是 hqz-dsh-0.1.6（= 现网跑的 0.1.6-alpha.2）；仓库里还有个 hqz-dsh 是 0.1.3 时代的老分支
-git clone -b hqz-dsh-0.1.6 https://github.com/hqz-2024/hqz-dsh.git "$env:USERPROFILE\Desktop\deepseek-harness"
+# 2) 引擎 → 桌面\dsh-0.2.1
+#    分支必须是 hqz-dsh-0.2.1（= 现网跑的 0.2.1-rc.2）；仓库里还有个 hqz-dsh 是 0.1.3 时代的老分支
+git clone -b hqz-dsh-0.2.1 https://github.com/hqz-2024/hqz-dsh.git "$env:USERPROFILE\Desktop\dsh-0.2.1"
 
 # 3) 客户端 → 桌面\dsh-desktop
 #    它不是独立仓库，是引擎仓库的第二个工作树（目录里的 .git 是个文件，指向引擎的 .git\worktrees\）
-cd "$env:USERPROFILE\Desktop\deepseek-harness"
+cd "$env:USERPROFILE\Desktop\dsh-0.2.1"
 git worktree add ..\dsh-desktop hqz-desktop-client
 ```
 
@@ -56,7 +58,7 @@ git worktree add ..\dsh-desktop hqz-desktop-client
 
 ```powershell
 git -C "$env:USERPROFILE\.dsh" pull                          # 部署仓库
-git -C "$env:USERPROFILE\Desktop\deepseek-harness" pull       # 引擎
+git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" pull       # 引擎
 git -C "$env:USERPROFILE\Desktop\dsh-desktop" pull            # 客户端
 ```
 
@@ -64,8 +66,8 @@ git -C "$env:USERPROFILE\Desktop\dsh-desktop" pull            # 客户端
 
 ```powershell
 git -C "$env:USERPROFILE\.dsh" rev-parse --abbrev-ref HEAD                            # main
-git -C "$env:USERPROFILE\Desktop\deepseek-harness" rev-parse --abbrev-ref HEAD        # hqz-dsh-0.1.6
-(git -C "$env:USERPROFILE\Desktop\deepseek-harness" show HEAD:package.json | ConvertFrom-Json).version   # 0.1.6-alpha.2
+git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" rev-parse --abbrev-ref HEAD        # hqz-dsh-0.2.1
+(git -C "$env:USERPROFILE\Desktop\dsh-0.2.1" show HEAD:package.json | ConvertFrom-Json).version   # 0.2.1-rc.2
 git -C "$env:USERPROFILE\Desktop\dsh-desktop" rev-parse --abbrev-ref HEAD             # hqz-desktop-client
 ```
 
@@ -87,15 +89,15 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -LanIP <局域网IP>
 >
 > 差异：dsh-doc 用 `engine: node`（无 win32 OCR 运行时）、启动脚本为 `start-dsh-lan.sh`、备份/恢复用 `backup.sh` / `migrate.sh`。
 
-脚本按顺序完成：前置检查 → 拉取引擎（deepseek-harness，已 clone 就跳过）→ 安装 profile 依赖 → **逐个安装 `plugins\` 下每个插件各自的依赖**（清单由目录推导，不写死）→ **校验角色预设（7 个自定义 + agency 角色库，共 286 个）与全局 skill（10 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ **下载 FFmpeg 二进制**（~185MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
+脚本按顺序完成：前置检查 → 拉取引擎（dsh-0.2.1，已 clone 就跳过）→ 安装 profile 依赖 → **逐个安装 `plugins\` 下每个插件各自的依赖**（清单由目录推导，不写死）→ **校验角色预设（7 个自定义 + agency 角色库，共 286 个）与全局 skill（10 个）** → 渲染 `cordis.patch.yml`（生成 sidecar token）→ 生成 `.credentials.yaml` → **下载 dsh-doc OCR 运行时**（~178MB，含 SHA-256 校验）→ **下载 FFmpeg 二进制**（~185MB，含 SHA-256 校验）→ 生成启动脚本 → 自检 `verify.ps1`。幂等可重跑。
 
 > **再在引擎目录跑一次 `pnpm run build`**：部署侧的运行时补丁（`~\.dsh\engine-patches\`）**只对构建产物生效**，源码启动时静默失效；`install.ps1` 生成的启动脚本会自动优先用 `apps\cli\lib\bin.js` 并带上 `--import engine-patches\register.mjs`，没有 lib 才退回源码启动并打印警告。判据：启动后 `~\.dsh\live-0.1.6.err.log` 里应有一行 `[dsh-lan] engine patch: legacy-turn-restart applied`。
 
 | 参数              | 默认                                        | 说明                                                                                     |
 | ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `-EngineDir`    | `%USERPROFILE%\Desktop\deepseek-harness`  | 引擎 checkout 路径                                                                       |
+| `-EngineDir`    | `%USERPROFILE%\Desktop\dsh-0.2.1`  | 引擎 checkout 路径                                                                       |
 | `-EngineRepo`   | `https://github.com/hqz-2024/hqz-dsh.git` | 引擎仓库（会话隔离在插件层，引擎本身零改动）                                             |
-| `-EngineBranch` | `hqz-dsh-0.1.6`                           | 引擎分支；`hqz-dsh` 是 0.1.3 时代的老分支，别用                                        |
+| `-EngineBranch` | `hqz-dsh-0.2.1`                           | 引擎分支；`hqz-dsh` 是 0.1.3 时代的老分支，别用                                        |
 | `-RunProfile`   | `web`                                     | 启动脚本跑哪个 profile：`web`（全部在服务器执行）或 `web-client`（挂客户端执行世界） |
 | `-LanIP`        | `<局域网IP>`（必填）                      | 服务器局域网 IP                                                                          |
 | `-NodePath`     | 自动取 PATH 里的 node                       | node.exe 绝对路径                                                                        |
@@ -144,7 +146,7 @@ https://<局域网IP>:8443 {
 dsh 必须**只监听本机 127.0.0.1**，但用 `--trusted-host` 放行从 caddy 转发来的请求：
 
 ```powershell
-cd %USERPROFILE%\Desktop\deepseek-harness
+cd %USERPROFILE%\Desktop\dsh-0.2.1
 pnpm dsh --profile web --trusted-host <局域网IP>
 ```
 

@@ -13,11 +13,11 @@
   幂等：可重复运行，已存在的文件/已完成步骤会跳过（不覆盖你的 token）。
 
 .PARAMETER EngineDir
-  deepseek-harness checkout 路径（默认 %USERPROFILE%\Desktop\deepseek-harness）。
+  deepseek-harness checkout 路径（默认 %USERPROFILE%\Desktop\dsh-0.2.1）。
 .PARAMETER EngineRepo
   引擎仓库（含会话隔离改动），默认 https://github.com/hqz-2024/hqz-dsh.git。
 .PARAMETER EngineBranch
-  引擎分支，默认 hqz-dsh-0.1.6（现网跑的就是这条，版本 0.1.6-alpha.2）。
+  引擎分支，默认 hqz-dsh-0.2.1（现网跑的就是这条，版本 0.2.1-rc.2）。
   引擎仓库里还有更老的 hqz-dsh（0.1.3 时代）与上游 master，别拿它们当部署基线。
 .PARAMETER LanIP
   服务器局域网 IP（写入 caddy 反代地址与 --trusted-host）。
@@ -28,9 +28,9 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\deepseek-harness"),
+  [string]$EngineDir = (Join-Path $env:USERPROFILE "Desktop\dsh-0.2.1"),
   [string]$EngineRepo = "https://github.com/hqz-2024/hqz-dsh.git",
-  [string]$EngineBranch = "hqz-dsh-0.1.6",
+  [string]$EngineBranch = "hqz-dsh-0.2.1",
   [string]$LanIP = "",
   [string]$NodePath = "",
   # 生成的启动脚本用哪个 profile：web（默认，全部在服务器执行）或
